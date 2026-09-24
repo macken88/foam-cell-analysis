@@ -1,0 +1,908 @@
+<!DOCTYPE html>
+
+<html lang="ja">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>気泡 インスタンスセグメンテーションアプリ - モデル学習モード仕様</title>
+<style>
+    :root {
+      --bg: #f5f7fa;
+      --card: #ffffff;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --line: #dce2ea;
+      --accent: #2563eb;
+      --accent-soft: #eff6ff;
+      --warn: #b7791f;
+      --warn-soft: #fff8e8;
+      --good: #15803d;
+      --good-soft: #ecfdf3;
+      --dark: #111827;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Yu Gothic", "Meiryo", sans-serif;
+      line-height: 1.72;
+    }
+    .container {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 36px 22px 72px;
+    }
+    .hero, .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: 0 2px 10px rgba(17,24,39,0.035);
+    }
+    .hero {
+      padding: 32px;
+      margin-bottom: 22px;
+    }
+    .card {
+      padding: 26px;
+      margin: 20px 0;
+    }
+    h1,h2,h3,h4 { line-height: 1.35; color: #172033; }
+    h1 { margin: 0 0 10px; font-size: 2rem; }
+    h2 {
+      margin-top: 0;
+      padding-bottom: 8px;
+      border-bottom: 2px solid #e8ebf0;
+      font-size: 1.4rem;
+    }
+    h3 { margin-top: 26px; font-size: 1.12rem; }
+    h4 { margin: 18px 0 8px; }
+    p { margin: 10px 0; }
+    .small { color: var(--muted); font-size: 0.93rem; }
+    .note, .warning, .success {
+      padding: 14px 16px;
+      border-radius: 9px;
+      margin: 16px 0;
+    }
+    .note { background: var(--accent-soft); border-left: 5px solid var(--accent); }
+    .warning { background: var(--warn-soft); border-left: 5px solid #d69e2e; }
+    .success { background: var(--good-soft); border-left: 5px solid var(--good); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 14px 0 24px;
+      background: #fff;
+    }
+    th, td {
+      border: 1px solid var(--line);
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: #f1f4f8; }
+    pre, code { font-family: Consolas, "Courier New", monospace; }
+    pre {
+      background: var(--dark);
+      color: #f9fafb;
+      padding: 18px;
+      border-radius: 10px;
+      overflow-x: auto;
+      white-space: pre-wrap;
+    }
+    .flow {
+      background: #fafbfc;
+      border: 1px dashed #c8d0da;
+      border-radius: 10px;
+      padding: 18px;
+      white-space: pre-wrap;
+      font-family: Consolas, "Courier New", monospace;
+    }
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0,1fr));
+      gap: 16px;
+    }
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0,1fr));
+      gap: 14px;
+    }
+    .mock-window {
+      border: 1px solid #cfd6df;
+      border-radius: 12px;
+      overflow: hidden;
+      background: #fff;
+      margin: 16px 0 28px;
+    }
+    .mock-titlebar {
+      background: #eef2f6;
+      padding: 10px 14px;
+      font-weight: 700;
+      border-bottom: 1px solid #d6dde6;
+    }
+    .mock-body {
+      display: grid;
+      grid-template-columns: 210px 1fr;
+      min-height: 470px;
+    }
+    .sidebar {
+      background: #f8fafc;
+      border-right: 1px solid #e1e6ed;
+      padding: 16px 10px;
+    }
+    .nav-item {
+      padding: 10px 12px;
+      margin: 4px 0;
+      border-radius: 8px;
+    }
+    .nav-item.active {
+      background: #e8f0ff;
+      color: #1d4ed8;
+      font-weight: 700;
+    }
+    .mainpane { padding: 20px; }
+    .form-section {
+      border: 1px solid #e0e5ec;
+      border-radius: 10px;
+      padding: 15px;
+      margin-bottom: 15px;
+      background: #fff;
+    }
+    .form-section h4 { margin-top: 0; }
+    .row {
+      display: grid;
+      grid-template-columns: 200px 1fr;
+      gap: 14px;
+      align-items: center;
+      padding: 7px 0;
+    }
+    .input {
+      border: 1px solid #cbd5e1;
+      border-radius: 7px;
+      padding: 8px 10px;
+      background: #fff;
+      color: #374151;
+      min-height: 36px;
+    }
+    .input.select::after { content: " ▼"; color: #6b7280; }
+    .btnbar {
+      display: flex;
+      gap: 10px;
+      justify-content: flex-end;
+      margin-top: 18px;
+    }
+    .btn {
+      display: inline-block;
+      padding: 9px 15px;
+      border-radius: 8px;
+      border: 1px solid #cbd5e1;
+      background: #fff;
+      font-weight: 600;
+    }
+    .btn.primary {
+      color: #fff;
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+    .preview-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0,1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .preview-box {
+      min-height: 150px;
+      border: 1px solid #d5dce5;
+      border-radius: 8px;
+      background:
+        linear-gradient(45deg,#f7f7f7 25%,#ececec 25%,#ececec 50%,#f7f7f7 50%,#f7f7f7 75%,#ececec 75%,#ececec 100%);
+      background-size: 18px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #64748b;
+      font-weight: 700;
+    }
+    .pill {
+      display: inline-block;
+      padding: 3px 9px;
+      border-radius: 999px;
+      background: #eef2ff;
+      color: #3730a3;
+      font-size: .86rem;
+      margin-right: 6px;
+    }
+    @media (max-width: 800px) {
+      .grid-2,.grid-3 { grid-template-columns: 1fr; }
+      .mock-body { grid-template-columns: 1fr; }
+      .sidebar { border-right: 0; border-bottom: 1px solid #e1e6ed; }
+      .row { grid-template-columns: 1fr; gap: 5px; }
+    }
+  </style>
+</head>
+<body>
+<div class="container">
+<section class="hero">
+<h1>気泡 インスタンスセグメンテーションアプリ<br/>モデル学習モード仕様・画面モック</h1>
+<p>本仕様は、気泡検出用インスタンスセグメンテーションモデルの学習、学習内評価、保存を行う管理者向け「モデル学習モード」を対象とする。正式なモデル比較とリリースは別モードで行う。</p>
+<p class="small">
+      初期対応モデル：Cellpose / マスク R-CNN<br/>
+      初期前提：推論時のアンサンブルは行わず、リリース済みモデルを1つ選択して推論する。
+    </p>
+</section>
+<section class="card">
+<h2>1. 基本方針</h2>
+<ul>
+<li>複数モデルに対応できる構造とするが、初期実装はCellposeとマスク R-CNNの2モデルに限定する。</li>
+<li>モデル差分を無理に共通化せず、「共通ワークフロー + モデルアダプタ」で吸収する。</li>
+<li>データセット、実験、途中保存モデル、評価、保存は共通化する。</li>
+<li>モデル構築、モデル固有前処理、損失、RPN/ROI設定、Cellpose固有スケール処理等は各アダプタ側に保持する。</li>
+<li>1つでも論理的な学習設定が異なる場合は別実験とする。</li>
+<li>同一学習中の途中途中保存モデルは同じ実験に属する。</li>
+<li>正式な推論対象の決定は本モードでは行わず、実験と途中保存モデルをモデル比較・リリース段階へ引き渡す。</li>
+</ul>
+<div class="note">GPU機種、num_workers、保存先など結果の意味を直接変えない実行環境差は、原則として実験設定ではなく実行試行側の情報として記録する。</div>
+</section>
+<section class="card">
+<h2>2. 学習モードの階層構造</h2>
+<table>
+<thead>
+<tr><th>単位</th><th>意味</th><th>例</th></tr>
+</thead>
+<tbody>
+<tr><td>実験群</td><td>比較したい複数実験のまとまり</td><td>入力画像サイズ比較、Optunaによる実験群</td></tr>
+<tr><td>実験</td><td>1つの固定された学習設定</td><td>学習率=1e-4、バッチサイズ=4、データセット=v004</td></tr>
+<tr><td>実行試行</td><td>同一実験の実行試行</td><td>1回目メモリ不足、2回目完走</td></tr>
+<tr><td>途中保存モデル</td><td>1回の学習途中のモデル状態</td><td>epoch_20.pt, best.pt, last.pt</td></tr>
+</tbody>
+</table>
+<div class="flow">実験群
+│
+├─ 実験 A
+│   ├─ 実行試行 001
+│   │   ├─ epoch_010
+│   │   ├─ epoch_020
+│   │   └─ best
+│   └─ 実行試行 002
+│
+├─ 実験 B
+└─ 実験 C</div>
+<h3>2.1 Optunaとの対応</h3>
+<p>Optuna利用時は、各試行を通常の実験と同じ保存形式で扱う。Optuna専用の結果形式を別途作らず、一つの実験群が複数実験を自動生成する構造とする。</p>
+<div class="flow">Optunaによる実験群
+├─ 試行 0 → 実験 101
+├─ 試行 1 → 実験 102
+├─ 試行 2 → 実験 103
+└─ ...</div>
+</section>
+<section class="card">
+<h2>3. 実験共通設定</h2>
+<h3>3.1 データセット / 交差検証分割</h3>
+<table>
+<thead>
+<tr><th>設定</th><th>概要</th><th>備考</th></tr>
+</thead>
+<tbody>
+<tr><td>データセット版</td><td>確定済みデータセットを選択</td><td>例：v004</td></tr>
+<tr><td>交差検証分割識別子</td><td>学習用と学習内検証用の分割定義</td><td>正式評価用の検証用データセットとは別</td></tr>
+<tr><td>乱数シード</td><td>分割・学習乱数管理</td><td>再現性のため保存</td></tr>
+<tr><td>画像分類</td><td>特定画像分類のみで学習する場合に指定</td><td>画像データの共通メタデータ属性を使用</td></tr>
+<tr><td>品質条件</td><td>品質条件による採否</td><td>良のみ等</td></tr>
+<tr><td>入力画像チャンネル</td><td>使用する照明・画像チャンネル</td><td>将来の複数チャンネル対応</td></tr>
+<tr><td>実使用データ一覧</td><td>絞り込みと分割後に実際に使用したデータ識別ID一覧</td><td>実験のメタデータとして固定保存</td></tr></tbody>
+</table><div class="note">データセット版、画像分類、品質条件、交差検証分割などを適用した結果の実使用データ一覧は、画像側ではなく実験側のメタデータとして保存する。</div>
+<h3>3.2 共通学習設定</h3>
+<table>
+<thead>
+<tr><th>設定</th><th>Cellpose</th><th>マスク R-CNN</th><th>扱い</th></tr>
+</thead>
+<tbody>
+<tr><td>エポック数</td><td>○</td><td>○</td><td>共通</td></tr>
+<tr><td>バッチサイズ</td><td>○</td><td>○</td><td>共通</td></tr>
+<tr><td>学習率</td><td>○</td><td>○</td><td>共通</td></tr>
+<tr><td>重み減衰</td><td>○</td><td>○</td><td>共通</td></tr>
+<tr><td>乱数シード</td><td>○</td><td>○</td><td>共通</td></tr>
+<tr><td>途中保存モデル間隔</td><td>○</td><td>○</td><td>共通</td></tr>
+<tr><td>早期終了</td><td>共通実装可</td><td>共通実装可</td><td>アプリ側で統一可能</td></tr>
+<tr><td>最適化手法</td><td>固有差あり</td><td>固有差あり</td><td>無理に共通化しない</td></tr>
+</tbody>
+</table>
+</section>
+<section class="card">
+<h2>4. マスク R-CNN 固有設定</h2>
+<div class="grid-2">
+<div>
+<h3>モデル / バックボーン</h3>
+<ul>
+<li>事前学習済み重み</li>
+<li>バックボーン</li>
+<li>学習対象バックボーン層数</li>
+<li>クラス数</li>
+</ul>
+<h3>入力画像 / 前処理</h3>
+<ul>
+<li>min_size</li>
+<li>max_size</li>
+<li>image_mean</li>
+<li>image_std</li>
+</ul>
+</div>
+<div>
+<h3>RPN</h3>
+<ul>
+<li>anchor_sizes</li>
+<li>anchor_aspect_ratios</li>
+<li>rpn_fg_iou_thresh</li>
+<li>rpn_bg_iou_thresh</li>
+<li>rpn_batch_size_per_image</li>
+<li>rpn_positive_fraction</li>
+<li>rpn_pre_nms_top_n</li>
+<li>rpn_post_nms_top_n</li>
+<li>rpn_nms_thresh</li>
+</ul>
+<h3>候補領域 / ボックス / マスク</h3>
+<ul>
+<li>box_batch_size_per_image</li>
+<li>box_positive_fraction</li>
+<li>box_fg_iou_thresh</li>
+<li>box_bg_iou_thresh</li>
+<li>候補領域プーリング関連設定</li>
+</ul>
+</div>
+</div>
+<div class="note">
+      RPNやROI関連の詳細設定は、通常画面では折りたたみ「詳細設定」として扱う。
+    </div>
+</section>
+<section class="card">
+<h2>5. Cellpose 固有設定</h2>
+<table>
+<thead>
+<tr><th>項目</th><th>概要</th></tr>
+</thead>
+<tbody>
+<tr><td>事前学習済みモデル</td><td>学習開始モデル</td></tr>
+<tr><td>最適化手法 / SGD設定</td><td>Cellpose側の学習方式</td></tr>
+<tr><td>正規化</td><td>Cellpose固有の正規化</td></tr>
+<tr><td>scale_range</td><td>Cellpose固有の学習時スケール変動</td></tr>
+<tr><td>rescale</td><td>Cellpose内部のリスケール</td></tr>
+<tr><td>bsize</td><td>学習パッチサイズ</td></tr>
+<tr><td>nimg_per_epoch</td><td>1エポックあたりの画像数</td></tr>
+<tr><td>min_train_masks</td><td>学習画像として認める最小マスク数</td></tr>
+<tr><td>class_weights</td><td>必要に応じた重み設定</td></tr>
+</tbody>
+</table>
+<div class="warning">
+      cellprob_threshold、flow_threshold等は主に推論・マスク生成側の設定として扱い、
+      学習設定には混在させない。
+    </div>
+</section>
+<section class="card">
+<h2>6. データ拡張 プロファイル</h2>
+<p>
+      データ拡張は学習画面から独立した詳細設定画面で作成し、
+      実験側では保存済みデータ拡張 プロファイルを参照する。
+    </p>
+<h3>6.1 基本構造</h3>
+<div class="flow">実験
+  └─ augmentation_profile = aug_v003
+
+データ拡張 プロファイル
+  ├─ 幾何変換
+  ├─ 輝度
+  ├─ 画質
+  ├─ チャンネル
+  ├─ 適用確率 / 範囲
+  ├─ 適用順序
+  └─ プレビュー</div>
+<h3>6.2 カテゴリ</h3>
+<div class="grid-2">
+<div>
+<h4>幾何変換</h4>
+<ul>
+<li>左右反転</li>
+<li>上下反転</li>
+<li>回転</li>
+<li>拡大縮小</li>
+<li>平行移動</li>
+<li>切り出し</li>
+<li>弾性変形</li>
+</ul>
+</div>
+<div>
+<h4>輝度・画質変換 / チャンネル</h4>
+<ul>
+<li>明るさ</li>
+<li>コントラスト</li>
+<li>ガンマ</li>
+<li>ガウスぼかし / デフォーカスぼかし</li>
+<li>ガウスノイズ</li>
+<li>チャンネル欠落</li>
+<li>チャンネル強度変動</li>
+</ul>
+</div>
+</div>
+<h3>6.3 各変換の基本設定</h3>
+<pre>Enabled     : ON
+Probability : 0.5
+Range       : -180 ～ +180 deg</pre>
+<h3>6.4 プレビュー</h3>
+<ul>
+<li>元画像</li>
+<li>拡張後画像</li>
+<li>拡張後 マスク</li>
+<li>オーバーレイ</li>
+<li>再生成ボタンで別乱数の変換を確認</li>
+<li>複数パターン表示（例：8パターン）</li>
+<li>データセット / 画像分類 / 画像を選択して確認</li>
+<li>ランダムサンプル表示</li>
+</ul>
+<div class="note">
+      Cellposeのscale_rangeのようなモデル内部のスケール処理は一般データ拡張 プロファイルへ混ぜず、
+      Cellpose固有設定として分離する。
+    </div>
+<h3>6.5 バージョニング</h3>
+<p>
+      実験で使用済みのデータ拡張 プロファイルは後から上書きせず、
+      変更時は新しいプロファイル版を作成する。
+    </p>
+</section>
+<section class="card">
+<h2>7. 途中保存モデル / 評価</h2>
+<h3>7.1 途中保存モデル</h3>
+<ul>
+<li>save_last</li>
+<li>save_best</li>
+<li>save_every_n_epochs</li>
+<li>best_metric</li>
+<li>best_mode = maximize / minimize</li>
+</ul>
+<p>同一実験内に複数途中保存モデルを保持する。</p>
+<pre>exp_0042/
+├─ config.yaml
+├─ metadata.json
+├─ metrics.csv
+├─ logs/
+├─ checkpoints/
+│  ├─ epoch_010.pt
+│  ├─ epoch_020.pt
+│  ├─ best.pt
+│  └─ last.pt
+└─ predictions/</pre>
+<h3>7.2 共通評価指標</h3>
+<ul><li>平均適合率（mAP）</li></ul>
+<p>学習中の主要な自動評価指標は平均適合率（mAP）に統一し、最良の途中保存モデルの選択にも原則としてこの指標を用いる。必要な診断値は内部ログへ追加してよいが、主要な比較項目とはしない。</p>
+</section>
+<section class="card"><h2>8. モデル比較・リリース段階への引き渡し</h2><p>管理者は途中保存モデルを直接本番推論へ割り当てない。本モードでは実験と途中保存モデルまでを確定し、推論設定の比較、検証用データセットでの正式評価、リリース済みモデルの登録、画像分類ごとのモデル振り分けは「モデル比較・リリース」モードで行う。</p><div class="flow">実験
+  ↓
+途中保存モデル
+  ↓
+モデル比較・リリース
+  ↓
+比較候補作成
+  ↓
+正式評価
+  ↓
+リリース済みモデル</div></section>
+<section class="card">
+<h2>9. 画面モック：モデル学習</h2>
+<div class="mock-window">
+<div class="mock-titlebar">気泡セグメンテーションアプリ — モデル学習</div>
+<div class="mock-body">
+<div class="sidebar">
+<div class="nav-item">データ準備</div>
+<div class="nav-item active">モデル学習</div>
+<div class="nav-item">実験一覧</div>
+<div class="nav-item">リリース済みモデル</div>
+<div class="nav-item">推論</div>
+</div>
+<div class="mainpane">
+<div class="form-section">
+<h4>実験</h4>
+<div class="row"><div>実験群</div><div class="input select">manual_study_003</div></div>
+<div class="row"><div>実験識別子</div><div class="input">exp_0042</div></div>
+<div class="row"><div>説明</div><div class="input">分類A / 入力画像サイズ比較</div></div>
+</div>
+<div class="form-section">
+<h4>データセット</h4>
+<div class="row"><div>データセット版</div><div class="input select">v004</div></div>
+<div class="row"><div>学習 / 検証分割</div><div class="input select">split_001</div></div>
+<div class="row"><div>画像分類</div><div class="input select">分類A</div></div>
+<div class="row"><div>乱数シード</div><div class="input">42</div></div>
+</div>
+<div class="form-section">
+<h4>モデル</h4>
+<div class="row"><div>モデル種類</div><div class="input select">マスク R-CNN</div></div>
+<div class="row"><div>事前学習済み重み</div><div class="input select">COCO事前学習済み</div></div>
+<div class="row"><div>バックボーン</div><div class="input select">ResNet50-FPN V2</div></div>
+<div class="row"><div></div><div><span class="pill">モデル固有設定</span><span class="pill">詳細設定</span></div></div>
+</div>
+<div class="form-section">
+<h4>共通学習設定</h4>
+<div class="row"><div>エポック数</div><div class="input">100</div></div>
+<div class="row"><div>バッチサイズ</div><div class="input">4</div></div>
+<div class="row"><div>学習率</div><div class="input">0.0001</div></div>
+<div class="row"><div>重み減衰</div><div class="input">0.0001</div></div>
+</div>
+<div class="form-section">
+<h4>データ拡張</h4>
+<div class="row"><div>プロファイル</div><div class="input select">aug_v003</div></div>
+<div class="btnbar" style="justify-content:flex-start">
+<span class="btn">プレビュー</span>
+<span class="btn">表示 / 編集</span>
+</div>
+</div>
+<div class="form-section">
+<h4>途中保存モデル / 評価</h4>
+<div class="row"><div>保存間隔</div><div class="input">10エポック</div></div>
+<div class="row"><div>最良モデル判定指標</div><div class="input select">インスタンス平均適合率（mAP）</div></div>
+<div class="row"><div>検証間隔</div><div class="input">1エポック</div></div>
+</div>
+<div class="btnbar">
+<span class="btn">設定を検証</span>
+<span class="btn">下書き保存</span>
+<span class="btn primary">学習開始</span>
+</div>
+</div>
+</div>
+</div>
+</section>
+<section class="card">
+<h2>10. 画面モック：Cellpose選択時</h2>
+<div class="mock-window">
+<div class="mock-titlebar">モデル学習 — Cellpose設定</div>
+<div class="mainpane">
+<div class="form-section">
+<h4>モデル</h4>
+<div class="row"><div>モデル種類</div><div class="input select">Cellpose</div></div>
+<div class="row"><div>事前学習済みモデル</div><div class="input select">独自 / 基準プロファイルモデル</div></div>
+<div class="row"><div>正規化</div><div class="input select">有効</div></div>
+<div class="row"><div>scale_range</div><div class="input">...</div></div>
+<div class="row"><div>rescale</div><div class="input select">無効</div></div>
+<div class="row"><div>bsize</div><div class="input">256</div></div>
+<div class="row"><div>nimg_per_epoch</div><div class="input">...</div></div>
+<div class="row"><div>min_train_masks</div><div class="input">...</div></div>
+</div>
+<div class="note">
+          cellprob_threshold / flow_threshold はこの画面ではなく、評価 / 推論設定側で管理する。
+        </div>
+</div>
+</div>
+</section>
+<section class="card">
+<h2>11. 画面モック：データ拡張 プロファイル 編集画面</h2>
+<div class="mock-window">
+<div class="mock-titlebar">データ拡張 プロファイル 編集画面 — aug_v003</div>
+<div class="mock-body" style="grid-template-columns: 360px 1fr;">
+<div class="sidebar" style="background:#fff;">
+<div class="form-section">
+<h4>プロファイル</h4>
+<div class="row" style="grid-template-columns:110px 1fr"><div>名前</div><div class="input">foam_cell_aug_v003</div></div>
+<div class="row" style="grid-template-columns:110px 1fr"><div>ベースプロファイル</div><div class="input select">aug_v002</div></div>
+</div>
+<div class="form-section">
+<h4>幾何変換</h4>
+<div class="row" style="grid-template-columns:140px 1fr"><div>左右反転</div><div class="input">有効 / p=0.5</div></div>
+<div class="row" style="grid-template-columns:140px 1fr"><div>上下反転</div><div class="input">有効 / p=0.5</div></div>
+<div class="row" style="grid-template-columns:140px 1fr"><div>回転</div><div class="input">±180° / p=0.5</div></div>
+<div class="row" style="grid-template-columns:140px 1fr"><div>拡大縮小</div><div class="input">0.8–1.2 / p=0.3</div></div>
+</div>
+<div class="form-section">
+<h4>輝度・画質変換</h4>
+<div class="row" style="grid-template-columns:140px 1fr"><div>明るさ</div><div class="input">±10% / p=0.3</div></div>
+<div class="row" style="grid-template-columns:140px 1fr"><div>コントラスト</div><div class="input">±10% / p=0.3</div></div>
+<div class="row" style="grid-template-columns:140px 1fr"><div>ぼかし</div><div class="input">p=0.2</div></div>
+<div class="row" style="grid-template-columns:140px 1fr"><div>ノイズ</div><div class="input">p=0.2</div></div>
+</div>
+<div class="form-section">
+<h4>適用順序</h4>
+<ol>
+<li>拡大縮小</li>
+<li>切り出し</li>
+<li>Flip</li>
+<li>回転</li>
+<li>明るさ / コントラスト</li>
+<li>ノイズ / ぼかし</li>
+</ol>
+</div>
+</div>
+<div class="mainpane">
+<div class="form-section">
+<h4>プレビュー 画像</h4>
+<div class="row"><div>データセット</div><div class="input select">v004</div></div>
+<div class="row"><div>画像分類</div><div class="input select">分類A</div></div>
+<div class="row"><div>画像</div><div class="input select">img_00123</div></div>
+<div class="btnbar" style="justify-content:flex-start">
+<span class="btn">ランダム画像</span>
+<span class="btn">再生成</span>
+<span class="btn">8パターン表示</span>
+</div>
+</div>
+<div class="preview-grid">
+<div><strong>元画像</strong><div class="preview-box">元画像</div></div>
+<div><strong>拡張後</strong><div class="preview-box">拡張後画像</div></div>
+<div><strong>マスク</strong><div class="preview-box">拡張後 マスク</div></div>
+<div><strong>オーバーレイ</strong><div class="preview-box">オーバーレイ</div></div>
+</div>
+<div class="btnbar">
+<span class="btn">キャンセル</span>
+<span class="btn primary">新しい版として保存</span>
+</div>
+</div>
+</div>
+</div>
+</section>
+<section class="card">
+<h2>12. 画面モック：実験一覧・比較</h2>
+<div class="mock-window">
+<div class="mock-titlebar">実験一覧</div>
+<div class="mainpane">
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>モデル</th>
+<th>データセット</th>
+<th>データ拡張</th>
+<th>状態</th>
+<th>最良 mAP</th>
+<th>途中保存モデル</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>exp_0042</td>
+<td>マスク R-CNN</td>
+<td>v004</td>
+<td>aug_v003</td>
+<td>完了</td>
+<td>0.412</td>
+<td>best.pt</td>
+</tr>
+<tr>
+<td>exp_0043</td>
+<td>Cellpose</td>
+<td>v004</td>
+<td>aug_v003</td>
+<td>完了</td>
+<td>0.398</td>
+<td>best</td>
+</tr>
+<tr>
+<td>exp_0044</td>
+<td>マスク R-CNN</td>
+<td>v004</td>
+<td>aug_v004</td>
+<td>実行中</td>
+<td>—</td>
+<td>epoch_020</td>
+</tr>
+</tbody>
+</table>
+<div class="btnbar" style="justify-content:flex-start">
+<span class="btn">選択した実験を比較</span>
+<span class="btn">結果を開く</span>
+<span class="btn">作成 リリース済みモデル</span>
+</div>
+</div>
+</div>
+</section>
+<section class="card"><h2>13. 画面モック：モデル比較への引き渡し</h2><div class="mock-window"><div class="mock-titlebar">モデル比較へ送る</div><div class="mainpane"><div class="form-section"><div class="row"><div>実験</div><div class="input select">exp_0042</div></div><div class="row"><div>途中保存モデル</div><div class="input select">best.pt</div></div><div class="row"><div>説明</div><div class="input">分類A / 入力画像サイズ比較</div></div></div><div class="note">前処理設定・推論設定を含む比較候補の作成と正式リリースは、モデル比較・リリースモードで行う。</div><div class="btnbar"><span class="btn">キャンセル</span><span class="btn primary">モデル比較へ送る</span></div></div></div></section>
+<section class="card">
+<h2>14. 設定項目一覧と説明</h2>
+<p>
+      画面上ではできる限り日本語名を使用し、実装上の設定キーは内部管理用として英語で保持する。
+      以下は現時点で想定する主要設定項目の一覧である。
+    </p>
+<h3>14.1 共通設定</h3>
+<table>
+<thead>
+<tr>
+<th>画面表示名</th>
+<th>内部キー例</th>
+<th>説明</th>
+<th>対象</th>
+</tr>
+</thead>
+<tbody>
+<tr><td>データセット版</td><td>dataset_version</td><td>学習に使用する確定済みデータセットの版。例：v004。</td><td>共通</td></tr>
+<tr><td>交差検証分割</td><td>split_id</td><td>学習用・検証用にどの画像を割り当てるかを定義した分割ID。</td><td>共通</td></tr>
+<tr><td>乱数シード</td><td>seed</td><td>データ分割や学習中の乱数を固定し、再現性を高めるための値。</td><td>共通</td></tr>
+<tr><td>画像分類</td><td>classification</td><td>特定分類のみで学習する場合の対象分類。全分類を対象とする設定も可能。</td><td>共通</td></tr>
+<tr><td>品質条件</td><td>quality_filter</td><td>学習対象に含めるデータ品質の条件。例：Goodのみ。</td><td>共通</td></tr>
+<tr><td>入力チャンネル</td><td>input_channels</td><td>複数照明や複数画像チャンネルのうち、学習へ入力するものを指定する。</td><td>共通</td></tr>
+<tr><td>エポック数</td><td>epochs</td><td>学習データ全体を何周学習するかを指定する。</td><td>共通</td></tr>
+<tr><td>バッチサイズ</td><td>batch_size</td><td>1回の更新で同時に処理する画像数。GPUメモリ使用量にも影響する。</td><td>共通</td></tr>
+<tr><td>学習率</td><td>learning_rate</td><td>1回の更新でモデルの重みをどの程度変化させるかを決める。</td><td>共通</td></tr>
+<tr><td>重み減衰</td><td>weight_decay</td><td>過学習抑制を目的とした正則化係数。</td><td>共通</td></tr>
+<tr><td>データ拡張プロファイル</td><td>augmentation.profile</td><td>学習時に使用する回転、反転、明るさ変化等の組合せを定義したプロファイル。</td><td>共通</td></tr>
+<tr><td>検証間隔</td><td>validation_interval</td><td>何エポックごとに検証データで性能評価するかを指定する。</td><td>共通</td></tr>
+<tr><td>途中保存モデル保存間隔</td><td>save_every</td><td>何エポックごとに途中モデルを保存するかを指定する。</td><td>共通</td></tr>
+<tr><td>最良モデル判定指標</td><td>best_metric</td><td>best途中保存モデルを決定するために用いる評価指標。例：インスタンス平均適合率（mAP）。</td><td>共通</td></tr>
+<tr><td>実使用データ一覧</td><td>used_item_ids</td><td>絞り込み・分割後に実際に学習または学習内検証へ使用したデータ識別ID一覧。実験開始時に固定保存する。</td><td>共通</td></tr></tbody>
+</table>
+<h3>14.2 Mask R-CNN 固有設定</h3>
+<table>
+<thead>
+<tr>
+<th>画面表示名</th>
+<th>内部キー例</th>
+<th>説明</th>
+</tr>
+</thead>
+<tbody>
+<tr><td>事前学習済み重み</td><td>pretrained_weights</td><td>学習開始時に読み込む既存モデルの重み。転移学習の初期値として使用する。</td></tr>
+<tr><td>バックボーン</td><td>backbone</td><td>画像特徴を抽出するネットワーク。例：ResNet50-FPN V2。</td></tr>
+<tr><td>学習するバックボーン層数</td><td>trainable_backbone_layers</td><td>バックボーンのうち、学習対象として更新する層数。</td></tr>
+<tr><td>入力画像の短辺サイズ</td><td>min_size</td><td>モデル入力時に画像をリサイズする際の短辺側の基準サイズ。</td></tr>
+<tr><td>入力画像の最大辺サイズ</td><td>max_size</td><td>リサイズ後の画像長辺が超えないようにする最大サイズ。</td></tr>
+<tr><td>アンカーサイズ</td><td>anchor_sizes</td><td>RPNが物体候補を探索する際に用いる基準サイズ。対象物サイズとの適合が重要。</td></tr>
+<tr><td>アンカー縦横比</td><td>anchor_aspect_ratios</td><td>RPNアンカーの縦横比候補。</td></tr>
+<tr><td>RPN前景IoU閾値</td><td>rpn_fg_iou_thresh</td><td>アンカーを前景として扱うためのIoU閾値。</td></tr>
+<tr><td>RPN背景IoU閾値</td><td>rpn_bg_iou_thresh</td><td>アンカーを背景として扱うためのIoU閾値。</td></tr>
+<tr><td>RPNバッチ数 / 画像</td><td>rpn_batch_size_per_image</td><td>1画像あたりRPN学習に使用するアンカーサンプル数。</td></tr>
+<tr><td>RPN正例割合</td><td>rpn_positive_fraction</td><td>RPN学習用サンプルに含める正例の割合。</td></tr>
+<tr><td>RPN NMS閾値</td><td>rpn_nms_thresh</td><td>重複するRegion Proposalを抑制するNMSのIoU閾値。</td></tr>
+<tr><td>Box前景IoU閾値</td><td>box_fg_iou_thresh</td><td>ROIを前景として扱うためのIoU閾値。</td></tr>
+<tr><td>Box背景IoU閾値</td><td>box_bg_iou_thresh</td><td>ROIを背景として扱うためのIoU閾値。</td></tr>
+<tr><td>ROIバッチ数 / 画像</td><td>box_batch_size_per_image</td><td>1画像あたりBox Head学習に使用するROI数。</td></tr>
+<tr><td>ROI正例割合</td><td>box_positive_fraction</td><td>Box Head学習用ROIサンプルに含める正例の割合。</td></tr>
+</tbody>
+</table>
+<h3>14.3 Cellpose 固有設定</h3>
+<table>
+<thead>
+<tr>
+<th>画面表示名</th>
+<th>内部キー例</th>
+<th>説明</th>
+</tr>
+</thead>
+<tbody>
+<tr><td>事前学習済みモデル</td><td>pretrained_model</td><td>Cellpose学習開始時に使用する既存モデル。</td></tr>
+<tr><td>最適化手法</td><td>optimizer / SGD</td><td>学習時の重み更新方法。Cellpose側の実装に合わせて設定する。</td></tr>
+<tr><td>正規化</td><td>normalize</td><td>Cellposeへ入力する画像の輝度スケール等を正規化する設定。</td></tr>
+<tr><td>スケール変動幅</td><td>scale_range</td><td>Cellpose固有の学習時スケール変動。一般的な画像拡大縮小とは区別して管理する。</td></tr>
+<tr><td>リスケール</td><td>rescale</td><td>Cellpose内部で画像サイズを調整する設定。</td></tr>
+<tr><td>学習パッチサイズ</td><td>bsize</td><td>学習時に切り出して使用する画像パッチのサイズ。</td></tr>
+<tr><td>1エポック当たり画像数</td><td>nimg_per_epoch</td><td>1エポック中に学習へ使用する画像数。</td></tr>
+<tr><td>最小マスク数</td><td>min_train_masks</td><td>学習対象画像として採用するために必要な最小インスタンス数。</td></tr>
+<tr><td>クラス重み</td><td>class_weights</td><td>必要に応じてクラス不均衡等を補正するための重み。</td></tr>
+</tbody>
+</table>
+<h3>14.4 データ拡張設定</h3>
+<table>
+<thead>
+<tr>
+<th>画面表示名</th>
+<th>内部キー例</th>
+<th>説明</th>
+</tr>
+</thead>
+<tbody>
+<tr><td>有効 / 無効</td><td>enabled</td><td>そのデータ拡張を使用するかどうか。</td></tr>
+<tr><td>適用確率</td><td>probability</td><td>各画像に対して、その変換を適用する確率。</td></tr>
+<tr><td>変換範囲</td><td>range</td><td>回転角度、明るさ変化量、拡大縮小率などの乱数範囲。</td></tr>
+<tr><td>左右反転</td><td>horizontal_flip</td><td>画像とマスクを左右反転する。</td></tr>
+<tr><td>上下反転</td><td>vertical_flip</td><td>画像とマスクを上下反転する。</td></tr>
+<tr><td>回転</td><td>rotation</td><td>指定角度範囲で画像とマスクを回転する。</td></tr>
+<tr><td>拡大縮小</td><td>scale</td><td>指定倍率範囲で画像とマスクを拡大・縮小する。</td></tr>
+<tr><td>明るさ変化</td><td>brightness</td><td>入力画像の明るさをランダムに変更する。</td></tr>
+<tr><td>コントラスト変化</td><td>contrast</td><td>入力画像のコントラストをランダムに変更する。</td></tr>
+<tr><td>ぼかし</td><td>blur</td><td>ピンぼけ等への頑健性を持たせるために画像をぼかす。</td></tr>
+<tr><td>ノイズ付与</td><td>noise</td><td>撮像ノイズ等を模したランダムノイズを加える。</td></tr>
+<tr><td>チャンネルドロップ</td><td>channel_dropout</td><td>複数チャンネルの一部を意図的に弱める、または無効化する変換。</td></tr>
+<tr><td>適用順序</td><td>pipeline_order</td><td>複数のデータ拡張をどの順番で適用するかを定義する。</td></tr>
+</tbody>
+</table>
+<h3>14.5 推論側へ分離して管理する設定</h3>
+<table>
+<thead>
+<tr>
+<th>画面表示名</th>
+<th>内部キー例</th>
+<th>説明</th>
+<th>対象</th>
+</tr>
+</thead>
+<tbody>
+<tr><td>検出スコア閾値</td><td>box_score_thresh</td><td>Mask R-CNNで採用する検出候補の最低スコア。</td><td>Mask R-CNN</td></tr>
+<tr><td>Box NMS閾値</td><td>box_nms_thresh</td><td>重複検出を抑制するためのNMS閾値。</td><td>Mask R-CNN</td></tr>
+<tr><td>最大検出数</td><td>box_detections_per_img</td><td>1画像あたりに残す最大検出数。</td><td>Mask R-CNN</td></tr>
+<tr><td>セル確率閾値</td><td>cellprob_threshold</td><td>Cellposeでマスク生成に使用するセル確率の閾値。</td><td>Cellpose</td></tr>
+<tr><td>フロー閾値</td><td>flow_threshold</td><td>Cellposeでマスク品質判定に使用するフロー誤差の閾値。</td><td>Cellpose</td></tr>
+</tbody>
+</table>
+<div class="note">
+      画面表示は日本語を優先し、内部キーは設定ファイル・ログ・Optuna連携・再現性確保のため英語名で保持する。
+      これにより、ユーザー操作性と実装上の一貫性を両立する。
+    </div>
+</section>
+<section class="card">
+<h2>15. 実験設定例</h2>
+<h3>マスク R-CNN</h3>
+<pre>experiment:
+  id: exp_0042
+  study_id: study_003
+
+data:
+  dataset_version: v004
+  split_id: split_001
+  used_item_ids: used_items_exp.csv
+  seed: 42
+  classification: type_A
+
+training:
+  epochs: 100
+  batch_size: 4
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+
+augmentation:
+  profile: aug_v003
+
+model:
+  type: mask_rcnn
+  pretrained_weights: coco
+  backbone: resnet50_fpn_v2
+
+  input:
+    min_size: 1024
+    max_size: 1536
+
+  anchors:
+    sizes: [...]
+    aspect_ratios: [...]
+
+  rpn:
+    positive_fraction: 0.5
+
+  roi:
+    batch_size_per_image: 512
+    positive_fraction: 0.25
+
+checkpoint:
+  save_every: 10
+  save_best: true
+  best_metric: instance_map</pre>
+<h3>Cellpose</h3>
+<pre>experiment:
+  id: exp_0043
+  study_id: study_003
+
+data:
+  dataset_version: v004
+  split_id: split_001
+  used_item_ids: used_items_exp.csv
+  seed: 42
+  classification: type_A
+
+training:
+  epochs: 100
+  batch_size: 4
+  learning_rate: 0.00001
+  weight_decay: 0.1
+
+augmentation:
+  profile: aug_v003
+
+model:
+  type: cellpose
+  pretrained_model: base_model
+  normalize: true
+  scale_range: ...
+  rescale: false
+  bsize: 256
+
+checkpoint:
+  save_every: 10
+  save_best: true
+  best_metric: instance_map</pre>
+</section>
+<section class="card">
+<h2>16. 現時点の設計原則まとめ</h2>
+<ol><li>初期対応モデルはCellposeとMask R-CNN。</li><li>共通の学習流れとモデル固有設定を分離する。</li><li>一つの論理設定を一つの実験とする。</li><li>同一設定の再試行は実行試行として管理する。</li><li>Optunaの各試行も通常実験と同じ保存形式を使用する。</li><li>学習内の性能確認には交差検証分割を使用し、正式評価用の検証用データセットとは分離する。</li><li>実際に使用したデータ識別ID一覧を実験のメタデータとして保存する。</li><li>データ拡張設定は使用後に上書きせず新しい版を作る。</li><li>学習設定と推論設定を分離する。</li><li>学習中の主要自動評価指標は平均適合率（mAP）とする。</li><li>正式な比較候補作成・リリース・モデル振り分けはモデル比較・リリースモードで行う。</li></ol>
+</section>
+</div>
+</body>
+</html>

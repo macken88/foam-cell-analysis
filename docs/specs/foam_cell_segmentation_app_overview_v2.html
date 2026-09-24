@@ -1,0 +1,36 @@
+<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>気泡 インスタンスセグメンテーションアプリ - 全体概要</title><style>
+body{margin:0;background:#f5f7fa;color:#1f2937;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Yu Gothic","Meiryo",sans-serif;line-height:1.72}
+.container{max-width:1180px;margin:0 auto;padding:36px 22px 72px}.hero,.card{background:#fff;border:1px solid #dbe2ea;border-radius:14px;box-shadow:0 2px 10px rgba(17,24,39,.035)}
+.hero{padding:32px;margin-bottom:22px}.card{padding:26px;margin:20px 0}h1,h2,h3{line-height:1.35;color:#172033}h1{margin:0 0 10px;font-size:2rem}h2{margin-top:0;padding-bottom:8px;border-bottom:2px solid #e8ebf0;font-size:1.4rem}h3{margin-top:26px;font-size:1.12rem}.small{color:#6b7280;font-size:.93rem}.note{background:#eff6ff;border-left:5px solid #2563eb;padding:14px 16px;border-radius:9px;margin:16px 0}.warning{background:#fff7e8;border-left:5px solid #d69e2e;padding:14px 16px;border-radius:9px;margin:16px 0}.success{background:#ecfdf3;border-left:5px solid #15803d;padding:14px 16px;border-radius:9px;margin:16px 0}table{width:100%;border-collapse:collapse;margin:14px 0 24px;background:#fff}th,td{border:1px solid #dbe2ea;padding:10px 12px;text-align:left;vertical-align:top}th{background:#f1f4f8}pre{background:#111827;color:#f9fafb;padding:18px;border-radius:10px;overflow-x:auto;white-space:pre-wrap;font-family:Consolas,"Courier New",monospace}.flow{background:#fafbfc;border:1px dashed #c8d0da;border-radius:10px;padding:18px;white-space:pre-wrap;font-family:Consolas,"Courier New",monospace}.grid-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.mock{border:1px solid #cfd6df;border-radius:12px;overflow:hidden;background:#fff;margin:16px 0 28px}.mock-title{background:#eef2f6;padding:10px 14px;font-weight:700;border-bottom:1px solid #d6dde6}.mock-body{padding:20px}.row{display:grid;grid-template-columns:220px 1fr;gap:14px;padding:7px 0}.input{border:1px solid #cbd5e1;border-radius:7px;padding:8px 10px}.btns{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}.btn{padding:8px 14px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;font-weight:600}.primary{background:#2563eb;color:#fff;border-color:#2563eb}@media(max-width:900px){.row,.grid-2{grid-template-columns:1fr}}
+</style></head><body><div class="container">
+<section class="hero"><h1>気泡 インスタンスセグメンテーションアプリ<br>全体概要</h1><p>顕微鏡画像などから気泡をインスタンス単位で検出し、モデル開発から本番推論までを一貫して管理するためのアプリである。</p><p class="small">本書は全体像のみを示す。詳細な操作・データ構造・設定項目は各仕様書を参照する。</p></section>
+<section class="card"><h2>1. アプリの目的</h2><ul><li>気泡検出用の画像・アノテーションを整理し、再現可能な形で版管理する。</li><li>CellposeやMask R-CNNなどのモデルを同じ流れで学習・比較する。</li><li>検証用データセットを使って候補モデルを比較し、正式に使用するモデルを決める。</li><li>画像分類に応じて、本番推論に使用するモデルを切り替えられるようにする。</li></ul></section>
+<section class="card"><h2>2. アプリだけで完結しない処理</h2><p>本アプリは、画像解析工程のすべてを置き換えるものではない。役割を明確に分け、外部ソフトウェアと組み合わせて使用する。</p><table><thead><tr><th>処理</th><th>担当</th></tr></thead><tbody><tr><td>アノテーション作成・修正</td><td>外部アノテーションソフトウェア</td></tr><tr><td>データ整理・版管理</td><td>本アプリ</td></tr><tr><td>モデル学習</td><td>本アプリ</td></tr><tr><td>モデル比較・リリース管理</td><td>本アプリ</td></tr><tr><td>本番推論</td><td>本アプリ</td></tr><tr><td>粒子径などの最終解析</td><td>外部粒子解析ソフトウェア</td></tr></tbody></table></section>
+<section class="card"><h2>3. 全体の流れ</h2><div class="flow">原画像取得
+  ↓
+外部ソフトウェアでアノテーション
+  ↓
+データ準備
+  ├─ 学習用データセット
+  └─ 検証用データセット
+  ↓
+モデル学習
+  ├─ 交差検証分割
+  ├─ 実験
+  └─ 途中保存モデル
+  ↓
+モデル比較・リリース
+  ├─ 推論設定の比較
+  ├─ 検証用データセットで平均適合率を評価
+  ├─ 必要に応じて外部粒子解析
+  └─ 正式モデルをリリース
+  ↓
+画像分類ごとのモデル振り分け
+  ↓
+本番推論</div></section>
+<section class="card"><h2>4. 三つの管理者向け機能</h2><div class="grid-2"><div><h3>データ準備</h3><p>画像、複数画像チャンネル、マスク、画像分類、品質などを管理し、学習用・検証用データセットを版管理する。</p></div><div><h3>モデル学習</h3><p>学習用データセットを使って実験を実行し、設定、実使用データ、評価結果、途中保存モデルを記録する。</p></div><div><h3>モデル比較・リリース</h3><p>学習済みモデルに推論設定を組み合わせ、検証用データセットで比較したうえで正式モデルを決定する。</p></div><div><h3>本番推論</h3><p>画像分類に応じて有効なリリース済みモデルを選択し、気泡マスクを出力する。</p></div></div></section>
+<section class="card"><h2>5. 重要な前提</h2><ul><li>学習用データセットと正式評価用の検証用データセットは分離する。</li><li>学習中の性能確認には学習用データセット内部の交差検証分割を使用する。</li><li>画像分類は撮影対象自体が持つ共通メタデータであり、学習対象の絞り込み、分類別評価、本番モデル振り分けに共通利用する。</li><li>確定済みデータセット、使用済み設定、リリース済みモデルは原則として上書きしない。</li><li>正式リリース後も外部粒子解析ソフトウェアと組み合わせて最終的な粒子解析を行う。</li></ul></section>
+
+<section class="card"><h2>6. 画面実装の前提</h2><ul><li>本アプリはWindows上で動作するデスクトップアプリを基本とする。</li><li>画面部分はPySide6を使用し、Qt Widgetsを中心に構築する。</li><li>画面処理と、データ管理・モデル学習・推論などの処理は分離し、画面変更が解析処理へ直接影響しにくい構成とする。</li></ul></section>
+<section class="card"><h2>7. 詳細仕様書</h2><ul><li>データ準備モード仕様：画像・マスク・メタデータ・データセット版管理</li><li>モデル学習モード仕様：実験、交差検証、学習設定、途中保存モデル</li><li>モデル比較・リリース仕様：推論設定、検証用データセット、正式リリース、モデル振り分け</li></ul></section>
+</div></body></html>

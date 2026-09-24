@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# 実行時データ（ディレクトリ構成のみ管理）
+workspace/**
+!workspace/*/
+!workspace/*/.gitkeep
+
+# モデル重み
+*.pt
+*.pth
+
+# IDE / OS
+.vscode/
+.idea/
+Thumbs.db

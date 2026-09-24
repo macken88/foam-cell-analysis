@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+
+<html lang="ja">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>気泡 インスタンスセグメンテーションアプリ - モデル比較・リリース仕様</title>
+<style>
+body{margin:0;background:#f5f7fa;color:#1f2937;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Yu Gothic","Meiryo",sans-serif;line-height:1.72}
+.container{max-width:1180px;margin:0 auto;padding:36px 22px 72px}
+.hero,.card{background:#fff;border:1px solid #dbe2ea;border-radius:14px;box-shadow:0 2px 10px rgba(17,24,39,.035)}
+.hero{padding:32px;margin-bottom:22px}.card{padding:26px;margin:20px 0}
+h1,h2,h3{line-height:1.35;color:#172033}h1{margin:0 0 10px;font-size:2rem}
+h2{margin-top:0;padding-bottom:8px;border-bottom:2px solid #e8ebf0;font-size:1.4rem}
+h3{margin-top:26px;font-size:1.12rem}.small{color:#6b7280;font-size:.93rem}
+.note{background:#eff6ff;border-left:5px solid #2563eb;padding:14px 16px;border-radius:9px;margin:16px 0}
+table{width:100%;border-collapse:collapse;margin:14px 0 24px;background:#fff}
+th,td{border:1px solid #dbe2ea;padding:10px 12px;text-align:left;vertical-align:top}th{background:#f1f4f8}
+pre{background:#111827;color:#f9fafb;padding:18px;border-radius:10px;overflow-x:auto;white-space:pre-wrap;font-family:Consolas,"Courier New",monospace}
+.flow{background:#fafbfc;border:1px dashed #c8d0da;border-radius:10px;padding:18px;white-space:pre-wrap;font-family:Consolas,"Courier New",monospace}
+.mock{border:1px solid #cfd6df;border-radius:12px;overflow:hidden;background:#fff;margin:16px 0 28px}
+.title{background:#eef2f6;padding:10px 14px;font-weight:700;border-bottom:1px solid #d6dde6}
+.body{padding:20px}.section{border:1px solid #e0e5ec;border-radius:10px;padding:15px;margin-bottom:15px}
+.row{display:grid;grid-template-columns:200px 1fr;gap:14px;padding:7px 0}.input{border:1px solid #cbd5e1;border-radius:7px;padding:8px 10px}
+.btns{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}.btn{padding:8px 14px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;font-weight:600}
+.primary{background:#2563eb;color:#fff;border-color:#2563eb}
+.preview{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.box{min-height:170px;border:1px solid #d5dce5;border-radius:8px;background:#f3f4f6;display:flex;align-items:center;justify-content:center;text-align:center;color:#64748b;font-weight:700}
+@media(max-width:900px){.row,.preview{grid-template-columns:1fr}}
+</style>
+</head>
+<body><div class="container">
+<section class="hero">
+<h1>気泡 インスタンスセグメンテーションアプリ<br/>モデル比較・リリース仕様</h1>
+<p>学習済みモデルと推論設定の組み合わせを比較し、外部ソフトでの粒子径解析結果も踏まえて正式なリリースモデルを決定する管理者向け機能の仕様。</p>
+<p class="small">初期前提：Cellpose / Mask R-CNN、推論時アンサンブルなし。</p>
+</section>
+<section class="card">
+<h2>1. 目的</h2>
+<ul>
+<li>学習済み実験と途中保存モデルからリリース候補を登録する。</li>
+<li>同一途中保存モデルでも推論設定が異なる場合は別候補として扱う。</li>
+<li>複数候補を同一画像上で比較する。</li>
+<li>必要に応じて外部粒子解析結果を手入力で候補へ記録する。</li>
+<li>平均適合率（mAP）を全体および画像分類ごとに算出し、各分類の件数を保持する。</li>
+<li>最終的にリリース済みモデルとして固定し、モデル振り分けへ割り当てる。</li>
+</ul>
+</section>
+<section class="card">
+<h2>2. 基本フロー</h2>
+<div class="flow">学習実験
+    ↓
+途中保存モデル選択
+    ↓
+推論設定を決定
+    ↓
+比較候補として登録
+    ↓
+検証用データセットで平均適合率を評価
+    ↓
+複数候補を選択
+    ↓
+同一画像でマスク比較
+    ↓
+必要に応じて粒子解析用マスク出力
+    ↓
+外部ソフトウェアで粒子解析
+    ↓
+結果・コメントを手入力
+    ↓
+リリース済みモデルとして登録
+    ↓
+画像分類ごとのモデル振り分けへ割り当て</div>
+</section>
+<section class="card">
+<h2>3. リリース候補</h2>
+<table>
+<thead><tr><th>項目</th><th>内容</th></tr></thead>
+<tbody>
+<tr><td>候補識別子</td><td>RC-001等の一意な識別子。</td></tr>
+<tr><td>モデル</td><td>Mask R-CNN / Cellpose。</td></tr>
+<tr><td>実験</td><td>元となる学習実験。</td></tr>
+<tr><td>途中保存モデル</td><td>best.pt等。</td></tr>
+<tr><td>推論設定</td><td>モデル固有の閾値等を保存した設定。</td></tr>
+<tr><td>評価値</td><td>外部粒子解析から得た値。</td></tr>
+<tr><td>コメント</td><td>目視所見・注意事項。</td></tr>
+<tr><td>状態</td><td>候補 / リリース済み / 非採用等。</td></tr>
+</tbody>
+</table>
+<div class="note">学習実験と比較候補は分離する。同一の途中保存モデルでも推論閾値などが異なれば別候補として比較できる。画像分類は候補固有の属性ではなく、画像データ側の共通メタデータとして分類別評価や本番のモデル振り分けに使用する。</div>
+</section>
+<section class="card">
+<h2>4. 推論設定</h2>
+<p>推論設定は学習設定とは分離して保存し、途中保存モデルと組み合わせてリリース候補を構成する。</p>
+<h3>Mask R-CNNの例</h3>
+<ul><li>検出スコア閾値</li><li>ボックス重複抑制閾値</li><li>最大検出数</li></ul>
+<h3>Cellposeの例</h3>
+<ul><li>セル確率閾値</li><li>フロー閾値</li></ul>
+</section>
+<section class="card">
+<h2>5. 本アプリ内の後処理</h2>
+<p>後処理は、後段ソフトへ渡すための<strong>隣接気泡の分離処理のみ</strong>とする。</p>
+<div class="flow">インスタンスラベル
+    ↓
+異なるインスタンス同士の8近傍接触を検出
+    ↓
+接触境界を背景化
+    ↓
+8近傍で別粒子になっていることを確認
+    ↓
+粒子解析用二値マスク</div>
+<ul>
+<li>角で1ピクセルでも接触している場合を分離対象とする。</li>
+<li>微小物除去、穴埋め、平滑化等は後段ソフトへ任せる。</li>
+<li>粒子分離処理は固定アルゴリズムとして扱い、通常のモデル比較・リリース設定には含めない。将来変更した場合はアプリ版で追跡する。</li>
+</ul>
+</section>
+<section class="card">
+<h2>6. 出力マスク</h2>
+<table>
+<thead><tr><th>出力</th><th>用途</th></tr></thead>
+<tbody>
+<tr><td>インスタンスラベルマスク</td><td>モデル出力の保存・追跡用。各気泡が別識別子を持つ。</td></tr>
+<tr><td>粒子解析用二値マスク</td><td>外部粒子解析ソフトへの入力用。隣接気泡を分離済み。</td></tr>
+</tbody>
+</table>
+<p>ファイル形式は後段ソフトに合わせ、PNG / TIFF等から選択可能とする。</p>
+</section>
+<section class="card">
+<h2>7. 検証データセット</h2>
+<p>外部粒子解析および正式なモデル比較に使用するデータは、学習用データセットとは別に検証用データセットとして版管理する。学習中の交差検証分割とは別概念である。</p>
+<pre>検証用データセット
+val_v001
+val_v002
+val_v003</pre>
+<p>学習用データセット側は、基準とする検証用データセットを参照情報として保持する。</p>
+<pre>Training Dataset : train_v008
+Base Training    : train_v007
+Validation Set   : val_v003</pre>
+<p>学習用データセット確定時には、検証用データセットとの重複をチェックし、検証データの学習混入を防止する。</p>
+</section>
+<section class="card">
+<h2>8. 検証データの保存情報</h2>
+<table>
+<thead><tr><th>項目</th><th>意味</th></tr></thead>
+<tbody>
+<tr><td>データ識別子</td><td>各画像を一意に識別するID。</td></tr>
+<tr><td>元ファイル名</td><td>取り込み元でのファイル名。</td></tr>
+<tr><td>元ディレクトリからの相対パス</td><td>元データの出所を追跡する情報。</td></tr>
+<tr><td>内容ハッシュ（SHA-256等）</td><td>取り込み時点のファイル内容を識別する固定長の指紋。</td></tr>
+<tr><td>データ保管領域内の保存先</td><td>アプリ管理領域内の正式コピー。</td></tr>
+<tr><td>分類等のメタデータ</td><td>画像分類・品質等。</td></tr>
+<tr><td>検証用データセット 版</td><td>どの検証用データセットに属するか。</td></tr>
+</tbody>
+</table>
+<div class="note">相対パスは「どこから来たデータか」、ハッシュは「その時点の中身が何だったか」を示す。</div>
+</section>
+<section class="card"><h2>9. 評価指標</h2><p>アプリ内で自動算出する主要評価指標は平均適合率（mAP）とする。全検証データでの値に加え、画像分類ごとの値と件数を保持する。</p><table><thead><tr><th>指標</th><th>全体</th><th>分類A</th><th>分類B</th><th>分類C</th></tr></thead><tbody><tr><td>平均適合率（mAP）</td><td>...</td><td>...</td><td>...</td><td>...</td></tr><tr><td>対象件数</td><td>233</td><td>120</td><td>18</td><td>95</td></tr></tbody></table><h3>9.1 外部粒子解析結果</h3><p>粒子径などの解析は外部ソフトウェアで実施し、必要に応じて結果とコメントを比較候補へ手入力する。外部粒子解析結果は補助評価とし、アプリ内では自動算出しない。</p></section>
+<section class="card">
+<h2>10. マスク比較</h2>
+<ul>
+<li>候補一覧から複数候補を選択して比較画面を開く。</li>
+<li>同一画像に対する各候補の結果を横並び表示する。</li>
+<li>画像分類による絞り込みを可能にする。</li>
+<li>表示形式をオーバーレイ / インスタンスラベル / 粒子解析用二値マスクから切り替える。</li>
+<li>ズーム・パンを候補間で同期する。</li>
+</ul>
+</section>
+<section class="card">
+<h2>11. リリース済みモデル</h2>
+<pre>リリース済みモデル
+├─ model_id
+├─ experiment_id
+├─ checkpoint
+├─ preprocessing_config
+├─ inference_config
+├─ validation_dataset
+├─ evaluation_result
+├─ released_at
+└─ comment</pre>
+<p>リリース後に設定変更する場合は上書きせず、新しいリリース済みモデルを作成する。</p>
+</section>
+<section class="card">
+<h2>12. モデル振り分け</h2>
+<pre>Type A → model_007
+Type B → model_012
+Type C → model_007</pre>
+<ul>
+<li>同一モデルを複数分類へ割り当て可能。</li>
+<li>分類ごとに別モデルを割り当て可能。</li>
+<li>新しいリリース済みモデルを作成しても自動的に本番へ切り替えない。</li>
+<li>管理者が明示的に有効モデルを変更する。</li>
+</ul>
+</section>
+<section class="card">
+<h2>13. 画面モック：リリース候補一覧</h2>
+<div class="mock">
+<div class="title">モデル比較・リリース</div>
+<div class="body">
+<table>
+<thead><tr><th>選択</th><th>候補識別子</th><th>モデル</th><th>実験</th><th>途中保存モデル</th><th>平均適合率</th><th>状態</th></tr></thead>
+<tbody>
+<tr><td>☑</td><td>RC-001</td><td>Mask R-CNN</td><td>exp_0042</td><td>best.pt</td><td>0.91</td><td>候補</td></tr>
+<tr><td>☑</td><td>RC-002</td><td>Cellpose</td><td>exp_0051</td><td>best</td><td>0.89</td><td>候補</td></tr>
+<tr><td>☐</td><td>RC-003</td><td>Mask R-CNN</td><td>exp_0060</td><td>epoch_080</td><td>0.93</td><td>候補</td></tr>
+</tbody>
+</table>
+<div class="btns">
+<span class="btn">候補を追加</span><span class="btn">詳細評価を見る</span><span class="btn">マスク比較</span><span class="btn primary">選択候補をリリース</span>
+</div>
+</div>
+</div>
+</section>
+<section class="card">
+<h2>14. 画面モック：マスク比較</h2>
+<div class="mock">
+<div class="title">マスク比較</div>
+<div class="body">
+<div class="section">
+<div class="row"><div>検証データセット</div><div class="input">val_v003</div></div>
+<div class="row"><div>画像分類</div><div class="input">分類A</div></div>
+<div class="row"><div>対象画像</div><div class="input">IMG-000123</div></div>
+<div class="row"><div>表示形式</div><div class="input">オーバーレイ / インスタンスラベル / 粒子解析用二値マスク</div></div>
+</div>
+<div class="preview">
+<div><strong>原画像</strong><div class="box">原画像</div></div>
+<div><strong>RC-001</strong><div class="box">マスクA</div></div>
+<div><strong>RC-002</strong><div class="box">マスクB</div></div>
+<div><strong>RC-005</strong><div class="box">マスクC</div></div>
+</div>
+<div class="btns"><span class="btn">← 前の画像</span><span class="btn">次の画像 →</span></div>
+<div class="note">ズーム・パンは全表示枠で同期する。</div>
+</div>
+</div>
+</section>
+<section class="card">
+<h2>15. 画面モック：リリース登録</h2>
+<div class="mock">
+<div class="title">リリース済みモデル登録</div>
+<div class="body">
+<div class="section">
+<div class="row"><div>リリースモデル識別子</div><div class="input">model_007</div></div>
+<div class="row"><div>リリース候補</div><div class="input">RC-001</div></div>
+<div class="row"><div>実験</div><div class="input">exp_0042</div></div>
+<div class="row"><div>途中保存モデル</div><div class="input">best.pt</div></div>
+<div class="row"><div>推論設定</div><div class="input">infer_v005</div></div>
+<div class="row"><div>検証データセット</div><div class="input">val_v003</div></div>
+<div class="row"><div>コメント</div><div class="input">分類A 本番用モデル</div></div>
+</div>
+<div class="btns"><span class="btn">キャンセル</span><span class="btn primary">リリース済みモデルとして登録</span></div>
+</div>
+</div>
+</section>
+<section class="card">
+<h2>16. 設計原則まとめ</h2>
+<ol><li>比較候補は一行単位で管理し、同じ途中保存モデルでも推論設定が異なれば別候補とする。</li><li>複数候補を選択し、同一画像上でマスクを比較する。</li><li>本アプリ内の後処理は隣接気泡の分離のみとし、通常のモデル設定には含めない。</li><li>アプリ内の主要自動評価指標は平均適合率（mAP）とする。</li><li>評価は全体、画像分類別、件数を基本とする。</li><li>外部粒子解析結果は必要に応じて手入力する。</li><li>検証用データセットは学習用データセットとは別に版管理する。</li><li>学習用データセットと検証用データセットの重複混入を確認する。</li><li>正式採用時はリリース済みモデルとして固定し、後から上書きしない。</li><li>画像分類はデータ側の共通メタデータとして扱い、本番モデルの割り当てはモデル振り分けで管理する。</li></ol>
+</section>
+</div></body></html>

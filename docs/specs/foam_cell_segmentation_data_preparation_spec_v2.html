@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+
+<html lang="ja">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>気泡 インスタンスセグメンテーションアプリ - データ準備モード仕様</title>
+<style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Yu Gothic", "Meiryo", sans-serif;
+      line-height: 1.75;
+      color: #222;
+      background: #f6f7f9;
+      margin: 0;
+      padding: 0;
+    }
+    .container {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 40px 24px 64px;
+    }
+    .hero {
+      background: #fff;
+      border: 1px solid #e3e6eb;
+      border-radius: 14px;
+      padding: 32px;
+      margin-bottom: 24px;
+    }
+    h1, h2, h3 {
+      line-height: 1.35;
+      color: #1f2937;
+    }
+    h1 {
+      margin-top: 0;
+      font-size: 2rem;
+    }
+    h2 {
+      margin-top: 38px;
+      padding-bottom: 8px;
+      border-bottom: 2px solid #e5e7eb;
+    }
+    h3 {
+      margin-top: 28px;
+    }
+    .card {
+      background: #fff;
+      border: 1px solid #e3e6eb;
+      border-radius: 12px;
+      padding: 24px;
+      margin: 18px 0;
+    }
+    .note {
+      background: #eef6ff;
+      border-left: 5px solid #4a90e2;
+      padding: 14px 18px;
+      margin: 16px 0;
+      border-radius: 8px;
+    }
+    .warning {
+      background: #fff7e8;
+      border-left: 5px solid #e3a008;
+      padding: 14px 18px;
+      margin: 16px 0;
+      border-radius: 8px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0 24px;
+      background: #fff;
+    }
+    th, td {
+      border: 1px solid #d9dee5;
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: #f0f3f7;
+    }
+    code, pre {
+      font-family: Consolas, "Courier New", monospace;
+    }
+    pre {
+      background: #111827;
+      color: #f9fafb;
+      padding: 18px;
+      border-radius: 10px;
+      overflow-x: auto;
+    }
+    ul, ol {
+      padding-left: 1.4em;
+    }
+    .flow {
+      background: #f9fafb;
+      border: 1px dashed #cfd5dd;
+      border-radius: 10px;
+      padding: 18px;
+      white-space: pre-wrap;
+      font-family: Consolas, "Courier New", monospace;
+    }
+    .small {
+      color: #6b7280;
+      font-size: 0.93rem;
+    }
+  </style>
+</head>
+<body>
+<div class="container">
+<section class="hero">
+<h1>気泡 インスタンスセグメンテーションアプリ<br/>データ準備モード仕様</h1>
+<p>
+      本仕様は、気泡検出用インスタンスセグメンテーションモデルの開発に用いる
+      学習データを管理・整理・バージョニングするための「データ準備モード」を対象とする。
+    </p>
+<p class="small">
+      対象範囲：データ取り込み、メタデータ管理、作業中データセット、データセット版、
+      整合性確認、アーカイブ出力。
+    </p>
+</section>
+<section class="card">
+<h2>1. 基本方針</h2>
+<ul>
+<li>アノテーション作業自体は本アプリでは行わず、外部ソフトで作成したマスクを取り込む。</li>
+<li>一般ユーザーは主に推論機能を使用し、データ準備機能はアプリ開発者・管理者向けとする。</li>
+<li>データ準備は一度で完了するとは限らないため、途中状態を継続保存できる構成とする。</li>
+<li>学習に使用すると判断した時点でのみ、確定版データセットとしてバージョンを発行する。</li>
+<li>確定済みデータセット版は変更不可とし、再現性を保証する。</li>
+<li>一度取り込んだ原画像・マスクは原則としてデータストアから削除しない。</li>
+</ul>
+</section>
+<section class="card">
+<h2>2. 管理対象データ</h2>
+<h3>2.1 原画像</h3>
+<p>
+      モデル学習に使用する元画像。データストアへ登録後は恒久保存を基本とする。
+    </p>
+<h3>2.2 アノテーションマスク</h3>
+<p>マスク修正時は過去データセットの再現性を維持するため単純上書きせず、マスク版を新規作成し、各版のハッシュ値も記録する。</p>
+<h3>2.3 メタデータ</h3>
+<p>詳細項目は業務要件に応じて定義するが、現時点では以下を主要候補とする。</p>
+<table>
+<thead>
+<tr><th>項目</th><th>用途</th></tr>
+</thead>
+<tbody>
+<tr><td>データ識別識別子</td><td>画像・マスク・メタデータを一意に関連付けるキー</td></tr>
+<tr><td>サンプル分類</td><td>対象画像の分類・層別・学習条件管理</td></tr>
+<tr><td>品質</td><td>データ品質・アノテーション品質等の管理</td></tr>
+</tbody>
+</table>
+<div class="note">
+      「品質」と「データセットへの採用可否」は別概念として扱う。
+      品質が低いデータでも、ロバスト性確認等の目的で特定データセットに含める可能性があるためである。
+    </div>
+</section>
+<section class="card">
+<h2>3. メタデータ編集方式</h2>
+<p>
+      メタデータは、アプリ内スプレッドシート形式と表計算ファイル入出力の両方に対応する。
+      内部データを正とし、表計算ファイルは編集用インターフェースとして扱う。
+    </p>
+<table>
+<thead>
+<tr>
+<th>方式</th>
+<th>主なメリット</th>
+<th>主なデメリット</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>アプリ内表編集</td>
+<td>入力値検証がしやすい。画像と同時確認できる。選択肢制御で表記揺れを防げる。</td>
+<td>大量一括編集は表計算ファイルより操作性が劣る可能性がある。</td>
+</tr>
+<tr>
+<td>表計算ファイル 出力 / 取込</td>
+<td>コピー、フィルタ、一括編集に強い。利用者が慣れている。</td>
+<td>列名変更、型崩れ、重複、行ずれ等の入力事故が起きやすい。</td>
+</tr>
+</tbody>
+</table>
+<h3>3.1 表計算ファイル連携ルール</h3>
+<ul>
+<li>行番号ではなく、データ識別識別子をキーとして内部データと結合する。</li>
+<li>取込時は必須列、識別子重複、未知識別子、型、許容値、空欄等を整合性確認する。</li>
+<li>不整合がある場合は無理に取り込まず、エラー内容を表示して処理を中断する。</li>
+<li>表計算ファイルファイル自体を確定データセットの正本とはしない。</li>
+</ul>
+</section>
+<section class="card">
+<h2>4. データ保管領域</h2>
+<p>アプリ内部では、一つの撮影対象を一つのサンプルとして扱い、原画像または複数の画像チャンネル、マスク各版、基本情報をデータ保管領域へ保存する。データセット版は、この領域内のデータを参照する形で構築する。</p>
+<pre>データ保管領域
+├─ item_000001
+│  ├─ images
+│  │  ├─ channel_A
+│  │  ├─ channel_B
+│  │  └─ channel_C
+│  ├─ masks
+│  │  ├─ rev_001
+│  │  └─ rev_002
+│  └─ metadata
+├─ item_000002
+└─ ...</pre>
+<h3>4.1 削除方針</h3>
+<ul>
+<li>作業中データセットから除外しても、データ保管領域からは削除しない。</li>
+<li>データセット版ごとに採用／除外を切り替えられるようにする。</li>
+<li>物理削除機能を設ける場合は、どのデータセット版からも参照されていないデータに限定し、管理者操作とする。</li>
+</ul>
+</section>
+<section class="card">
+<h2>5. 作業中データセット</h2>
+<p>
+      データ準備作業中は「作業中データセット」を編集する。
+      作業中データセットは途中保存可能であり、アプリ終了後も次回そのまま再開できる。
+    </p>
+<h3>5.1 基本動作</h3>
+<ul>
+<li>前回の確定データセット版を引き継いで作業を開始する。</li>
+<li>新規データを追加できる。</li>
+<li>既存データを除外できる。</li>
+<li>メタデータを編集できる。</li>
+<li>使用するマスク版を変更できる。</li>
+<li>途中保存のたびにデータセット版番号は増やさない。</li>
+</ul>
+<div class="flow">データセット v003（確定済み）
+        ↓ 引き継ぎ
+作業中データセット
+  + 新規画像追加
+  - 一部データ除外
+  + メタデータ変更
+  + マスク 版変更
+        ↓
+データセット v004（新規確定版）</div>
+<h3>5.2 保存方式</h3>
+<p>
+      手動保存ボタンを用意してもよいが、データ消失防止の観点から自動保存を基本とする。
+    </p>
+</section>
+<section class="card">
+<h2>6. データセット版管理</h2>
+<div class="note">学習用データセットを確定する際は、基準とする検証用データセットとの重複をデータ識別識別子、ハッシュ値、必要に応じて試料識別情報で確認し、検証データの学習混入を防止する。</div><p>データセット版は共通の仕組みで管理し、用途として「学習用」と「検証用」を区別する。学習用データセットはモデル学習と学習内の交差検証に使用し、検証用データセットは学習には使用せず、モデル比較・正式リリース判断に使用する。</p><h3>6.0 データセットの用途</h3><h3>6.1 バージョン発行タイミング</h3>
+<p>
+      データセット版は「学習に使用する正式なデータセットとして確定する」と管理者が判断した時点で発行する。
+    </p>
+<div class="flow">作業中データセット
+    ↓
+整合性確認
+    ↓
+内容確認
+    ↓
+データセット版発行
+    ↓
+データセット v001 / v002 / v003 ...</div>
+<h3>6.2 変更不可</h3>
+<p>
+      一度確定したデータセット版は変更不可とする。
+      修正が必要な場合は作業中データセット側で変更し、新しいデータセット版を発行する。
+    </p>
+<div class="note">
+      モデル学習結果とデータセット版を一意に紐付けることで、
+      過去実験の再現性を維持する。
+    </div>
+<h3>6.3 データセット版が保持する情報</h3>
+<ul>
+<li>用途（学習用 / 検証用）</li><li>データセット版 識別子</li>
+<li>親データセット版</li>
+<li>作成日時</li>
+<li>採用データ一覧</li>
+<li>各データが参照する画像・マスク版</li>
+<li>確定時点のメタデータ</li>
+<li>変更コメント</li>
+<li>必要に応じて作成時のアプリバージョン</li>
+</ul>
+</section>
+<section class="card">
+<h2>7. 整合性確認</h2>
+<p>データセット版発行前にデータそのものの整合性確認を実行する。これは、モデル学習時の交差検証分割や、モデル比較時の検証用データセットとは別概念である。</p>
+<ul>
+<li>データ識別識別子の重複がないこと</li>
+<li>原画像が存在すること</li>
+<li>必要なマスクが存在すること</li>
+<li>原画像とマスクの対応が正しいこと</li>
+<li>必須メタデータが入力されていること</li>
+<li>原画像とマスクの画像サイズが一致すること</li>
+<li>ファイルハッシュが登録内容と一致すること</li>
+<li>データセット版内で参照先が一意に確定していること</li>
+</ul>
+<h3>7.1 状態管理</h3>
+<p>データセットは少なくとも以下の状態を持つ。</p>
+<pre>WORKING
+  ↓
+VALIDATED
+  ↓
+RELEASED</pre>
+<p>
+      確定済みになったデータセット版は以後変更不可とする。
+    </p>
+</section>
+<section class="card">
+<h2>8. ファイルハッシュ</h2>
+<p>
+      同一ファイル名の画像やマスクが外部ソフトで上書きされた場合でも変更を検出できるよう、
+      SHA-256等のハッシュ値を記録する。
+    </p>
+<p>主な用途：</p>
+<ul>
+<li>同名ファイルの内容変更検出</li>
+<li>データセット版再現性確認</li>
+<li>圧縮ファイルアーカイブの整合性確認</li>
+<li>モデル実験とデータセットの追跡</li>
+</ul>
+</section>
+<section class="card">
+<h2>9. データセットアーカイブ</h2>
+<p>
+      確定済みデータセット版は、データ保管領域内の参照管理だけでなく、
+      原画像・マスクを含む完全スナップショットとして圧縮ファイル出力できるようにする。
+    </p>
+<p>
+      圧縮ファイルファイルは別ストレージへ保管し、データ保管領域が失われた場合でも
+      データセット版を完全復元できることを目標とする。
+    </p>
+<h3>9.1 推奨アーカイブ構造</h3>
+<pre>dataset_v004.zip
+├─ images/
+│  ├─ img_000001.png
+│  ├─ img_000002.png
+│  └─ ...
+├─ masks/
+│  ├─ mask_000001.png
+│  ├─ mask_000002.png
+│  └─ ...
+├─ metadata.csv
+├─ manifest.csv
+└─ dataset_info.json</pre>
+<h3>9.2 manifest.csv</h3>
+<p>再現性確認用の機械的情報を保持する。</p>
+<table>
+<thead>
+<tr><th>項目例</th><th>内容</th></tr>
+</thead>
+<tbody>
+<tr><td>item_id</td><td>一意なデータ識別識別子</td></tr>
+<tr><td>image_path</td><td>アーカイブ内の画像パス</td></tr>
+<tr><td>image_sha256</td><td>原画像ハッシュ</td></tr>
+<tr><td>mask_path</td><td>アーカイブ内のマスクパス</td></tr>
+<tr><td>mask_sha256</td><td>マスクハッシュ</td></tr>
+<tr><td>mask_版</td><td>使用したマスク版</td></tr>
+</tbody>
+</table><div class="note">複数の画像チャンネルを持つ場合は、一覧ファイルにチャンネルごとの保存先とハッシュ値を記録する。</div>
+<h3>9.3 dataset_info.json</h3>
+<pre>{
+  "dataset_version": "v004",
+  "parent_version": "v003",
+  "created_at": "YYYY-MM-DD",
+  "n_images": 537,
+  "application_version": "x.y.z"
+}</pre>
+<h3>9.4 アーカイブ自体のハッシュ</h3>
+<p>
+      圧縮ファイルファイルにもSHA-256を付与し、長期保存後も改変・破損を検証できるようにする。
+    </p>
+<pre>dataset_v004.zip
+dataset_v004.zip.sha256</pre>
+</section>
+<section class="card">
+<h2>10. データセット確定とアーカイブ処理の分離</h2>
+<p>
+      データセット版の確定と圧縮ファイルアーカイブ生成は、別ステータスとして管理する。
+    </p>
+<pre>Dataset status : RELEASED
+Archive status : COMPLETED / FAILED / NOT_CREATED</pre>
+<p>
+      アーカイブ出力に失敗してもデータセット版自体は確定状態を維持し、
+      後から再度アーカイブを生成できるようにする。
+    </p>
+</section>
+<section class="card">
+<h2>11. データ準備画面の概念画面</h2>
+<pre>現在の作業中データセット
+────────────────────────────
+ベースDataset        : v003
+登録画像数           : 537
+マスク数             : 537
+未入力metadata       : 12
+Validation Error     : 0
+
+[Excel出力]
+[Excel取込]
+[Validation実行]
+
+                [Datasetを確定]</pre>
+<p>データセット確定時には、変更内容の概要を確認できるようにする。</p>
+<pre>新しいDatasetを作成
+
+Version : v004
+Parent  : v003
+Images  : 537
+Added   : +23
+Removed : -2
+Changed : 14
+
+Comment:
+[                                  ]
+
+[キャンセル] [v004を作成]</pre>
+</section>
+<section class="card">
+<h2>12. 全体フロー</h2>
+<div class="flow">外部アノテーションソフト
+        ↓
+原画像・マスク取り込み
+        ↓
+データ保管領域へ恒久保存
+        ↓
+前回確定版データセットを引き継ぐ
+        ↓
+作業中データセット
+  ├─ データ追加
+  ├─ データ除外
+  ├─ メタデータ編集
+  └─ マスク 版選択
+        ↓
+整合性確認
+        ↓
+データセット版確定
+        ↓
+確定済み / 変更不可
+        ↓
+┌───────────────────────┐
+│                       │
+モデル学習へ使用       完全圧縮ファイル アーカイブ作成
+│                       │
+実験と紐付け      別ストレージへ保管
+└───────────────────────┘</div>
+</section>
+<section class="card">
+<h2>13. 現時点での設計原則まとめ</h2>
+<ol>
+<li>作業中データセットと確定データセットを分離する。</li>
+<li>前回確定版を引き継いで次の作業中データセットを作成する。</li>
+<li>途中保存ではデータセット版を増やさない。</li>
+<li>データセット版確定後は変更不可とする。</li>
+<li>データ保管領域上のデータは原則削除しない。</li>
+<li>品質評価とデータセット採否を別概念として管理する。</li>
+<li>アノテーション修正は版として管理し、過去データセットを壊さない。</li>
+<li>メタデータ編集はアプリ内編集と表計算ファイル入出力を併用する。</li>
+<li>確定データセットは完全圧縮ファイルとして外部ストレージへバックアップ可能とする。</li>
+<li>データセット確定とアーカイブ成功を別ステータスとして扱う。</li>
+<li>データセットは学習用と検証用を同じ版管理方式で扱い、用途を明示する。</li><li>検証用データセットは学習へ混入させない。</li><li>一つのサンプルに複数の画像チャンネルを関連付けられる構造とする。</li></ol>
+</section>
+</div>
+</body>
+</html>
