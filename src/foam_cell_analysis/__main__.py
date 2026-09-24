@@ -1,16 +1,8 @@
-import sys
+"""アプリケーションの起動入口。"""
 
-from PySide6.QtWidgets import QApplication, QMainWindow
+from .app import main
 
-
-def main() -> int:
-    app = QApplication(sys.argv)
-    window = QMainWindow()
-    window.setWindowTitle("気泡インスタンスセグメンテーション")
-    window.resize(1280, 800)
-    window.show()
-    return app.exec()
-
+__all__ = ["main"]
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

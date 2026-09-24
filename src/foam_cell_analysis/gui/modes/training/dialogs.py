@@ -1,0 +1,190 @@
+"""学習モードで使う確認・比較ダイアログ。"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
+    QLabel,
+    QLineEdit,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
+
+from ....services.models import Experiment
+from ...labels import (
+    classification_label,
+    config_key_label,
+    model_type_label,
+    quality_filter_label,
+)
+from ...widgets.chart import LineChart
+from ...widgets.table import mark_primary, setup_table
+
+
+def flatten_config(value: dict[str, Any], prefix: str = "") -> dict[str, Any]:
+    """入れ子の設定を比較表用のキー・値にする。"""
+    result: dict[str, Any] = {}
+    for key, item in value.items():
+        path = f"{prefix}.{key}" if prefix else key
+        if isinstance(item, dict):
+            result.update(flatten_config(item, path))
+        else:
+            result[path] = item
+    return result
+
+
+class ExperimentCompareDialog(QDialog):
+    """複数実験の設定差分と mAP 曲線を表示する。"""
+
+    def __init__(self, experiments: list[Experiment], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.experiments = experiments
+        self.setWindowTitle("実験を比較")
+        self.resize(900, 700)
+        self.setMinimumSize(780, 580)
+        layout = QVBoxLayout(self)
+        self.differences_only = QCheckBox("差分のみ表示")
+        self.table = QTableWidget()
+        self.chart = LineChart()
+        layout.addWidget(self.differences_only)
+        layout.addWidget(self.table, 1)
+        layout.addWidget(QLabel("mAP の推移"))
+        layout.addWidget(self.chart)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.button(QDialogButtonBox.StandardButton.Close).setText("閉じる")
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        layout.addWidget(buttons)
+        self.differences_only.toggled.connect(self.refresh)
+        self.refresh()
+
+    def refresh(self) -> None:
+        """設定差分表と系列を更新する。"""
+        configs = [flatten_config(item.config.values) for item in self.experiments]
+        keys = sorted(set().union(*(config.keys() for config in configs)))
+        differing = [
+            key
+            for key in keys
+            if len({self._compare_value(key, config.get(key)) for config in configs}) > 1
+        ]
+        visible = differing if self.differences_only.isChecked() else keys
+        self.table.setRowCount(len(visible))
+        self.table.setColumnCount(len(self.experiments) + 1)
+        self.table.setHorizontalHeaderLabels(
+            ["設定項目", *[e.experiment_id for e in self.experiments]]
+        )
+        for row, key in enumerate(visible):
+            label = QTableWidgetItem(config_key_label(key))
+            label.setToolTip(key)
+            self.table.setItem(row, 0, label)
+            for col, config in enumerate(configs, start=1):
+                item = QTableWidgetItem(self._display_value(key, config.get(key)))
+                if key in differing:
+                    item.setBackground(QColor("#fff1c7"))
+                self.table.setItem(row, col, item)
+        setup_table(self.table, stretch_column=0)
+        colors = [QColor(color) for color in ("#2563eb", "#dc2626", "#059669", "#9333ea")]
+        series = []
+        for index, experiment in enumerate(self.experiments):
+            points = [entry for entry in experiment.history if entry.map is not None]
+            series.append(
+                (
+                    experiment.experiment_id,
+                    colors[index % len(colors)],
+                    [float(item.epoch) for item in points],
+                    [float(item.map) for item in points],
+                )
+            )
+        self.chart.set_series(series)
+
+    @staticmethod
+    def _compare_value(key: str, value: Any) -> str:
+        """差分比較用の値を正規化する。"""
+        if key == "data.used_item_ids" and isinstance(value, list):
+            return str(len(value))
+        if isinstance(value, list):
+            return ",".join(str(item) for item in value)
+        return str(value)
+
+    @classmethod
+    def _display_value(cls, key: str, value: Any) -> str:
+        """比較表の値を画面表示用に整える。"""
+        if key == "data.used_item_ids" and isinstance(value, list):
+            return f"{len(value)} 件"
+        if value is None:
+            return "未設定"
+        if isinstance(value, bool):
+            return "有効" if value else "無効"
+        if key == "model.type":
+            return model_type_label(str(value))
+        if key == "data.classification":
+            return classification_label(str(value))
+        if key == "data.quality_filter":
+            return quality_filter_label(str(value))
+        if key == "checkpoint.best_metric" and value == "instance_map":
+            return "インスタンス平均適合率（mAP）"
+        if key == "checkpoint.best_mode":
+            return "最大化" if value == "max" else "最小化" if value == "min" else str(value)
+        if key == "model.pretrained_weights":
+            return {"coco": "COCO", "imagenet": "ImageNet"}.get(str(value), str(value))
+        if key == "model.backbone":
+            return {"resnet50_fpn_v2": "ResNet-50 FPN v2", "resnet101_fpn": "ResNet-101 FPN"}.get(
+                str(value), str(value)
+            )
+        if isinstance(value, list):
+            return "、".join(str(item) for item in value)
+        if isinstance(value, float):
+            return f"{value:.6g}"
+        return str(value)
+
+
+class SendToCandidatesDialog(QDialog):
+    """比較モードへ渡す途中保存モデルを選ぶ。"""
+
+    def __init__(self, experiment: Experiment, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.experiment = experiment
+        self.setWindowTitle("モデル比較へ送る")
+        self.resize(520, 260)
+        self.setMinimumSize(480, 250)
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        self.checkpoint = QComboBox()
+        self.checkpoint.addItems([entry.name for entry in experiment.checkpoints])
+        if self.checkpoint.findText("best.pt") >= 0:
+            self.checkpoint.setCurrentText("best.pt")
+        elif self.checkpoint.findText("best") >= 0:
+            self.checkpoint.setCurrentText("best")
+        self.comment = QLineEdit()
+        form.addRow("実験", QLabel(experiment.experiment_id))
+        form.addRow("途中保存モデル", self.checkpoint)
+        form.addRow("説明", self.comment)
+        layout.addLayout(form)
+        layout.addWidget(QLabel("推論設定や正式リリースはモデル比較・リリースで行います。"))
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("モデル比較へ送る")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("キャンセル")
+        mark_primary(buttons.button(QDialogButtonBox.StandardButton.Ok))
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def transition_params(self) -> dict[str, Any]:
+        """設計書の候補追加遷移パラメータを返す。"""
+        return {
+            "action": "add_candidate",
+            "experiment_id": self.experiment.experiment_id,
+            "checkpoint": self.checkpoint.currentText(),
+            "comment": self.comment.text().strip(),
+        }

@@ -1,0 +1,229 @@
+"""GUI が利用する Backend の型付き契約。"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any, Protocol
+
+import numpy as np
+
+from .models import (
+    AugmentationProfile,
+    Candidate,
+    DataItem,
+    DatasetVersion,
+    Evaluation,
+    Experiment,
+    ExternalResult,
+    ImportCandidate,
+    InferenceConfig,
+    ReleasedModel,
+    RoutingHistory,
+    ValidationReport,
+    WorkingDataset,
+)
+
+
+class Backend(Protocol):
+    """GUI が呼び出す全データ操作 API。実装は Qt に依存しない。"""
+
+    def get_working_dataset(self, purpose: str = "train") -> WorkingDataset:
+        """用途別の作業中データを返す。"""
+
+    def update_item(self, purpose: str, item_id: str, **changes: Any) -> DataItem:
+        """画像の分類、品質、採用状態、選択マスク版を更新する。"""
+
+    def bulk_update_items(self, purpose: str, item_ids: list[str], **changes: Any) -> None:
+        """複数画像を一括更新する。"""
+
+    def add_imported_items(self, purpose: str, items: list[DataItem]) -> list[DataItem]:
+        """作業データへ画像項目を追加する。"""
+
+    def add_mask_revision(self, purpose: str, item_id: str) -> str:
+        """上書きせず新しいマスク版を追加する。"""
+
+    def validate_working_dataset(self, purpose: str) -> ValidationReport:
+        """作業データの整合性を確認する。"""
+
+    def next_dataset_version(self, purpose: str) -> str:
+        """用途別の次のデータセット版名を返す。"""
+
+    def summarize_working_changes(self, purpose: str) -> dict[str, int | str]:
+        """確定ダイアログ用の差分と件数を返す。"""
+
+    def check_dataset_duplicates(
+        self, purpose: str, validation_version: str | None = None
+    ) -> list[tuple[str, str]]:
+        """識別子または画像ハッシュの重複を返す。"""
+
+    def finalize_dataset(
+        self, purpose: str, comment: str = "", base_validation_version: str | None = None
+    ) -> DatasetVersion:
+        """検証済み作業版を確定する。"""
+
+    def list_dataset_versions(self, purpose: str | None = None) -> list[DatasetVersion]:
+        """確定済みデータセット版を返す。"""
+
+    def list_validation_versions(self) -> list[DatasetVersion]:
+        """検証用データセット版を返す。"""
+
+    def record_archive_result(
+        self, version: str, output_path: str, ok: bool = True
+    ) -> DatasetVersion:
+        """アーカイブ作成結果を記録する。"""
+
+    def get_last_saved_at(self, purpose: str = "train") -> datetime:
+        """作業データの最終自動保存時刻を返す。"""
+
+    def scan_import_source(
+        self, image_dirs: dict[str, str], mask_dir: str
+    ) -> list[ImportCandidate]:
+        """取り込み元を検索して候補一覧を返す。"""
+
+    def import_items(
+        self, purpose: str, candidates: list[ImportCandidate], classification: str | None
+    ) -> list[DataItem]:
+        """検索候補を作業データとして登録する。"""
+
+    def get_item_image(self, purpose: str, item_id: str, channel: str) -> np.ndarray:
+        """画像項目の指定チャンネルを返す。"""
+
+    def get_item_mask(self, purpose: str, item_id: str, revision: str) -> np.ndarray:
+        """画像項目の指定マスク版を返す。"""
+
+    def get_candidate_prediction(self, candidate_id: str, item_id: str) -> np.ndarray:
+        """候補モデルの予測ラベルを返す。"""
+
+    def get_inference_result(self, filename: str, model_id: str) -> tuple[np.ndarray, np.ndarray]:
+        """ファイル名とモデルの合成推論結果を返す。"""
+
+    def list_training_options(self) -> dict[str, list[str]]:
+        """学習フォームの選択肢を返す。"""
+
+    def default_experiment_config(self, model_type: str) -> dict[str, Any]:
+        """モデル種別の仕様準拠既定設定を返す。"""
+
+    def validate_experiment_config(self, config: dict[str, Any]) -> list[dict[str, str]]:
+        """学習設定のエラーと警告を返す。"""
+
+    def estimate_training_items(
+        self,
+        dataset_version: str | None = None,
+        classification: str = "all",
+        quality_filter: str = "all",
+        **filters: Any,
+    ) -> tuple[int, int]:
+        """学習条件を適用した80/20分割件数を返す。"""
+
+    def next_experiment_id(self) -> str:
+        """次の実験識別子を返す。"""
+
+    def save_experiment_draft(
+        self, config: dict[str, Any], experiment_id: str | None = None
+    ) -> Experiment:
+        """実験下書きを新規保存または更新する。"""
+
+    def start_training(
+        self, config: dict[str, Any], experiment_id: str | None = None
+    ) -> Experiment:
+        """学習実行試行を追加して実験を開始状態にする。"""
+
+    def record_epoch(
+        self, experiment_id: str, epoch: int, loss: float, map_value: float | None = None
+    ) -> Experiment:
+        """エポック値と設定に従った途中保存モデルを記録する。"""
+
+    def finish_training(self, experiment_id: str, status: str = "completed") -> Experiment:
+        """実験を完了・失敗・中断状態にする。"""
+
+    def retry_experiment(self, experiment_id: str) -> Experiment:
+        """同一実験に実行試行を追加する。"""
+
+    def list_experiments(self) -> list[Experiment]:
+        """実験一覧を返す。"""
+
+    def get_experiment(self, experiment_id: str) -> Experiment:
+        """識別子で実験を返す。"""
+
+    def list_augmentation_profiles(self) -> list[AugmentationProfile]:
+        """拡張プロファイル一覧を返す。"""
+
+    def get_augmentation_profile(self, profile_id: str) -> AugmentationProfile:
+        """識別子で拡張プロファイルを返す。"""
+
+    def save_augmentation_profile(self, profile: AugmentationProfile) -> AugmentationProfile:
+        """呼び出し元から分離した新しい版を保存する。"""
+
+    def list_candidates(self) -> list[Candidate]:
+        """比較候補一覧を返す。"""
+
+    def get_candidate(self, candidate_id: str) -> Candidate:
+        """識別子で比較候補を返す。"""
+
+    def list_inference_configs(self, model_type: str | None = None) -> list[InferenceConfig]:
+        """推論設定一覧を返す。"""
+
+    def create_inference_config(self, model_type: str, params: dict[str, Any]) -> InferenceConfig:
+        """新しい推論設定を保存する。"""
+
+    def add_candidate(
+        self, experiment_id: str, checkpoint: str, inference_config_id: str, comment: str = ""
+    ) -> Candidate:
+        """重複確認後に比較候補を追加する。"""
+
+    def start_evaluation(
+        self, candidate_ids: list[str], validation_version: str
+    ) -> list[Candidate]:
+        """評価対象を評価中状態にする。"""
+
+    def evaluate_candidate(
+        self, candidate_id: str, validation_version: str = "val_v003"
+    ) -> Evaluation:
+        """全体・分類別評価を記録し候補状態に戻す。"""
+
+    def save_external_results(
+        self,
+        candidate_id: str,
+        results: list[ExternalResult | dict[str, Any]],
+        software: str = "",
+        date: str = "",
+        comment: str = "",
+    ) -> Candidate:
+        """外部解析結果とコメントを保存する。"""
+
+    def reject_candidate(self, candidate_id: str) -> Candidate:
+        """候補を非採用にする。"""
+
+    def release_candidate(
+        self, candidate_id: str, comment: str = "", validation_version: str = "val_v003"
+    ) -> ReleasedModel:
+        """評価済み候補をリリース登録する。"""
+
+    def list_validation_items(
+        self, validation_version: str = "val_v003", classification: str | None = None
+    ) -> list[DataItem]:
+        """検証版の画像を分類条件付きで返す。"""
+
+    def list_released_models(self) -> list[ReleasedModel]:
+        """リリース済みモデルを返す。"""
+
+    def get_routing(self) -> dict[str, str | None]:
+        """現在の分類振り分けを返す。"""
+
+    def apply_routing(self, changes: dict[str, str | None]) -> list[RoutingHistory]:
+        """分類振り分けを適用して変更履歴を返す。"""
+
+    def list_routing_history(self) -> list[RoutingHistory]:
+        """振り分け変更履歴を返す。"""
+
+    def resolve_model(self, classification: str | None) -> ReleasedModel | None:
+        """分類に有効なリリースモデルを返す。"""
+
+    def validate_excel_import(self, filename: str) -> dict[str, Any]:
+        """Excel 取込ファイルを検証する。"""
+
+    def preview_excel_import(self, filename: str) -> dict[str, Any]:
+        """Excel 取込の検証結果と変更予定を返す。"""
+
+    def apply_excel_import(self, purpose: str, changes: list[dict[str, Any]]) -> None:
+        """検証済み Excel 変更を反映する。"""
