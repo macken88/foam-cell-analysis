@@ -20,16 +20,14 @@ ml = [
     "cellpose>=3.0",
     "optuna>=3.6",
 ]
-
-[project.scripts]
-foam-cell-analysis = "foam_cell_analysis.__main__:main"
-
-[dependency-groups]
 dev = [
     "pytest>=8.0",
     "pytest-qt>=4.4",
     "ruff>=0.6",
 ]
+
+[project.scripts]
+foam-cell-analysis = "foam_cell_analysis.__main__:main"
 
 [build-system]
 requires = ["hatchling"]
