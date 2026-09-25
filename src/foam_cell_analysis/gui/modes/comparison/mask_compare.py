@@ -9,14 +9,13 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QRadioButton,
     QVBoxLayout,
     QWidget,
 )
 
 from ...labels import model_type_label
 from ...navigation import PageId
-from ...theme import body_font
+from ...theme import body_font, set_style
 from ...widgets.image_convert import DisplayMode, array_to_pixmap, render
 from ...widgets.image_view import ImageView, ViewSynchronizer
 from ...widgets.page_base import BasePage
@@ -51,23 +50,25 @@ class MaskComparisonPage(BasePage):
         controls.addWidget(QLabel("対象画像:"))
         controls.addWidget(self.item_select, 1)
         self.mode_group = QButtonGroup(self)
-        self.mode_buttons: dict[DisplayMode, QRadioButton] = {}
+        self.mode_buttons: dict[DisplayMode, QPushButton] = {}
         mode_row = QHBoxLayout()
         mode_row.addWidget(QLabel("表示形式:"))
         for text, mode in (
             ("オーバーレイ", DisplayMode.OVERLAY),
             ("インスタンスラベル", DisplayMode.INSTANCE_LABEL),
-            ("粒子解析用二値マスク", DisplayMode.BINARY),
+            ("二値マスク", DisplayMode.BINARY),
         ):
-            radio = QRadioButton(text)
-            self.mode_group.addButton(radio)
-            self.mode_buttons[mode] = radio
-            mode_row.addWidget(radio)
+            button = QPushButton(text)
+            button.setCheckable(True)
+            set_style(button, role="segment")
+            self.mode_group.addButton(button)
+            self.mode_buttons[mode] = button
+            mode_row.addWidget(button)
         self.mode_buttons[DisplayMode.OVERLAY].setChecked(True)
         mode_row.addStretch(1)
         self.previous = QPushButton("← 前の画像")
         self.next = QPushButton("次の画像 →")
-        self.fit = QPushButton("全体表示")
+        self.fit = QPushButton("全体表示 F")
         self.position = QLabel()
         mode_row.addWidget(self.previous)
         mode_row.addWidget(self.next)
@@ -75,7 +76,6 @@ class MaskComparisonPage(BasePage):
         mode_row.addWidget(self.position)
         self.grid = QGridLayout()
         self.views: list[ImageView] = []
-        self.labels: list[QLabel] = []
         area = QWidget()
         area.setLayout(self.grid)
         self.placeholder = QLabel("候補一覧で比較する候補を選んでください")
@@ -112,16 +112,14 @@ class MaskComparisonPage(BasePage):
         specs = [("原画像", None)] + [
             (candidate_id, candidate_id) for candidate_id in self.candidate_ids
         ]
-        for position, (title, _candidate_id) in enumerate(specs):
+        for position, (_title, _candidate_id) in enumerate(specs):
             panel = QWidget()
             layout = QVBoxLayout(panel)
-            label, view = QLabel(title), ImageView()
+            view = ImageView()
             view.setMinimumSize(220, 230)
             view.set_scrollbars_visible(False)
-            layout.addWidget(label)
             layout.addWidget(view, 1)
             self.grid.addWidget(panel, 0, position)
-            self.labels.append(label)
             self.views.append(view)
         self.candidate_for_view = [None, *self.candidate_ids]
         self.synchronizer = ViewSynchronizer(self.views)
@@ -173,9 +171,12 @@ class MaskComparisonPage(BasePage):
                 candidate = self.ctx.backend.get_candidate(candidate_id)
                 experiment = self.ctx.backend.get_experiment(candidate.experiment_id)
                 count = len(set(labels.ravel())) - (1 if 0 in labels else 0)
-                self.labels[index].setText(
-                    f"{candidate_id} {model_type_label(experiment.model_type)} ｜ 検出 {count} 個"
+                view.set_overlay_labels(
+                    f"{candidate_id}　{model_type_label(experiment.model_type)}",
+                    f"検出 {count} 個",
                 )
+            else:
+                view.set_overlay_labels("原画像", "")
         self.position.setText(f"({self.index + 1} / {len(self.items)})")
         QTimer.singleShot(0, self.synchronizer.fit_all)
 
@@ -187,5 +188,7 @@ class MaskComparisonPage(BasePage):
             self._move(-1)
         elif event.key() == Qt.Key.Key_Right:
             self._move(1)
+        elif event.key() == Qt.Key.Key_F:
+            self._fit_all()
         else:
             super().keyPressEvent(event)

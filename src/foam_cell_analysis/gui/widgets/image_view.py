@@ -27,6 +27,12 @@ class ImageView(QGraphicsView):
         self.placeholder = QLabel("画像なし", self.viewport())
         self.placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         set_style(self.placeholder, role="imagePlaceholder")
+        self.top_left_label = QLabel("", self.viewport())
+        self.bottom_right_label = QLabel("", self.viewport())
+        for label in (self.top_left_label, self.bottom_right_label):
+            label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            set_style(label, role="imageOverlayLabel")
+            label.hide()
 
     @property
     def zoom(self) -> float:
@@ -45,6 +51,25 @@ class ImageView(QGraphicsView):
         else:
             self._notify_sync()
         self._schedule_sync()
+
+    def set_overlay_labels(self, top_left: str = "", bottom_right: str = "") -> None:
+        """画像左上と右下に重ねるラベルを設定する。"""
+        for label, text in (
+            (self.top_left_label, top_left),
+            (self.bottom_right_label, bottom_right),
+        ):
+            label.setText(text)
+            label.setVisible(bool(text))
+            label.adjustSize()
+        self._position_overlay_labels()
+
+    def _position_overlay_labels(self) -> None:
+        """画像枠の内側に小さなラベルを配置する。"""
+        self.top_left_label.move(8, 8)
+        self.bottom_right_label.move(
+            max(8, self.viewport().width() - self.bottom_right_label.width() - 8),
+            max(8, self.viewport().height() - self.bottom_right_label.height() - 8),
+        )
 
     def set_scrollbars_visible(self, visible: bool) -> None:
         """スクロールバーを表示または非表示にする。"""
@@ -100,6 +125,7 @@ class ImageView(QGraphicsView):
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self.placeholder.setGeometry(self.viewport().rect())
+        self._position_overlay_labels()
         self._notify_sync()
         self._schedule_sync()
 

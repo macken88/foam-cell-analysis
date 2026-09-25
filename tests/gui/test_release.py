@@ -4,6 +4,7 @@ from foam_cell_analysis.gui.context import AppContext, StatusBus
 from foam_cell_analysis.gui.jobs import JobManager
 from foam_cell_analysis.gui.modes.release.page import ReleasedModelsPage
 from foam_cell_analysis.gui.navigation import Navigator
+from foam_cell_analysis.gui.theme import Color
 
 
 def make_page(mock_backend):
@@ -47,4 +48,33 @@ def test_on_enter_selects_requested_model(qapp, mock_backend):
     page.on_enter({"select": "model_012"})
 
     assert page.model_table.selectionModel().selectedRows()[0].row() == 1
-    assert "model_012" in page.detail_text.toPlainText()
+    assert page.detail_values["実験・途中保存モデル"].text().startswith("exp_0043")
+
+
+def test_routing_table_expands_model_column_and_marks_unassigned_red(qapp, mock_backend):
+    page = make_page(mock_backend)
+    page.classifications = (*page.classifications, "分類D")
+
+    page.on_enter({})
+
+    unassigned = page.routing_table.item(3, 1)
+    assert unassigned.text() == "未割り当て"
+    assert unassigned.foreground().color().name().upper() == Color.ERROR
+    assert page._routing_controls["分類A"].minimumWidth() >= 180
+    assert page.apply_button.text() == "変更を適用…"
+    page._routing_controls["分類A"].setCurrentIndex(
+        page._routing_controls["分類A"].findData("model_012")
+    )
+    assert page.apply_button.text() == "変更を適用…（1 件）"
+
+
+def test_detailed_model_settings_use_japanese_labels_instead_of_dict_repr(qapp, mock_backend):
+    page = make_page(mock_backend)
+
+    rows = page._flatten_detail("前処理設定", {"input": {"min_size": 800, "max_size": 1333}})
+
+    assert rows == [
+        ("前処理設定 / 入力画像の短辺サイズ", "800"),
+        ("前処理設定 / 入力画像の最大辺サイズ", "1333"),
+    ]
+    assert "{'min_size'" not in str(rows)

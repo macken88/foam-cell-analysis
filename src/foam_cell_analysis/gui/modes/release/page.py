@@ -6,14 +6,16 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QFormLayout,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
-    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -70,6 +72,7 @@ class ReleasedModelsPage(BasePage):
             show_heading=show_heading,
         )
         splitter = QSplitter(Qt.Orientation.Vertical)
+        upper = QSplitter(Qt.Orientation.Horizontal)
         self.model_table = QTableWidget(0, 11)
         self.model_table.setHorizontalHeaderLabels(
             [
@@ -89,39 +92,68 @@ class ReleasedModelsPage(BasePage):
         self.model_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         setup_table(self.model_table, stretch_column=10)
         self.model_table.itemSelectionChanged.connect(self._show_model_detail)
-        splitter.addWidget(self.model_table)
+        upper.addWidget(self.model_table)
 
         lower = QWidget()
         lower_layout = QVBoxLayout(lower)
-        self.detail = FormSection("選択モデルの詳細（読み取り専用）")
-        self.detail_text = QTextEdit()
-        self.detail_text.setReadOnly(True)
-        self.detail_text.setPlaceholderText("モデルを選択してください")
-        self.detail.form.addRow("モデル詳細", self.detail_text)
-        lower_layout.addWidget(self.detail)
+        self.detail = FormSection("選択モデルの詳細")
         self.new_release_button = QPushButton("設定を変えて新しいリリースを作る")
+        self.new_release_button.setEnabled(False)
+        self.new_release_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.new_release_button.clicked.connect(self._create_new_release)
-        lower_layout.addWidget(self.new_release_button, alignment=Qt.AlignmentFlag.AlignRight)
+        self.detail_values: dict[str, QLabel] = {}
+        for label in (
+            "実験・途中保存モデル",
+            "評価 mAP",
+            "推論設定",
+            "検証用データセット",
+            "リリース日時",
+            "コメント",
+        ):
+            value = QLabel("モデルを選択してください" if not self.detail_values else "—")
+            value.setWordWrap(True)
+            self.detail_values[label] = value
+            self.detail.form.addRow(label, value)
+        self.detail_button = QPushButton("詳細を表示…")
+        self.detail_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.detail_button.setEnabled(False)
+        self.detail_button.clicked.connect(self._show_detail_dialog)
+        self.detail.form.addRow(self.detail_button)
+        self.detail.form.addRow(self.new_release_button)
+        upper.addWidget(self.detail)
+        upper.setSizes([680, 330])
+        splitter.addWidget(upper)
 
         routing_section = FormSection("モデル振り分け")
+        routing_section.form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+        )
         self.routing_table = QTableWidget(3, 3)
         self.routing_table.setHorizontalHeaderLabels(["画像分類", "現在の有効モデル", "変更後"])
         self.routing_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.routing_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.routing_table.setMinimumWidth(720)
+        self.routing_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.Stretch
+        )
+        self.routing_table.setColumnWidth(0, 110)
+        self.routing_table.setColumnWidth(1, 190)
         routing_section.form.addRow(self.routing_table)
         lower_layout.addWidget(routing_section)
-        note = QLabel("新しいリリース済みモデルを登録しても自動では切り替わりません。")
+        note = QLabel("新しいリリース済みモデルを登録しても、自動では切り替わりません")
         set_style(note, role="note")
-        lower_layout.addWidget(note)
         actions = QHBoxLayout()
         self.apply_button = QPushButton("変更を適用…")
         self.discard_button = QPushButton("変更を破棄")
+        self.apply_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.discard_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         mark_primary(self.apply_button)
         self.apply_button.clicked.connect(self._confirm_apply)
         self.discard_button.clicked.connect(self.discard_changes)
-        actions.addStretch(1)
-        actions.addWidget(self.apply_button)
         actions.addWidget(self.discard_button)
+        actions.addWidget(self.apply_button)
+        actions.addStretch(1)
+        actions.addWidget(note)
         lower_layout.addLayout(actions)
 
         self.history_table = QTableWidget(0, 4)
@@ -131,6 +163,7 @@ class ReleasedModelsPage(BasePage):
         lower_layout.addWidget(QLabel("変更履歴"))
         lower_layout.addWidget(self.history_table)
         splitter.addWidget(lower)
+        splitter.setSizes([280, 520])
         splitter.setChildrenCollapsible(False)
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
@@ -142,7 +175,9 @@ class ReleasedModelsPage(BasePage):
         self._routing_controls: dict[str, QComboBox] = {}
         self._rendering = False
         self.routing_table.setColumnCount(3)
-        setup_table(self.routing_table, stretch_column=0)
+        setup_table(self.routing_table, stretch_column=2)
+        self.routing_table.setColumnWidth(0, 110)
+        self.routing_table.setColumnWidth(1, 190)
 
     def on_enter(self, params: dict) -> None:
         """最新モデル・振り分け・履歴を読み直す。"""
@@ -209,46 +244,138 @@ class ReleasedModelsPage(BasePage):
     def _show_model_detail(self) -> None:
         rows = self.model_table.selectionModel().selectedRows()
         if not rows:
+            self._selected_model = None
+            self.new_release_button.setEnabled(False)
+            self.detail_button.setEnabled(False)
+            for index, value in enumerate(self.detail_values.values()):
+                value.setText("モデルを選択してください" if index == 0 else "—")
             return
         model_id = self.model_table.item(rows[0].row(), 0).text()
         model = self._models.get(model_id)
         if model is None:
             return
         candidate = self.ctx.backend.get_candidate(model.candidate_id)
-        details = [
+        evaluation = model.evaluation_result
+        per_class = "、".join(
+            f"{classification} {format_score(score)}"
+            for classification, (score, _count) in evaluation.per_class.items()
+        )
+        summary = {
+            "実験・途中保存モデル": f"{model.experiment_id} ・ {model.checkpoint}",
+            "評価 mAP": f"全体 {format_score(evaluation.overall_map)}"
+            + (f"\n{per_class}" if per_class else ""),
+            "推論設定": candidate.inference_config_id,
+            "検証用データセット": model.validation_dataset,
+            "リリース日時": format_datetime(model.released_at),
+            "コメント": model.comment or "なし",
+        }
+        for label, text in summary.items():
+            widget = self.detail_values[label]
+            widget.setText(text)
+            widget.setFont(numeric_font())
+        self._selected_model = model
+        self.new_release_button.setEnabled(True)
+        self.detail_button.setEnabled(True)
+
+    def _show_detail_dialog(self) -> None:
+        """選択中モデルの全設定を読み取り専用で表示する。"""
+        if not hasattr(self, "_selected_model"):
+            return
+        model = self._selected_model
+        candidate = self.ctx.backend.get_candidate(model.candidate_id)
+        rows = [
             ("モデルID", model.model_id),
+            ("候補ID", candidate.candidate_id),
             ("実験識別子", model.experiment_id),
             ("途中保存モデル", model.checkpoint),
-            ("前処理設定", model.preprocessing_config),
-            ("推論設定", model.inference_config),
+            ("推論設定ID", candidate.inference_config_id),
             ("検証用データセット", model.validation_dataset),
-            ("評価結果", model.evaluation_result),
             ("リリース日時", format_datetime(model.released_at)),
             ("コメント", model.comment or "なし"),
-            ("候補ID", candidate.candidate_id),
-            ("推論設定ID", candidate.inference_config_id),
         ]
-        self.detail_text.setPlainText(
-            "\n".join(self._format_detail(key, value) for key, value in details)
+        rows.extend(self._flatten_detail("前処理設定", model.preprocessing_config))
+        rows.extend(self._flatten_detail("推論設定", model.inference_config))
+        evaluation = model.evaluation_result
+        rows.append(("評価結果 / 全体 mAP", format_score(evaluation.overall_map)))
+        rows.extend(
+            (f"評価結果 / {classification} mAP", format_score(score))
+            for classification, (score, _count) in evaluation.per_class.items()
         )
+        rows.extend(
+            (f"評価結果 / {classification} 件数", str(count))
+            for classification, (_score, count) in evaluation.per_class.items()
+        )
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"{model.model_id} の詳細")
+        dialog.resize(680, 560)
+        layout = QVBoxLayout(dialog)
+        table = QTableWidget(len(rows), 2)
+        table.setHorizontalHeaderLabels(["項目", "値"])
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        setup_table(table, stretch_column=1)
+        for row, (label, value) in enumerate(rows):
+            table.setItem(row, 0, QTableWidgetItem(label))
+            item = QTableWidgetItem(str(value))
+            item.setFont(numeric_font())
+            table.setItem(row, 1, item)
+        layout.addWidget(table)
+        close_button = QPushButton("閉じる")
+        close_button.clicked.connect(dialog.accept)
+        layout.addWidget(close_button, alignment=Qt.AlignmentFlag.AlignRight)
+        dialog.exec()
+
+    @classmethod
+    def _flatten_detail(
+        cls, prefix: str, value: object, key_prefix: str = "model"
+    ) -> list[tuple[str, str]]:
+        """設定の階層を日本語ラベルの行へ展開する。"""
+        if isinstance(value, dict):
+            rows = []
+            for key, nested in value.items():
+                path = f"{key_prefix}.{key}" if key_prefix else key
+                if isinstance(nested, dict):
+                    rows.extend(cls._flatten_detail(prefix, nested, path))
+                    continue
+                label = config_key_label(path)
+                if label == path:
+                    label = config_key_label(key)
+                if label == key:
+                    label = "その他の設定"
+                rows.extend(cls._flatten_detail(f"{prefix} / {label}", nested, path))
+            return rows
+        if isinstance(value, (list, tuple)):
+            rendered = "、".join(cls._display_detail_value(item) for item in value)
+        else:
+            rendered = cls._display_detail_value(value, key_prefix)
+        return [(prefix, rendered)]
 
     @staticmethod
-    def _format_detail(key: str, value: object) -> str:
-        """設定辞書をキーごとの読みやすい複数行に整形する。"""
-        if isinstance(value, dict):
-            lines = [
-                f"  {config_key_label(nested_key)}: {nested_value}"
-                for nested_key, nested_value in value.items()
-            ]
-            return f"{key}:\n" + "\n".join(lines)
-        if hasattr(value, "overall_map") and hasattr(value, "per_class"):
-            lines = [f"  overall_map: {format_score(value.overall_map)}"]
-            lines.extend(
-                f"  {classification}: mAP {format_score(score)}, 件数 {count}"
-                for classification, (score, count) in value.per_class.items()
+    def _display_detail_value(value: object, key: str = "") -> str:
+        """設定値を内部表現を避けて日本語に整える。"""
+        if value is None:
+            return "未設定"
+        if isinstance(value, bool):
+            return "有効" if value else "無効"
+        if isinstance(value, float):
+            return f"{value:.6g}"
+        if key.endswith(".type"):
+            return model_type_label(str(value))
+        if key.endswith(".pretrained_weights"):
+            return {"coco": "COCO", "imagenet": "ImageNet"}.get(str(value), str(value))
+        if key.endswith(".backbone"):
+            return {"resnet50_fpn_v2": "ResNet-50 FPN v2", "resnet101_fpn": "ResNet-101 FPN"}.get(
+                str(value), str(value)
             )
-            return f"{key}:\n" + "\n".join(lines)
-        return f"{key}: {value}"
+        if key.endswith(".best_metric") and value == "instance_map":
+            return "インスタンス平均適合率（mAP）"
+        if key.endswith(".best_mode"):
+            return "最大化" if value == "max" else "最小化" if value == "min" else str(value)
+        if value in {"good_only", "good_and_acceptable", "all"}:
+            return {"good_only": "良のみ", "good_and_acceptable": "良・可", "all": "すべて"}[
+                str(value)
+            ]
+        return str(value)
 
     def select_model(self, model_id: str) -> bool:
         """モデルIDの行を選択する。"""
@@ -280,8 +407,12 @@ class ReleasedModelsPage(BasePage):
             for row, classification in enumerate(self.classifications):
                 self.routing_table.setItem(row, 0, QTableWidgetItem(classification))
                 current = self._baseline[classification]
-                self.routing_table.setItem(row, 1, QTableWidgetItem(current or "未割り当て"))
+                current_item = QTableWidgetItem(current or "未割り当て")
+                if current is None:
+                    current_item.setForeground(QColor(Color.ERROR))
+                self.routing_table.setItem(row, 1, current_item)
                 combo = QComboBox()
+                combo.setMinimumWidth(180)
                 combo.setAccessibleName(f"{classification}の変更後モデル")
                 combo.addItem("未割り当て", None)
                 for model_id in self._models:
@@ -290,13 +421,15 @@ class ReleasedModelsPage(BasePage):
                 combo.currentIndexChanged.connect(lambda _index: self._update_routing_rows())
                 self._routing_controls[classification] = combo
                 container = QWidget()
-                cell_layout = QVBoxLayout(container)
+                cell_layout = QHBoxLayout(container)
                 cell_layout.setContentsMargins(4, 0, 4, 0)
                 cell_layout.addWidget(combo)
+                cell_layout.addStretch(1)
                 self.routing_table.setCellWidget(row, 2, container)
         finally:
             self._rendering = False
-        self.routing_table.resizeColumnsToContents()
+        self.routing_table.setColumnWidth(0, 110)
+        self.routing_table.setColumnWidth(1, 190)
         self._update_routing_rows()
 
     def _pending_changes(self) -> dict[str, str | None]:
@@ -320,6 +453,7 @@ class ReleasedModelsPage(BasePage):
                 set_style(combo, state="changed" if changed else "")
         self.apply_button.setEnabled(bool(changes))
         self.discard_button.setEnabled(bool(changes))
+        self.apply_button.setText(f"変更を適用…（{len(changes)} 件）" if changes else "変更を適用…")
 
     def build_change_rows(self) -> list[tuple[str, str | None, str | None]]:
         """確認ダイアログに渡す振り分け差分を作る。"""

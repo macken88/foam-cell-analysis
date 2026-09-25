@@ -6,7 +6,8 @@ import copy
 import math
 from typing import Any
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -30,7 +31,7 @@ from ...context import AppContext
 from ...jobs import FakeJob
 from ...labels import classification_label, config_key_label, model_type_label, quality_filter_label
 from ...navigation import PageId
-from ...theme import mono_font, set_style
+from ...theme import Color, mono_font, numeric_font, set_style
 from ...widgets.form import CollapsibleSection, FormSection
 from ...widgets.page_base import BasePage
 from ...widgets.table import mark_primary
@@ -201,6 +202,7 @@ class TrainingPage(BasePage):
         set_style(self.dataset_note, role="note")
         self.form_layout.addWidget(self.dataset_note)
         self.estimate_label = QLabel()
+        self.estimate_label.setTextFormat(Qt.TextFormat.RichText)
         set_style(self.estimate_label, state="warning")
         self.form_layout.addWidget(self.estimate_label)
         self.used_items_note = QLabel("実使用データ一覧は学習開始時に確定し、実験に保存されます。")
@@ -232,7 +234,9 @@ class TrainingPage(BasePage):
             self._model_fields[model_name] = section
             self._model_widgets[model_name] = model_widgets
             self.model_stack.addWidget(section)
-        self.form_layout.addWidget(self.model_stack)
+        self.model_section = CollapsibleSection("モデル固有設定", self.model_stack)
+        self.model_section.button.setText("モデル固有設定 ▶")
+        self.form_layout.addWidget(self.model_section)
         self.model_note = QLabel()
         set_style(self.model_note, role="note")
         self.form_layout.addWidget(self.model_note)
@@ -240,7 +244,12 @@ class TrainingPage(BasePage):
         for key in ("training", "augmentation", "checkpoint"):
             section, widgets = self._make_section(key, self.config[key], key)
             self.fields.update(widgets)
-            self.form_layout.addWidget(section)
+            if key in {"augmentation", "checkpoint"}:
+                collapsible = CollapsibleSection(section.title(), section)
+                collapsible.button.setText(f"{section.title()} ▶")
+                self.form_layout.addWidget(collapsible)
+            else:
+                self.form_layout.addWidget(section)
             if key == "augmentation":
                 profile_buttons = QHBoxLayout()
                 self.profile_preview_button = QPushButton("プロファイルをプレビュー")
@@ -249,7 +258,7 @@ class TrainingPage(BasePage):
                 self.profile_edit_button.clicked.connect(self.open_augmentation_dialog)
                 profile_buttons.addWidget(self.profile_preview_button)
                 profile_buttons.addWidget(self.profile_edit_button)
-                self.form_layout.addLayout(profile_buttons)
+                section.form.addRow(profile_buttons)
         self._bind_signals()
         self._update_model_stack()
         self._update_estimate()
@@ -294,6 +303,7 @@ class TrainingPage(BasePage):
             if path == "model.type":
                 continue
             control = self._control(path, value)
+            control.installEventFilter(self)
             widgets[path] = control
             label = config_key_label(path)
             if label == path:
@@ -417,6 +427,30 @@ class TrainingPage(BasePage):
         self._update_estimate()
         self._refresh_yaml()
 
+    def eventFilter(self, watched, event) -> bool:
+        """フォーカス中の設定に対応する YAML 行を強調する。"""
+        if event.type() == QEvent.Type.FocusIn and watched.toolTip():
+            self._highlight_yaml_path(watched.toolTip())
+        return super().eventFilter(watched, event)
+
+    def _highlight_yaml_path(self, path: str) -> None:
+        """設定キーに対応する YAML の行へ CHANGED 色を付ける。"""
+        leaf = path.rsplit(".", 1)[-1]
+        block = self.yaml_preview.document().firstBlock()
+        while block.isValid():
+            if block.text().lstrip().startswith(f"{leaf}:"):
+                selection = QTextEdit.ExtraSelection()
+                selection.cursor = self.yaml_preview.textCursor()
+                selection.cursor.setPosition(block.position())
+                selection.cursor.movePosition(
+                    selection.cursor.MoveOperation.EndOfBlock, selection.cursor.MoveMode.KeepAnchor
+                )
+                selection.format.setBackground(QColor(Color.CHANGED))
+                self.yaml_preview.setExtraSelections([selection])
+                return
+            block = block.next()
+        self.yaml_preview.setExtraSelections([])
+
     def _collect_config(self, model_override: str | None = None) -> dict[str, Any]:
         """現在の入力値を仕様の入れ子設定へ戻す。"""
         result = copy.deepcopy(self.config)
@@ -506,8 +540,12 @@ class TrainingPage(BasePage):
                 config["data"].get("classification", "all"),
                 config["data"].get("quality_filter", "all"),
             )
+            numeric_family = numeric_font().family()
             self.estimate_label.setText(
-                f"見込み使用データ数：学習 {train} 件 / 学習内検証 {valid} 件"
+                "見込み使用データ数：学習 "
+                f"<span style='font-family:{numeric_family};font-weight:bold'>{train}</span> 件 / "
+                "学習内検証 "
+                f"<span style='font-family:{numeric_family};font-weight:bold'>{valid}</span> 件"
             )
         except (KeyError, ValueError, TypeError):
             self.estimate_label.setText("見込み使用データ数：条件を確認してください")

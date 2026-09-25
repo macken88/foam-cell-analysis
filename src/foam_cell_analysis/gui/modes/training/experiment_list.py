@@ -11,8 +11,10 @@ from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -35,7 +37,7 @@ from ...labels import (
     quality_filter_label,
 )
 from ...navigation import PageId
-from ...theme import SERIES, numeric_font
+from ...theme import Color, numeric_font, set_style
 from ...widgets.chart import LineChart
 from ...widgets.marks import STATUS_MARKS, TagDelegate
 from ...widgets.page_base import BasePage
@@ -58,10 +60,13 @@ class ExperimentListPage(BasePage):
         )
         self.study_filter = QComboBox()
         self.study_filter.addItem("すべて")
+        self.study_filter.setMaximumWidth(150)
         self.model_filter = QComboBox()
         self.model_filter.addItems(["すべて", "Mask R-CNN", "Cellpose"])
+        self.model_filter.setMaximumWidth(150)
         self.state_filter = QComboBox()
         self.state_filter.addItems(["すべて", "下書き", "実行中", "完了", "失敗", "中断"])
+        self.state_filter.setMaximumWidth(120)
         filter_row = QHBoxLayout()
         filter_row.addWidget(QLabel("実験群"))
         filter_row.addWidget(self.study_filter)
@@ -70,7 +75,7 @@ class ExperimentListPage(BasePage):
         filter_row.addWidget(QLabel("状態"))
         filter_row.addWidget(self.state_filter)
         filter_row.addStretch(1)
-        self.table = QTableWidget(0, 9)
+        self.table = QTableWidget(0, 10)
         self.table.setHorizontalHeaderLabels(
             [
                 "選択",
@@ -85,7 +90,7 @@ class ExperimentListPage(BasePage):
                 "途中保存モデル",
             ]
         )
-        setup_table(self.table, stretch_column=8)
+        setup_table(self.table, stretch_column=9)
         self.table.setItemDelegateForColumn(
             6,
             TagDelegate({label: colors for label, colors in STATUS_MARKS.items()}, self.table),
@@ -94,15 +99,30 @@ class ExperimentListPage(BasePage):
         splitter = QSplitter(Qt.Orientation.Vertical)
         splitter.addWidget(self.table)
         self.details = QTabWidget()
-        self.overview = QTextEdit()
-        self.overview.setReadOnly(True)
         overview_page = QWidget()
         overview_layout = QVBoxLayout(overview_page)
+        self.overview_placeholder = QLabel("実験を選ぶと詳細が表示されます")
+        self.overview_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        set_style(self.overview_placeholder, role="note")
+        overview_layout.addWidget(self.overview_placeholder, 1)
+        self.overview_table = QTableWidget(0, 2)
+        self.overview_table.setHorizontalHeaderLabels(["設定項目", "値"])
+        self.overview_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.overview_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        setup_table(self.overview_table, stretch_column=1)
+        overview_layout.addWidget(self.overview_table, 1)
         self.yaml_button = QPushButton("設定 YAML を表示")
         self.yaml_button.clicked.connect(self.show_config_yaml)
-        overview_layout.addWidget(self.overview, 1)
         overview_layout.addWidget(self.yaml_button, 0, Qt.AlignmentFlag.AlignRight)
-        self.chart = LineChart()
+        self.chart = QWidget()
+        chart_layout = QVBoxLayout(self.chart)
+        chart_layout.setContentsMargins(0, 0, 0, 0)
+        chart_layout.addWidget(QLabel("学習内検証 mAP"))
+        self.chart_map = LineChart()
+        chart_layout.addWidget(self.chart_map, 1)
+        chart_layout.addWidget(QLabel("学習 loss"))
+        self.chart_loss = LineChart()
+        chart_layout.addWidget(self.chart_loss, 1)
         self.checkpoint_table = QTableWidget(0, 4)
         self.checkpoint_table.setHorizontalHeaderLabels(
             ["ファイル名", "エポック", "mAP", "保存日時"]
@@ -121,36 +141,43 @@ class ExperimentListPage(BasePage):
         splitter.addWidget(self.details)
         splitter.setSizes([400, 330])
         self.button_map: dict[str, QPushButton] = {}
-        buttons = QHBoxLayout()
         for key, label in (
             ("compare", "選択した実験を比較"),
-            ("result", "結果を開く"),
             ("copy", "設定を複製して新規実験"),
-            ("stop", "学習を中断"),
-            ("retry", "再実行"),
             ("send", "モデル比較へ送る…"),
-            ("edit", "下書きを編集"),
         ):
             button = QPushButton(label)
+            button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             self.button_map[key] = button
-            buttons.addWidget(button)
         mark_primary(self.button_map["send"])
-        mark_primary(self.button_map["compare"])
+        self.more_button = QPushButton("その他 ▾")
+        self.more_menu = QMenu(self.more_button)
+        self.action_map = {}
+        for key, label, callback in (
+            ("stop", "学習を中断", self.stop_selected),
+            ("retry", "再実行", self.retry_selected),
+            ("edit", "下書きを編集", self.edit_selected),
+            ("result", "結果を開く", self.open_result),
+        ):
+            action = self.more_menu.addAction(label)
+            action.triggered.connect(callback)
+            self.action_map[key] = action
+        self.more_button.setMenu(self.more_menu)
+        self.more_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        filter_row.addWidget(self.button_map["compare"])
+        filter_row.addWidget(self.button_map["copy"])
+        filter_row.addWidget(self.more_button)
+        filter_row.addWidget(self.button_map["send"])
         self.content_layout.addLayout(filter_row)
         self.content_layout.addWidget(splitter, 1)
-        self.content_layout.addLayout(buttons)
         self.study_filter.currentTextChanged.connect(self.refresh)
         self.model_filter.currentTextChanged.connect(self.refresh)
         self.state_filter.currentTextChanged.connect(self.refresh)
         self.table.itemChanged.connect(self._selection_changed)
         self.table.itemSelectionChanged.connect(self._current_changed)
         self.button_map["compare"].clicked.connect(self.compare_selected)
-        self.button_map["result"].clicked.connect(self.open_result)
         self.button_map["copy"].clicked.connect(self.copy_selected)
-        self.button_map["stop"].clicked.connect(self.stop_selected)
-        self.button_map["retry"].clicked.connect(self.retry_selected)
         self.button_map["send"].clicked.connect(self.send_selected)
-        self.button_map["edit"].clicked.connect(self.edit_selected)
         self._timer = QTimer(self)
         self._timer.setInterval(1000)
         self._timer.timeout.connect(self.refresh)
@@ -218,7 +245,7 @@ class ExperimentListPage(BasePage):
                 (cp for cp in experiment.checkpoints if cp.name in {"best", "best.pt"}), None
             )
             progress = (
-                f"epoch {experiment.current_epoch}/{experiment.total_epochs}"
+                f"エポック {experiment.current_epoch}/{experiment.total_epochs}"
                 if experiment.status == "running"
                 else "—"
             )
@@ -240,6 +267,10 @@ class ExperimentListPage(BasePage):
                     cell.setTextAlignment(
                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
                     )
+                if col == 8 and best:
+                    font = cell.font()
+                    font.setBold(True)
+                    cell.setFont(font)
                 cell.setData(Qt.ItemDataRole.UserRole, experiment.experiment_id)
                 self.table.setItem(row, col, cell)
         self.table.blockSignals(False)
@@ -272,54 +303,65 @@ class ExperimentListPage(BasePage):
     def _current_changed(self) -> None:
         experiment = self._current_experiment()
         if experiment is None:
-            self.overview.clear()
-            self.chart.set_series([])
+            self.overview_placeholder.show()
+            self.overview_table.hide()
+            self.overview_table.setRowCount(0)
+            self.yaml_button.hide()
+            self.chart_map.set_series([])
+            self.chart_loss.set_series([])
             self.checkpoint_table.setRowCount(0)
             self.run_table.setRowCount(0)
             self.used_data.clear()
             self._update_buttons()
             return
         config = experiment.config.values
-        data = config.get("data", {})
-        overview_lines = [
-            f"実験群: {experiment.study_id}",
-            f"説明: {experiment.description or '—'}",
-            f"データセット版: {data.get('dataset_version', '—')}",
-            f"交差検証分割: {data.get('split_id', '—')}",
-            f"画像分類: {classification_label(data.get('classification', '未設定'))}",
-            f"品質条件: {quality_filter_label(data.get('quality_filter', '未設定'))}",
-            f"モデル: {model_type_label(experiment.model_type)}",
-            "",
-            "主要設定:",
-            *[
-                f"{config_key_label(key)}: {self._display_value(key, value)}"
-                for key, value in flatten_config(config).items()
-                if key != "data.used_item_ids"
-            ],
-            f"実使用データ一覧: {len(experiment.used_item_ids)} 件",
+        flattened = flatten_config(config)
+        overview_rows = [
+            (config_key_label(key), self._display_value(key, value))
+            for key, value in flattened.items()
+            if key not in {"data.used_item_ids", "experiment.id"}
         ]
-        self.overview.setPlainText("\n".join(overview_lines))
+        overview_rows.extend(
+            [
+                ("モデル", model_type_label(experiment.model_type)),
+                ("実使用データ数", f"{len(experiment.used_item_ids)} 件"),
+            ]
+        )
+        self.overview_placeholder.hide()
+        self.overview_table.show()
+        self.yaml_button.show()
+        self.overview_table.setRowCount(len(overview_rows))
+        for row, (label, value) in enumerate(overview_rows):
+            self.overview_table.setItem(row, 0, QTableWidgetItem(label))
+            value_item = QTableWidgetItem(value)
+            value_item.setFont(numeric_font())
+            self.overview_table.setItem(row, 1, value_item)
         points_loss = experiment.history
-        self.chart.set_series(
+        self.chart_map.set_series(
+            [
+                (
+                    "mAP",
+                    QColor(Color.GRAPHITE),
+                    [float(p.epoch) for p in points_loss if p.map is not None],
+                    [float(p.map) for p in points_loss if p.map is not None],
+                )
+            ]
+        )
+        self.chart_loss.set_series(
             [
                 (
                     "loss",
-                    QColor(SERIES[0]),
+                    QColor(Color.SLATE),
                     [float(p.epoch) for p in points_loss],
                     [float(p.loss) for p in points_loss],
-                ),
-                (
-                    "mAP",
-                    QColor(SERIES[1]),
-                    [float(p.epoch) for p in points_loss if p.map is not None],
-                    [float(p.map) for p in points_loss if p.map is not None],
-                ),
+                )
             ]
         )
-        self.chart.set_best(None, None)
+        self.chart_map.set_best(None, None)
+        self.chart_loss.set_best(None, None)
         best = next((cp for cp in experiment.checkpoints if cp.name in {"best", "best.pt"}), None)
         if best and best.map is not None:
-            self.chart.set_best(float(best.epoch), float(best.map))
+            self.chart_map.set_best(float(best.epoch), float(best.map))
         self.checkpoint_table.setRowCount(len(experiment.checkpoints))
         for row, checkpoint in enumerate(experiment.checkpoints):
             values = [
@@ -363,16 +405,16 @@ class ExperimentListPage(BasePage):
         selected = self._checked_experiments()
         current = self._current_experiment()
         self.button_map["compare"].setEnabled(len(selected) >= 2)
-        self.button_map["result"].setEnabled(current is not None and current.status == "completed")
         self.button_map["copy"].setEnabled(current is not None)
-        self.button_map["stop"].setEnabled(current is not None and current.status == "running")
-        self.button_map["retry"].setEnabled(
-            current is not None and current.status in {"failed", "stopped"}
-        )
         self.button_map["send"].setEnabled(
             current is not None and current.status == "completed" and bool(current.checkpoints)
         )
-        self.button_map["edit"].setEnabled(current is not None and current.status == "draft")
+        self.action_map["result"].setEnabled(current is not None and current.status == "completed")
+        self.action_map["stop"].setEnabled(current is not None and current.status == "running")
+        self.action_map["retry"].setEnabled(
+            current is not None and current.status in {"failed", "stopped"}
+        )
+        self.action_map["edit"].setEnabled(current is not None and current.status == "draft")
 
     @staticmethod
     def _display_value(key: str, value: object) -> str:

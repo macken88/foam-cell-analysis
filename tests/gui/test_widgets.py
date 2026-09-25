@@ -25,6 +25,21 @@ def test_views_are_synchronized(qtbot):
     assert second.zoom == 2
 
 
+def test_image_view_overlay_labels_are_set_and_positioned(qtbot):
+    view = ImageView()
+    qtbot.addWidget(view)
+    view.resize(300, 200)
+    view.show()
+
+    view.set_overlay_labels("RC-001 Mask R-CNN", "検出 11 個")
+
+    assert view.top_left_label.text() == "RC-001 Mask R-CNN"
+    assert view.bottom_right_label.text() == "検出 11 個"
+    assert view.top_left_label.isVisible()
+    assert view.bottom_right_label.isVisible()
+    assert view.top_left_label.pos().x() < view.bottom_right_label.pos().x()
+
+
 def test_render_supports_all_display_modes():
     image = np.full((3, 4), 80, dtype=np.uint8)
     labels = np.array([[0, 1, 1, 0], [0, 1, 2, 0], [0, 0, 2, 0]], dtype=np.int32)

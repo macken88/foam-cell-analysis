@@ -1,13 +1,16 @@
 """モデル比較・リリース候補一覧。"""
 
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMenu,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
 )
@@ -15,8 +18,7 @@ from PySide6.QtWidgets import (
 from ...jobs import FakeJob
 from ...labels import candidate_status_label, format_score, model_type_label
 from ...navigation import PageId
-from ...theme import numeric_font
-from ...widgets.form import FormSection
+from ...theme import Color, numeric_font
 from ...widgets.marks import STATUS_MARKS, TagDelegate
 from ...widgets.page_base import BasePage
 from ...widgets.table import mark_primary, setup_table
@@ -41,7 +43,6 @@ class CandidatesPage(BasePage):
             self.validation.setCurrentIndex(latest)
         self.state_filter = QComboBox()
         self.state_filter.addItems(["すべて", "候補", "評価中", "リリース済み", "非採用"])
-        filters = FormSection("表示条件")
         row = QHBoxLayout()
         row.addWidget(QLabel("検証用データセット:"))
         self.validation.setMaximumWidth(150)
@@ -50,7 +51,6 @@ class CandidatesPage(BasePage):
         self.state_filter.setMaximumWidth(150)
         row.addWidget(self.state_filter)
         row.addStretch(1)
-        filters.form.addRow(row)
         self.table = QTableWidget(0, 10)
         self.table.setHorizontalHeaderLabels(
             [
@@ -84,18 +84,30 @@ class CandidatesPage(BasePage):
             ("evaluate", "評価を実行"),
             ("detail", "詳細評価を見る…"),
             ("compare", "マスク比較"),
-            ("export", "粒子解析用マスク出力…"),
-            ("reject", "非採用にする"),
             ("release", "選択候補をリリース…"),
         ):
             button = QPushButton(label)
+            button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             self.buttons[key] = button
             button_row.addWidget(button)
-        for key in ("add", "evaluate", "release"):
+        for key in ("release",):
             mark_primary(self.buttons[key])
-        self.content_layout.addWidget(filters)
+        self.more_button = QPushButton("その他 ▾")
+        self.more_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.more_menu = QMenu(self.more_button)
+        for key, label, callback in (
+            ("export", "粒子解析用マスク出力…", self._export_masks),
+            ("reject", "非採用にする", self._reject),
+        ):
+            action = self.more_menu.addAction(label)
+            action.triggered.connect(callback)
+            self.buttons[key] = QPushButton(label)
+        self.more_button.setMenu(self.more_menu)
+        self.content_layout.addLayout(row)
         self.content_layout.addWidget(self.table, 1)
         self.content_layout.addLayout(button_row)
+        button_row.insertWidget(4, self.more_button)
+        button_row.addStretch(1)
         self.validation.currentTextChanged.connect(self.refresh)
         self.state_filter.currentTextChanged.connect(self.refresh)
         self.table.itemChanged.connect(lambda _item: self._update_buttons())
@@ -121,7 +133,14 @@ class CandidatesPage(BasePage):
         version, state = self.validation.currentText(), self.state_filter.currentText()
         self.table.blockSignals(True)
         self.table.setRowCount(0)
-        for candidate in self.ctx.backend.list_candidates():
+        candidates = self.ctx.backend.list_candidates()
+        scores = [
+            candidate.evaluations[version].overall_map
+            for candidate in candidates
+            if version in candidate.evaluations
+        ]
+        best_score = max(scores, default=None)
+        for candidate in candidates:
             if (
                 state != "すべて"
                 and candidate.status
@@ -162,6 +181,12 @@ class CandidatesPage(BasePage):
                     item.setTextAlignment(
                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
                     )
+                if col == 6 and value == "未評価":
+                    item.setForeground(QColor(Color.SLATE))
+                if col == 6 and evaluation and evaluation.overall_map == best_score:
+                    font = item.font()
+                    font.setBold(True)
+                    item.setFont(font)
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.table.setItem(row, col, item)
         self.table.blockSignals(False)
@@ -186,11 +211,22 @@ class CandidatesPage(BasePage):
         self.buttons["compare"].setEnabled(len(selected) >= 2)
         self.buttons["export"].setEnabled(bool(selected))
         self.buttons["reject"].setEnabled(any(c.status == "candidate" for c in selected))
-        self.buttons["release"].setEnabled(
+        release_enabled = (
             one
             and selected[0].status == "candidate"
             and self.validation.currentText() in selected[0].evaluations
         )
+        self.buttons["release"].setEnabled(release_enabled)
+        reason = ""
+        if not one:
+            reason = "リリース候補を1件選択してください。"
+        elif selected[0].status != "candidate":
+            reason = "候補状態のモデルのみリリースできます。"
+        elif self.validation.currentText() not in selected[0].evaluations:
+            reason = "選択中の検証用データセットで評価を完了してください。"
+        self.buttons["release"].setToolTip(reason)
+        self.buttons["export"].setEnabled(bool(selected))
+        self.buttons["reject"].setEnabled(any(c.status == "candidate" for c in selected))
 
     def _show_add_dialog(self, preset=None) -> None:
         dialog = CandidateDialog(self.ctx, self, preset)

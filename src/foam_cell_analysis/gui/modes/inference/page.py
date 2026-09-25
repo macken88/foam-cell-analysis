@@ -7,6 +7,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -15,6 +16,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QRadioButton,
+    QSizePolicy,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -24,10 +26,11 @@ from PySide6.QtWidgets import (
 
 from ...jobs import FakeJob
 from ...navigation import PageId
-from ...theme import numeric_font
+from ...theme import Color, numeric_font, set_style
 from ...widgets.form import FormSection
 from ...widgets.image_convert import DisplayMode, array_to_pixmap, render
 from ...widgets.image_view import ImageView
+from ...widgets.marks import STATUS_MARKS, TagDelegate
 from ...widgets.page_base import BasePage
 from ...widgets.table import mark_primary, setup_table
 
@@ -51,7 +54,7 @@ class InferencePage(BasePage):
     modes = {
         "オーバーレイ": DisplayMode.OVERLAY,
         "インスタンスラベル": DisplayMode.INSTANCE_LABEL,
-        "粒子解析用二値マスク": DisplayMode.BINARY,
+        "二値マスク": DisplayMode.BINARY,
     }
 
     def __init__(self, ctx, parent=None, *, show_heading: bool = True) -> None:
@@ -78,12 +81,18 @@ class InferencePage(BasePage):
         controls.addWidget(self.remove_button)
         controls.addStretch(1)
         input_section.form.addRow(controls)
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["ファイル名", "画像分類", "適用モデル", "状態"])
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(
+            ["ファイル名", "画像分類", "適用モデル", "状態", "検出数"]
+        )
         setup_table(
             self.table,
             stretch_column=0,
             selection_mode=QTableWidget.SelectionMode.ExtendedSelection,
+        )
+        self.table.setItemDelegateForColumn(
+            3,
+            TagDelegate({**STATUS_MARKS, "待機": (Color.IDLE_BG, Color.SLATE, False)}, self.table),
         )
         input_section.form.addRow(self.table)
 
@@ -117,33 +126,57 @@ class InferencePage(BasePage):
         format_layout.addStretch(1)
         self.output_section.add_row("ファイル形式", format_row)
         self.run_button = QPushButton("推論を実行")
+        self.run_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         mark_primary(self.run_button)
-        self.route_button = QPushButton("振り分け画面へ")
-        self.route_button.setVisible(False)
         actions = QWidget()
         action_layout = QHBoxLayout(actions)
         action_layout.setContentsMargins(0, 0, 0, 0)
-        action_layout.addWidget(self.route_button)
         action_layout.addStretch(1)
         action_layout.addWidget(self.run_button)
         self.output_section.add_row("", actions)
 
         preview_section = FormSection("結果プレビュー")
-        self.display_combo = QComboBox()
-        self.display_combo.addItems(self.modes)
-        preview_section.add_row("表示形式", self.display_combo)
+        self.display_group = QButtonGroup(self)
+        self.display_buttons: dict[str, QPushButton] = {}
+        display_row = QWidget()
+        display_layout = QHBoxLayout(display_row)
+        display_layout.setContentsMargins(0, 0, 0, 0)
+        for index, label in enumerate(self.modes):
+            button = QPushButton(label)
+            button.setCheckable(True)
+            button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            set_style(button, role="segment")
+            if index == 0:
+                button.setChecked(True)
+            self.display_group.addButton(button)
+            self.display_buttons[label] = button
+            display_layout.addWidget(button)
+        display_layout.addStretch(1)
+        preview_section.add_row("", display_row)
         self.image_view = ImageView()
         self.image_view.setMinimumSize(360, 320)
         preview_section.add_row("", self.image_view)
         self.detection_count = QLabel("検出数: —")
-        preview_section.add_row("", self.detection_count)
+        self.image_view.set_overlay_labels("", "")
+        preview_section.form.addRow(self.detection_count)
+
+        self.error_banner = QWidget()
+        set_style(self.error_banner, role="errorBanner")
+        error_layout = QHBoxLayout(self.error_banner)
+        error_layout.setContentsMargins(8, 4, 8, 4)
+        self.error_text = QLabel()
+        self.route_button = QPushButton("振り分け画面へ")
+        error_layout.addWidget(self.error_text, 1)
+        error_layout.addWidget(self.route_button)
+        self.error_banner.hide()
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 8, 0)
-        left_layout.addWidget(self.output_section)
-        left_layout.addStretch(1)
+        left_layout.addWidget(input_section, 2)
+        left_layout.addWidget(self.error_banner)
+        left_layout.addWidget(self.output_section, 1)
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(8, 0, 0, 0)
@@ -152,7 +185,6 @@ class InferencePage(BasePage):
         splitter.addWidget(right)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 1)
-        self.content_layout.addWidget(input_section)
         self.content_layout.addWidget(splitter, 1)
 
         self.add_files_button.clicked.connect(self.choose_images)
@@ -162,7 +194,9 @@ class InferencePage(BasePage):
         self.run_button.clicked.connect(self.run_inference)
         self.route_button.clicked.connect(self.open_routing)
         self.table.itemSelectionChanged.connect(self._selection_changed)
-        self.display_combo.currentTextChanged.connect(self._render_selected)
+        self.display_group.buttonToggled.connect(
+            lambda _button, checked: checked and self._render_selected()
+        )
 
     @staticmethod
     def _checkbox_row(*checks: QCheckBox) -> QWidget:
@@ -249,6 +283,11 @@ class InferencePage(BasePage):
             status_item = QTableWidgetItem(entry.status)
             status_item.setFlags(status_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.table.setItem(row, 3, status_item)
+            count = len(set(entry.labels.ravel()) - {0}) if entry.labels is not None else None
+            count_item = QTableWidgetItem(str(count) if count is not None else "—")
+            count_item.setFont(numeric_font())
+            count_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.table.setItem(row, 4, count_item)
         self.table.resizeColumnsToContents()
         self._update_run_state()
 
@@ -267,7 +306,19 @@ class InferencePage(BasePage):
     def _update_run_state(self) -> None:
         missing = [entry for entry in self.inputs if not entry.model_id]
         self.run_button.setEnabled(bool(self.inputs) and not missing)
-        self.route_button.setVisible(bool(missing))
+        runnable = sum(bool(entry.model_id) for entry in self.inputs)
+        self.run_button.setText(f"推論を実行（{runnable} 枚）")
+        self.error_banner.setVisible(bool(missing))
+        missing_types = sorted({entry.classification for entry in missing})
+        if missing:
+            filenames = "、".join(entry.filename for entry in missing[:3])
+            suffix = " ほか" if len(missing) > 3 else ""
+            self.error_text.setText(
+                f"{'、'.join(missing_types)} にモデルが未割り当てのため、"
+                f"{filenames}{suffix} は推論できません。"
+            )
+        else:
+            self.error_text.clear()
         self.run_button.setToolTip("モデル振り分けが未設定の画像があります" if missing else "")
 
     def run_inference(self) -> None:
@@ -336,15 +387,24 @@ class InferencePage(BasePage):
         if not rows:
             self.image_view.set_image(None)
             self.detection_count.setText("検出数: —")
+            self.image_view.set_overlay_labels("", "")
             return
         entry = self.inputs[rows[0].row()]
         if entry.status != "完了" or entry.image is None or entry.labels is None:
             self.image_view.set_image(None)
             self.detection_count.setText("検出数: —")
+            self.image_view.set_overlay_labels(entry.filename, entry.model_id or "未割り当て")
             return
-        mode = self.modes[self.display_combo.currentText()]
+        selected_mode = next(
+            label for label, button in self.display_buttons.items() if button.isChecked()
+        )
+        mode = self.modes[selected_mode]
         self.image_view.set_image(array_to_pixmap(render(entry.image, entry.labels, mode)))
-        self.detection_count.setText(f"検出数: {len(set(entry.labels.ravel()) - {0})}")
+        count = len(set(entry.labels.ravel()) - {0})
+        self.detection_count.setText(f"検出数: {count}")
+        self.image_view.set_overlay_labels(
+            f"{entry.filename}　{entry.model_id}", f"検出 {count} 個"
+        )
 
     def open_routing(self) -> None:
         """リリース済みモデル・振り分け画面を開く。"""

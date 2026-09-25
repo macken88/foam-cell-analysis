@@ -58,6 +58,9 @@ def test_unassigned_classification_disables_run(qapp, mock_backend):
 
     assert not page.run_button.isEnabled()
     assert page.route_button.isVisible()
+    assert page.error_banner.isVisible()
+    assert "分類A" in page.error_text.text()
+    assert page.run_button.text() == "推論を実行（0 枚）"
     page.close()
 
 

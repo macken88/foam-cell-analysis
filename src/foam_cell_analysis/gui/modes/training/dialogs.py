@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -13,6 +14,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QLabel,
     QLineEdit,
+    QSplitter,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -57,9 +59,16 @@ class ExperimentCompareDialog(QDialog):
         self.table = QTableWidget()
         self.chart = LineChart()
         layout.addWidget(self.differences_only)
-        layout.addWidget(self.table, 1)
-        layout.addWidget(QLabel("mAP の推移"))
-        layout.addWidget(self.chart)
+        split = QSplitter(Qt.Orientation.Horizontal)
+        plot_panel = QWidget()
+        plot_layout = QVBoxLayout(plot_panel)
+        plot_layout.setContentsMargins(0, 0, 0, 0)
+        plot_layout.addWidget(QLabel("mAP の推移"))
+        plot_layout.addWidget(self.chart)
+        split.addWidget(self.table)
+        split.addWidget(plot_panel)
+        split.setSizes([430, 470])
+        layout.addWidget(split, 1)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.button(QDialogButtonBox.StandardButton.Close).setText("閉じる")
         buttons.rejected.connect(self.reject)
@@ -105,7 +114,10 @@ class ExperimentCompareDialog(QDialog):
                     [float(item.map) for item in points],
                 )
             )
-        self.chart.set_series(series)
+        self.chart.set_series(series[:4])
+        values = [value for item in series[:4] for value in item[3]]
+        lower = 0.5 if values and min(values) >= 0.5 else None
+        self.chart.set_y_range(lower, 1.0 if values and max(values) <= 1.0 else None)
 
     @staticmethod
     def _compare_value(key: str, value: Any) -> str:

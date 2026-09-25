@@ -80,6 +80,20 @@ def test_candidate_table_defaults_to_latest_and_uses_checkboxes(qtbot):
     assert len(page._selected()) == 1
 
 
+def test_release_button_explains_missing_evaluation(qtbot):
+    ctx = make_context()
+    page = CandidatesPage(ctx)
+    qtbot.addWidget(page)
+    row = next(
+        row for row in range(page.table.rowCount()) if page.table.item(row, 1).text() == "RC-003"
+    )
+
+    page.table.item(row, 0).setCheckState(Qt.CheckState.Checked)
+
+    assert not page.buttons["release"].isEnabled()
+    assert "評価を完了" in page.buttons["release"].toolTip()
+
+
 def test_candidate_dialog_builds_model_specific_fields(qtbot):
     ctx = make_context()
     dialog = CandidateDialog(ctx)

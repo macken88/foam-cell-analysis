@@ -82,6 +82,8 @@ def build_stylesheet() -> str:
         f"QWidget {{ color: {c.GRAPHITE}; }}",
         f"QMainWindow, QDialog {{ background: {c.STAGE}; }}",
         f"QWidget[role='panel'] {{ background: {c.SLIDE}; border: 1px solid {c.RULE}; }}",
+        f"QWidget[role='errorBanner'] {{ background: {c.ERROR_BG}; color: {c.ERROR}; "
+        f"border: 1px solid {c.ERROR}; }}",
         "QLabel#pageHeading { font-size: 16pt; font-weight: 600; }",
         f"QPushButton {{ background: {c.SLIDE}; color: {c.GRAPHITE}; "
         f"border: 1px solid {c.CONTROL_RULE}; border-radius: 3px; "
@@ -100,6 +102,9 @@ def build_stylesheet() -> str:
         f"selection-background-color: {c.SELECTION}; selection-color: {c.GRAPHITE}; }}",
         f"QTableView::item, QTableWidget::item {{ border: 0; "
         f"border-bottom: 1px solid {c.RULE_SOFT}; padding: 4px 7px; }}",
+        f"QTableView::item:selected, QTableWidget::item:selected "
+        f"{{ background: {c.SELECTION}; border: 0; }}",
+        "QTableView::item:focus, QTableWidget::item:focus { border: 0; outline: 0; }",
         f"QTableView QHeaderView::section, QTableWidget QHeaderView::section "
         f"{{ background: {c.HEADER_BG}; color: {c.SLATE}; border: 0; "
         f"border-bottom: 1px solid {c.RULE}; padding: 4px 7px; font-weight: normal; }}",
@@ -129,6 +134,9 @@ def build_stylesheet() -> str:
         f"QFrame#recentOperations {{ border: 0; border-top: 1px solid {c.RULE}; }}",
         "QPushButton[role='ghost'] { background: transparent; border: 0; padding: 3px 8px; }",
         f"QPushButton[role='ghost']:hover {{ background: {c.IDLE_BG}; }}",
+        "QPushButton[role='segment'] { border-radius: 0; padding: 3px 9px; }",
+        f"QPushButton[role='segment']:checked {{ background: {c.GRAPHITE}; "
+        f"color: {c.WHITE}; border-color: {c.GRAPHITE}; }}",
         f"QWidget#modeTopbar {{ background: {c.STAGE}; border: 0; "
         f"border-bottom: 1px solid {c.RULE}; }}",
         "QTabWidget#modeTabs { background: transparent; border: 0; }",
@@ -150,6 +158,8 @@ def build_stylesheet() -> str:
         f"border-radius: 3px; padding: 0 5px; "
         f"font-family: '{_family('Bahnschrift', 'Segoe UI')}'; }}",
         f"QLabel[role='imagePlaceholder'] {{ color: {c.SLATE}; background: {c.IMAGE_BG}; }}",
+        f"QLabel[role='imageOverlayLabel'] {{ color: {c.WHITE}; background: {c.GRAPHITE}; "
+        "padding: 2px 5px; border: 0; font-size: 8pt; }",
         f"QLabel[usage='train'] {{ background: {c.TRAIN_BG}; color: {c.TRAIN}; "
         "border-radius: 3px; padding: 0 7px; }",
         f"QLabel[usage='val'] {{ background: {c.VAL_BG}; color: {c.VAL_INK}; "
@@ -178,6 +188,7 @@ def build_stylesheet() -> str:
         f"QLabel[role='countSwatch'][usage='val'] {{ background: {c.VAL}; }}",
         f"QLabel[role='countSwatch'][usage='unassigned'], "
         f"QLabel[role='countSwatch'][usage='excluded'] {{ background: {c.IDLE}; }}",
+        "QPushButton::menu-indicator { image: none; width: 0; }",
     ]
     return "\n".join(rules)
 
