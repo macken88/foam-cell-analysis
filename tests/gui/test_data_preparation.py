@@ -1,183 +1,201 @@
-"""データ準備画面の操作テスト。"""
+"""データ準備 v2 の一括作業フローを検証する。"""
 
 from __future__ import annotations
 
-import pytest
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QPushButton
+from dataclasses import replace
+from time import perf_counter
 
-from foam_cell_analysis.gui.context import AppContext, StatusBus
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QFileDialog
+
+from foam_cell_analysis.gui.context import AppContext
 from foam_cell_analysis.gui.jobs import JobManager
-from foam_cell_analysis.gui.modes.data_preparation.dialogs import (
-    ArchiveDialog,
-    DatasetFinalizeDialog,
-    ExcelExportDialog,
-    ExcelImportDialog,
-    ImportDialog,
-    MaskRevisionDialog,
-)
+from foam_cell_analysis.gui.modes.data_preparation.dialogs import ImportSettingsDialog
 from foam_cell_analysis.gui.modes.data_preparation.page import DataPreparationPage
+from foam_cell_analysis.gui.modes.data_preparation.thumbnails import ThumbnailModel
 from foam_cell_analysis.gui.navigation import Navigator
 from foam_cell_analysis.services.mock.backend import MockBackend
+from foam_cell_analysis.services.models import DataItem
 
 
-@pytest.fixture
-def mock_backend():
-    """新しいモック Backend を用意する。"""
-    return MockBackend()
+def _page(qapp, backend=None):
+    backend = backend or MockBackend()
+    return DataPreparationPage(AppContext(backend, Navigator(), JobManager()))
 
 
-@pytest.fixture
-def data_page(qapp, mock_backend):
-    """データ準備ページだけを生成する。"""
-    context = AppContext(mock_backend, Navigator(), JobManager(), StatusBus())
-    page = DataPreparationPage(context)
-    yield page
+def _item(backend, item_id: str, folder: str, usage: str = "unassigned", classification="分類A"):
+    return DataItem(
+        item_id,
+        f"{item_id}.tif",
+        f"{folder}/{item_id}.tif",
+        ["A"],
+        classification,
+        "良",
+        ["rev_001"],
+        "rev_001",
+        usage=usage,
+        sha256=backend._digest(item_id),
+        seed=int(backend._digest(item_id)[:6], 16),
+    )
+
+
+def test_import_uniform_values_are_applied_per_item_without_linking_edits(qapp):
+    backend = MockBackend()
+    candidates = backend.scan_import_source({"A": "C:/batch-a"}, "C:/masks")[:3]
+    groups = {candidates[0].source_relpath.rsplit("/", 1)[0]: candidates}
+    dialog = ImportSettingsDialog(None, groups)
+    dialog.rows[0][1].setCurrentIndex(dialog.rows[0][1].findData("train"))
+    dialog.rows[0][2].setCurrentIndex(dialog.rows[0][2].findData("分類B"))
+    dialog.rows[0][3].setCurrentIndex(dialog.rows[0][3].findData("良"))
+    dialog._accept()
+    values = dialog.values[next(iter(groups))]
+    items = backend.import_items("all", candidates, values["classification"])
+    backend.bulk_update_items("all", [item.item_id for item in items], **values)
+    first, second = items[:2]
+    backend.update_item("all", first.item_id, classification="分類C")
+    assert first.classification == "分類C"
+    assert second.classification == "分類B"
+    assert all(item.usage == "train" and item.quality == "良" for item in items)
+
+
+def test_table_edits_multiple_items_and_undo_restores_them(qapp):
+    backend = MockBackend()
+    page = _page(qapp, backend)
+    selected = [item.item_id for item in backend.get_working_items()[:2]]
+    page._selected_ids = selected
+    page._change(selected, usage="val")
+    assert all(
+        next(item for item in backend.get_working_items() if item.item_id == key).usage == "val"
+        for key in selected
+    )
+    page.undo_stack.undo()
+    assert all(
+        next(item for item in backend.get_working_items() if item.item_id == key).usage == "train"
+        for key in selected
+    )
+    row = page.model.visible_items().index(backend.get_working_items()[0])
+    assert page.model.setData(page.model.index(row, 5), "可", Qt.ItemDataRole.EditRole)
+    assert backend.get_working_items()[0].quality == "可"
+    page.undo_stack.undo()
+    assert backend.get_working_items()[0].quality == "良"
     page.close()
 
 
-def test_data_preparation_validation_and_finalize_flow(data_page, mock_backend, qtbot) -> None:
-    page = data_page
-    dataset = mock_backend.get_working_dataset("train")
-    for item in dataset.items:
-        if item.included and (not item.classification or not item.quality):
-            mock_backend.update_item(
-                "train",
-                item.item_id,
-                classification=item.classification or "分類A",
-                quality=item.quality or "良",
-            )
-    page.refresh()
-    page.start_validation()
-    qtbot.waitUntil(lambda: mock_backend.get_working_dataset("train").state == "VALIDATED")
-    dialog = DatasetFinalizeDialog(page, mock_backend, "train")
-    version = dialog.apply()
-    page.refresh()
-    assert version.version == "train_v004"
-    assert mock_backend.get_working_dataset("train").state == "WORKING"
-    assert any(
-        item.version == version.version for item in mock_backend.list_dataset_versions("train")
-    )
-
-
-def test_exclude_and_restore_selection(data_page, mock_backend) -> None:
-    page = data_page
-    item = mock_backend.get_working_dataset("train").items[0]
-    index = page.proxy.mapFromSource(page.item_model.index(0, 0))
-    page.table.selectRow(index.row())
-    page._bulk_update(included=False)
-    assert not next(
-        row
-        for row in mock_backend.get_working_dataset("train").items
-        if row.item_id == item.item_id
-    ).included
-    page.table.selectRow(0)
-    page._bulk_update(included=True)
-    assert next(
-        row
-        for row in mock_backend.get_working_dataset("train").items
-        if row.item_id == item.item_id
-    ).included
-
-
-def test_initial_row_is_selected_and_preview_is_loaded(data_page, mock_backend) -> None:
-    first = mock_backend.get_working_dataset("train").items[0]
-    assert data_page.selected_item_id == first.item_id
-    assert data_page.image_view._pixmap_item is not None
-    assert data_page.changed_filter.isCheckable()
-    assert data_page.errors_filter.isCheckable()
-    assert data_page.changed_filter.text() == "変更ありのみ"
-    assert data_page.errors_filter.text() == "エラーありのみ"
-    assert data_page.display_combo.findText("インスタンスラベル") >= 0
-    assert data_page.mask_combo.count() == len(first.mask_revisions)
-    assert data_page.table.verticalHeader().isHidden()
-    assert data_page.history_table.verticalHeader().isHidden()
-
-
-def test_excel_import_error_does_not_apply_changes(data_page, mock_backend) -> None:
-    page = data_page
-    before = mock_backend.get_working_dataset("train").items[0].quality
-    dialog = ExcelImportDialog(page, mock_backend, "train")
-    dialog.file_row.path_edit.setText("C:/tmp/error.xlsx")
-    dialog.preview()
-    assert "エラー" in dialog.result_label.text()
-    assert not dialog.apply_button.isEnabled()
-    assert dialog.approved_changes == []
-    assert not dialog._changes
-    assert mock_backend.get_working_dataset("train").items[0].quality == before
-
-
-def test_finalize_cancel_rejects_and_archive_accepts_path(data_page) -> None:
-    finalize = DatasetFinalizeDialog(data_page, data_page.ctx.backend, "train")
-    assert finalize.windowTitle() == "新しいデータセットを作成"
-    assert finalize.minimumWidth() >= 480
-    buttons = finalize.findChildren(QPushButton)
-    cancel = next(button for button in buttons if button.text() == "キャンセル")
-    cancel.click()
-    assert finalize.result() == finalize.DialogCode.Rejected
-
-    archive = ArchiveDialog(data_page, "train_v003")
-    assert archive.windowTitle() == "アーカイブ作成"
-    assert archive.minimumWidth() >= 560
-    archive.destination.path_edit.setText("C:/archive")
-    archive_buttons = archive.findChildren(QPushButton)
-    next(button for button in archive_buttons if button.text() == "作成").click()
-    assert archive.result() == archive.DialogCode.Accepted
-    assert archive.output_path == "C:/archive"
-
-
-def test_finalize_duplicate_check_disables_creation_and_lists_conflicts(data_page) -> None:
-    dialog = DatasetFinalizeDialog(data_page, data_page.ctx.backend, "train")
-    dialog.backend.check_dataset_duplicates = lambda *_args: [
-        ("item_000007", "ハッシュ"),
-        ("item_000009", "識別子"),
-    ]
-
-    duplicates = dialog.check_duplicates()
-
-    assert len(duplicates) == 2
-    assert "item_000007" in dialog.duplicate_label.text()
-    assert "item_000009" in dialog.duplicate_label.text()
-    assert dialog.duplicate_label.property("state") == "error"
-    assert not dialog.create_button.isEnabled()
-
-
-def test_operation_dialogs_have_titles_sizes_labels_and_primary_actions(data_page) -> None:
-    backend = data_page.ctx.backend
-    dialogs = [
-        (ImportDialog(data_page), "データ取り込み", "選択分を取り込む"),
-        (ExcelExportDialog(data_page), "Excel出力", "出力"),
-        (ExcelImportDialog(data_page, backend, "train"), "Excel取込", "変更を取り込む"),
-        (MaskRevisionDialog(data_page, "sample.tif"), "新しいマスク版を取り込む", "取り込む"),
-    ]
-    for dialog, title, action in dialogs:
-        assert dialog.windowTitle() == title
-        assert dialog.minimumWidth() > 0
-        button = next(
-            button for button in dialog.findChildren(QPushButton) if button.text() == action
+def test_auto_triage_is_deterministic_stratified_groupwise_and_preserves_assigned_items(qapp):
+    backend = MockBackend()
+    master = backend.get_working_items()
+    assigned = next(item for item in master if item.usage == "train")
+    existing = assigned.usage
+    candidates = [
+        _item(
+            backend,
+            f"triage_{index:03d}",
+            f"lot-{index // 2}",
+            classification=("分類A" if index % 2 == 0 else "分類B"),
         )
-        assert button.property("primary") is True
-
-
-def test_editing_validated_item_returns_to_working(data_page, mock_backend) -> None:
-    page = data_page
-    dataset = mock_backend.get_working_dataset("train")
-    for item in dataset.items:
-        if item.included and (not item.classification or not item.quality):
-            mock_backend.update_item(
-                "train",
-                item.item_id,
-                classification=item.classification or "分類A",
-                quality=item.quality or "良",
-            )
-    mock_backend.validate_working_dataset("train")
-    assert dataset.state == "VALIDATED"
-    page.refresh()
-    row = page.item_model.row_for_id(dataset.items[0].item_id)
-    old_quality = dataset.items[0].quality
-    new_quality = "可" if old_quality != "可" else "良"
-    assert page.item_model.setData(
-        page.item_model.index(row, 4), new_quality, Qt.ItemDataRole.EditRole
+        for index in range(12)
+    ]
+    backend.add_imported_items("all", candidates)
+    result = backend.apply_auto_triage(
+        {"validation_ratio": 50, "by_folder": True, "stratify": True, "seed": 42},
+        [item.item_id for item in candidates],
     )
-    assert dataset.state == "WORKING"
-    assert dataset.items[0].quality == new_quality
+    assert result["train"] + result["val"] == 12
+    assert assigned.usage == existing
+    assert all(
+        len({item.usage for item in candidates if item.source_folder == folder}) == 1
+        for folder in {item.source_folder for item in candidates}
+    )
+    after = [item.usage for item in candidates]
+    for item in candidates:
+        item.usage = "unassigned"
+    backend.apply_auto_triage(
+        {"validation_ratio": 50, "by_folder": True, "stratify": True, "seed": 42},
+        [item.item_id for item in candidates],
+    )
+    assert [item.usage for item in candidates] == after
+
+
+def test_finalization_publishes_only_changed_train_and_val_and_omits_unassigned(qapp):
+    backend = MockBackend()
+    master = backend.get_working_items()
+    for item in master:
+        if item.usage in {"train", "val"}:
+            item.classification = item.classification or "分類A"
+            item.quality = item.quality or "良"
+            if not item.mask_revisions:
+                item.mask_revisions = ["rev_001"]
+                item.selected_mask_revision = "rev_001"
+    candidates = backend.scan_import_source({"A": "C:/new-batch"}, "C:/masks")[:2]
+    imported = backend.import_items("all", candidates, "分類A")
+    extra_unassigned = _item(backend, "extra_unassigned", "lot-unassigned")
+    backend.add_imported_items("all", [extra_unassigned])
+    backend.bulk_update_items("all", [imported[0].item_id], usage="train", quality="良")
+    backend.bulk_update_items("all", [imported[1].item_id], usage="val", quality="良")
+    unassigned = next(item for item in master if item.usage == "unassigned")
+    versions = backend.finalize_working_dataset("同時確定")
+    assert {item.purpose for item in versions} == {"train", "val"}
+    assert all(unassigned.item_id not in version.item_ids for version in versions)
+    train = next(item for item in versions if item.purpose == "train")
+    val = next(item for item in versions if item.purpose == "val")
+    assert train.base_validation_version == val.version
+    assert train.version == "train_v004" and val.version == "val_v004"
+
+
+def test_excel_export_and_import_round_trip(qapp, tmp_path, monkeypatch):
+    pytest = __import__("pytest")
+    pytest.importorskip("openpyxl")
+    backend = MockBackend()
+    page = _page(qapp, backend)
+    output = str(tmp_path / "working.xlsx")
+    monkeypatch.setattr(
+        QFileDialog, "getSaveFileName", lambda *_args, **_kwargs: (output, "Excel (*.xlsx)")
+    )
+    page.export_excel()
+    before = [
+        (item.item_id, item.usage, item.classification, item.quality)
+        for item in backend.get_working_items()
+    ]
+    monkeypatch.setattr(
+        QFileDialog, "getOpenFileName", lambda *_args, **_kwargs: (output, "Excel (*.xlsx)")
+    )
+    page.import_excel()
+    after = [
+        (item.item_id, item.usage, item.classification, item.quality)
+        for item in backend.get_working_items()
+    ]
+    assert after == before
+    page.undo_stack.undo()
+    assert [
+        (item.item_id, item.usage, item.classification, item.quality)
+        for item in backend.get_working_items()
+    ] == before
+    page.close()
+
+
+def test_thumbnails_construct_and_scroll_one_thousand_items_without_eager_rendering(qapp, qtbot):
+    backend = MockBackend()
+    items = backend.get_working_items()
+    items.extend(
+        replace(
+            items[index % len(items)],
+            item_id=f"item_extra_{index:04d}",
+            source_filename=f"extra_{index:04d}.tif",
+            source_relpath=f"large-folder/extra_{index:04d}.tif",
+            seed=index + 2000,
+        )
+        for index in range(910)
+    )
+    view = __import__("PySide6.QtWidgets", fromlist=["QListView"]).QListView()
+    qtbot.addWidget(view)
+    model = ThumbnailModel(backend, view)
+    started = perf_counter()
+    model.set_items(items)
+    view.setModel(model)
+    view.show()
+    view.scrollTo(model.index(model.rowCount() - 1, 0))
+    qapp.processEvents()
+    elapsed = perf_counter() - started
+    assert model.rowCount() >= 1000
+    assert elapsed < 4.0
+    assert len(model.cache) <= 320

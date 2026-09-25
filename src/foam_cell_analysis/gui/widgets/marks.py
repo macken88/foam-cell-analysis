@@ -2,7 +2,15 @@
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QStyle, QStyledItemDelegate, QWidget
+from PySide6.QtWidgets import (
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSizePolicy,
+    QStyle,
+    QStyledItemDelegate,
+    QWidget,
+)
 
 from ..theme import Color, numeric_font, set_style
 
@@ -78,6 +86,7 @@ class CountChip(QPushButton):
     def __init__(self, name: str, count: int, usage: str = "plain", parent=None) -> None:
         super().__init__(parent)
         self.setCheckable(True)
+        self.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.name = name
         self.count = count
         self.usage = usage
@@ -93,7 +102,6 @@ class CountChip(QPushButton):
         layout.addWidget(self.swatch)
         layout.addWidget(self.name_label)
         layout.addWidget(self.count_label)
-        layout.addStretch(1)
         self.swatch.setVisible(
             usage != "error" and usage in {"train", "val", "unassigned", "excluded"}
         )

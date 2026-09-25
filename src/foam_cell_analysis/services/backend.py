@@ -30,6 +30,64 @@ class Backend(Protocol):
     def get_working_dataset(self, purpose: str = "train") -> WorkingDataset:
         """用途別の作業中データを返す。"""
 
+    def get_working_items(self) -> list[DataItem]:
+        """全用途を含む作業項目を返す。"""
+
+    def update_items(self, item_ids: list[str], **changes: Any) -> None:
+        """複数項目をまとめて更新する。"""
+
+    def set_usage(self, item_ids: list[str], usage: str) -> None:
+        """複数項目へ同じ用途を設定する。"""
+
+    def scan_import_folders(
+        self, paths: dict[str, str], mask_rule: Any = None, channel_rule: Any = None
+    ) -> list[ImportCandidate]:
+        """複数チャンネルの取り込み元を走査する。"""
+
+    def import_folders(
+        self, scans: list[ImportCandidate], uniform_values: dict[str, dict[str, Any]]
+    ) -> list[DataItem]:
+        """フォルダごとの設定を各取り込み画像へ適用する。"""
+
+    def preview_auto_split(
+        self, settings: dict[str, Any], item_ids: list[str] | None = None
+    ) -> dict[str, int]:
+        """自動振り分けの実行後件数を返す。"""
+
+    def preview_auto_split_assignments(
+        self, settings: dict[str, Any], item_ids: list[str] | None = None
+    ) -> dict[str, str]:
+        """自動振り分けの対象ごとの実行後用途を返す。"""
+
+    def apply_auto_split(
+        self, settings: dict[str, Any], item_ids: list[str] | None = None
+    ) -> dict[str, int]:
+        """自動振り分けを作業データへ適用する。"""
+
+    def validate_items(self, item_ids: list[str] | None = None) -> ValidationReport:
+        """全件または指定項目を検査する。"""
+
+    def summarize_finalize(self) -> dict[str, dict[str, int | str]]:
+        """学習用・検証用の一括確定内容を集計する。"""
+
+    def finalize_working(
+        self, comment: str = "", create_archive: bool = False
+    ) -> list[DatasetVersion]:
+        """学習・検証の変更版を同時に確定する。"""
+
+    def validate_all_working_items(self) -> ValidationReport:
+        """確定対象の全作業項目を自動検査する。"""
+
+    def finalize_working_dataset(
+        self, comment: str = "", create_archive: bool = False
+    ) -> list[DatasetVersion]:
+        """学習・検証の変更版をまとめて確定する。"""
+
+    def apply_auto_triage(
+        self, settings: dict[str, Any], item_ids: list[str] | None = None
+    ) -> dict[str, int]:
+        """未振り分け項目を設定に従って学習・検証へ分ける。"""
+
     def update_item(self, purpose: str, item_id: str, **changes: Any) -> DataItem:
         """画像の分類、品質、採用状態、選択マスク版を更新する。"""
 

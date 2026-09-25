@@ -19,11 +19,31 @@ class DataItem:
     quality: str | None
     mask_revisions: list[str]
     selected_mask_revision: str
-    included: bool = True
+    usage: str = "train"
     change: str | None = None
     previous_change: str | None = None
     sha256: str = ""
     seed: int = 0
+
+    @property
+    def included(self) -> bool:
+        """旧モードとの互換用に、版へ収録可能な用途か返す。"""
+        return self.usage in {"train", "val"}
+
+    @included.setter
+    def included(self, value: bool) -> None:
+        """旧呼び出しの採否変更を用途へ変換する。"""
+        if not value:
+            self.usage = "excluded"
+        elif self.usage in {"excluded", "unassigned"}:
+            self.usage = "train"
+
+    @property
+    def source_folder(self) -> str:
+        """取り込み元フォルダの相対パスを返す。"""
+        from pathlib import PurePosixPath
+
+        return str(PurePosixPath(self.source_relpath.replace("\\", "/")).parent)
 
 
 @dataclass
@@ -64,6 +84,19 @@ class WorkingDataset:
     state: str = "WORKING"
     last_saved_at: datetime = field(default_factory=lambda: datetime.now().astimezone())
     validation: ValidationReport | None = None
+    base_train_version: str | None = None
+    base_val_version: str | None = None
+
+
+@dataclass
+class AutoTriageSettings:
+    """自動振り分けの設定値。"""
+
+    validation_ratio: int = 20
+    by_folder: bool = False
+    stratify: bool = True
+    bad_quality_to_excluded: bool = False
+    seed: int = 42
 
 
 @dataclass

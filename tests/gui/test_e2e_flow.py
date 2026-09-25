@@ -3,7 +3,6 @@
 from PySide6.QtCore import Qt
 
 from foam_cell_analysis.gui.modes.comparison.dialogs import CandidateDialog
-from foam_cell_analysis.gui.modes.data_preparation.dialogs import DatasetFinalizeDialog
 from foam_cell_analysis.gui.navigation import ModeId, PageId
 
 
@@ -14,23 +13,26 @@ def _wait_for(qtbot, predicate, timeout=5000):
 def test_dataset_finalize_appears_in_training_choices(shell, qtbot):
     backend = shell.ctx.backend
     page = shell.page(PageId.DATA_PREPARATION)
-    dataset = backend.get_working_dataset("train")
-    for item in dataset.items:
-        if item.included and (not item.classification or not item.quality):
-            backend.update_item(
-                "train",
-                item.item_id,
-                classification=item.classification or "分類A",
-                quality=item.quality or "良",
-            )
+    for item in backend.get_working_items():
+        if item.usage in {"train", "val"}:
+            item.classification = item.classification or "分類A"
+            item.quality = item.quality or "良"
+            if not item.mask_revisions:
+                item.mask_revisions = ["rev_001"]
+                item.selected_mask_revision = "rev_001"
+    imported = backend.import_items(
+        "all", backend.scan_import_source({"A": "C:/e2e"}, "C:/masks")[:2], "分類A"
+    )
+    backend.bulk_update_items("all", [imported[0].item_id], usage="train", quality="良")
+    backend.bulk_update_items("all", [imported[1].item_id], usage="val", quality="良")
     page.refresh()
-    page.validate_button.click()
-    _wait_for(qtbot, lambda: dataset.state == "VALIDATED")
-    dialog = DatasetFinalizeDialog(page, backend, "train")
-    version = dialog.apply()
+    versions = backend.finalize_working_dataset("E2E 確定")
     page.refresh()
+    version = next(item for item in versions if item.purpose == "train")
+    assert {item.purpose for item in versions} == {"train", "val"}
     assert any(row.version == version.version for row in backend.list_dataset_versions("train"))
     assert version.version == "train_v004"
+    assert version.base_validation_version == "val_v004"
     shell.navigate(PageId.TRAINING)
     choices = shell.page(PageId.TRAINING).fields["data.dataset_version"]
     assert choices.findText(version.version) >= 0

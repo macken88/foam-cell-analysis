@@ -25,6 +25,54 @@ def test_seed_data_covers_all_modes():
     assert backend.resolve_model("分類A").model_id == "model_007"
 
 
+def test_data_preparation_has_one_usage_based_working_dataset():
+    backend = MockBackend()
+    items = backend.get_working_items()
+    assert len(items) == 113
+    assert backend.get_working_dataset("train").base_version == "train_v003"
+    assert backend.get_working_dataset("val").base_version == "val_v003"
+    assert {item.usage for item in items} == {"train", "val", "excluded", "unassigned"}
+    selected = [items[5].item_id, items[6].item_id]
+    backend.set_usage(selected, "unassigned")
+    assert all(
+        next(item for item in items if item.item_id == item_id).usage == "unassigned"
+        for item_id in selected
+    )
+    assert backend.validate_items().errors
+
+
+def test_auto_split_preview_does_not_mutate_and_finalize_summary_has_both_purposes():
+    backend = MockBackend()
+    candidates = backend.scan_import_folders({"A": "C:/preview"}, "C:/masks")[:4]
+    imported = backend.import_folders(
+        candidates,
+        {
+            candidates[0].source_relpath.rsplit("/", 1)[0]: {
+                "classification": "分類A",
+                "quality": "良",
+            }
+        },
+    )
+    before = [item.usage for item in imported]
+    item_ids = [item.item_id for item in imported]
+    preview = backend.preview_auto_split(
+        {"ratio": 50, "unit": "item", "stratify": True, "seed": 7}, item_ids
+    )
+    assert preview["train"] + preview["val"] == len(imported)
+    assert [item.usage for item in imported] == before
+    assignments = backend.preview_auto_split_assignments(
+        {"ratio": 50, "unit": "source_folder", "stratify": True, "seed": 7}, item_ids
+    )
+    assert set(assignments) == set(item_ids)
+    assert set(assignments.values()) <= {"train", "val", "excluded"}
+    assert [item.usage for item in imported] == before
+    backend.apply_auto_split(
+        {"ratio": 50, "unit": "source_folder", "stratify": True, "seed": 7}, item_ids
+    )
+    assert all(item.usage in {"train", "val"} for item in imported)
+    assert set(backend.summarize_finalize()) == {"train", "val"}
+
+
 def test_validation_then_finalize_creates_version():
     backend = MockBackend()
     ds = backend.get_working_dataset("train")

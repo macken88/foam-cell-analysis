@@ -8,6 +8,7 @@ from .navigation import ModeId, PageId
 
 PAGE_TO_MODE_TAB = {
     PageId.DATA_PREPARATION: (ModeId.DATA_PREPARATION, 0),
+    PageId.DATASET_HISTORY: (ModeId.DATA_PREPARATION, 1),
     PageId.TRAINING: (ModeId.TRAINING, 0),
     PageId.EXPERIMENTS: (ModeId.TRAINING, 1),
     PageId.CANDIDATES: (ModeId.COMPARISON, 0),
@@ -16,7 +17,7 @@ PAGE_TO_MODE_TAB = {
     PageId.INFERENCE: (ModeId.INFERENCE, 0),
 }
 MODE_PAGES = {
-    ModeId.DATA_PREPARATION: [PageId.DATA_PREPARATION],
+    ModeId.DATA_PREPARATION: [PageId.DATA_PREPARATION, PageId.DATASET_HISTORY],
     ModeId.TRAINING: [PageId.TRAINING, PageId.EXPERIMENTS],
     ModeId.COMPARISON: [PageId.CANDIDATES, PageId.MASK_COMPARISON, PageId.RELEASED_MODELS],
     ModeId.INFERENCE: [PageId.INFERENCE],
@@ -26,6 +27,7 @@ PAGE_LABELS = {
         "作業中データ",
         "作業データを編集し、整合性を確認してデータセット版を確定します。",
     ),
+    PageId.DATASET_HISTORY: ("データセット版履歴", "確定済みの学習用版・検証用版を確認します。"),
     PageId.TRAINING: ("学習設定", "学習設定を作成し、再現可能な実験として記録します。"),
     PageId.EXPERIMENTS: ("実験一覧", "実験の状態、設定、学習結果を確認します。"),
     PageId.CANDIDATES: ("リリース候補", "検証用データセットを切り替えて候補を比較します。"),
@@ -67,7 +69,7 @@ class WindowManager(QObject):
             if not PAGE_TYPES:
                 from .modes.comparison.candidates_page import CandidatesPage
                 from .modes.comparison.mask_compare import MaskComparisonPage
-                from .modes.data_preparation.page import DataPreparationPage
+                from .modes.data_preparation.page import DataPreparationPage, DatasetHistoryPage
                 from .modes.inference.page import InferencePage
                 from .modes.release.page import ReleasedModelsPage
                 from .modes.training.experiment_list import ExperimentListPage
@@ -76,6 +78,7 @@ class WindowManager(QObject):
                 PAGE_TYPES.update(
                     {
                         PageId.DATA_PREPARATION: DataPreparationPage,
+                        PageId.DATASET_HISTORY: DatasetHistoryPage,
                         PageId.TRAINING: TrainingPage,
                         PageId.EXPERIMENTS: ExperimentListPage,
                         PageId.CANDIDATES: CandidatesPage,
