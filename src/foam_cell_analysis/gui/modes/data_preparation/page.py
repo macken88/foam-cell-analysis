@@ -233,6 +233,7 @@ class DataPreparationPage(BasePage):
             ("errors", "filter_errors"),
         ):
             self.chips[name].setToolTip(self.shortcuts[key])
+        chips.addStretch(1)
         root.addLayout(chips)
         filter_controls = QHBoxLayout()
         filter_controls.setSpacing(8)

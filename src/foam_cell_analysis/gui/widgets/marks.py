@@ -1,6 +1,6 @@
 """用途・状態タグと操作ヒント用の小さな部品。"""
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -80,13 +80,28 @@ class TagDelegate(QStyledItemDelegate):
         painter.restore()
 
 
-class CountChip(QPushButton):
+class LayoutButton(QPushButton):
+    """中に置いたレイアウトの大きさに合わせるボタン。
+
+    QPushButton の既定の sizeHint は自身の文字しか見ないため、
+    子レイアウトで中身を並べるボタンではこちらを使う。
+    """
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        layout = self.layout()
+        return layout.sizeHint() if layout is not None else super().sizeHint()
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        return self.sizeHint()
+
+
+class CountChip(LayoutButton):
     """用途色見本と件数を持つ絞り込みボタン。"""
 
     def __init__(self, name: str, count: int, usage: str = "plain", parent=None) -> None:
         super().__init__(parent)
         self.setCheckable(True)
-        self.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.name = name
         self.count = count
         self.usage = usage

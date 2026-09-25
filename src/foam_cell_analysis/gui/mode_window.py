@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
-    QPushButton,
+    QSizePolicy,
     QStackedWidget,
     QTabBar,
     QTabWidget,
@@ -19,7 +19,7 @@ from .context import AppContext
 from .labels import autosave_label, running_jobs_label
 from .navigation import ModeId, PageId
 from .theme import numeric_font
-from .widgets.marks import KeyCap
+from .widgets.marks import KeyCap, LayoutButton
 
 MODE_LABELS = {
     ModeId.DATA_PREPARATION: "データ準備",
@@ -71,20 +71,21 @@ class ModeWindow(QMainWindow):
         top = QHBoxLayout(topbar)
         top.setContentsMargins(16, 0, 16, 0)
         top.setSpacing(4)
-        self.home_button = QPushButton()
+        self.home_button = LayoutButton()
         self.home_button.setProperty("role", "ghost")
         home_layout = QHBoxLayout(self.home_button)
         home_layout.setContentsMargins(4, 2, 4, 2)
         home_layout.setSpacing(6)
-        self.home_button.setMinimumSize(140, 36)
+        self.home_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         home_label = QLabel("⌂ ホーム")
         home_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         home_layout.addWidget(home_label)
         keycap = KeyCap("Ctrl+H")
         keycap.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        keycap.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         home_layout.addWidget(keycap)
         self.home_button.clicked.connect(self.home_requested.emit)
-        top.addWidget(self.home_button)
+        top.addWidget(self.home_button, 0, Qt.AlignmentFlag.AlignLeft)
         top.addSpacing(16)
         self.tabs = QTabWidget()
         self.tabs.setObjectName("modeTabs")
