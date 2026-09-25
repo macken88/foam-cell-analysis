@@ -24,6 +24,7 @@ from ....services.models import (
     ValidationReport,
 )
 from ...labels import format_datetime
+from ...theme import Color, numeric_font
 
 
 class DataItemModel(QAbstractTableModel):
@@ -68,6 +69,10 @@ class DataItemModel(QAbstractTableModel):
             return None
         item = self.items[index.row()]
         column = index.column()
+        if role == Qt.ItemDataRole.FontRole and column == 1:
+            return numeric_font()
+        if role == Qt.ItemDataRole.TextAlignmentRole and column == 1:
+            return Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         if role == Qt.ItemDataRole.CheckStateRole and column == 0:
             return Qt.CheckState.Checked if item.included else Qt.CheckState.Unchecked
         if role == Qt.ItemDataRole.EditRole:
@@ -96,8 +101,8 @@ class DataItemModel(QAbstractTableModel):
             item.change or self.issues.get(item.item_id)
         ):
             if self.issues.get(item.item_id):
-                return QColor("#fff0e8")
-            return QColor("#edf4ff")
+                return QColor(Color.ERROR_BG)
+            return QColor(Color.TRAIN_BG)
         if role == Qt.ItemDataRole.ToolTipRole and column == 8 and self.issues.get(item.item_id):
             return f"整合性エラー {self.issues[item.item_id]} 件"
         return None
@@ -255,9 +260,15 @@ class ErrorTableModel(QAbstractTableModel):
         return 0 if parent is not None and parent.isValid() else len(self.headers)
 
     def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
-        if not index.isValid() or role != Qt.ItemDataRole.DisplayRole:
+        if not index.isValid():
             return None
         issue = self.issues[index.row()]
+        if role == Qt.ItemDataRole.FontRole and index.column() == 1:
+            return numeric_font()
+        if role == Qt.ItemDataRole.TextAlignmentRole and index.column() == 1:
+            return Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        if role != Qt.ItemDataRole.DisplayRole:
+            return None
         return (issue.severity, issue.item_id, issue.check, issue.message)[index.column()]
 
     def headerData(
@@ -298,9 +309,15 @@ class HistoryTableModel(QAbstractTableModel):
         return 0 if parent is not None and parent.isValid() else len(self.headers)
 
     def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
-        if not index.isValid() or role != Qt.ItemDataRole.DisplayRole:
+        if not index.isValid():
             return None
         version = self.versions[index.row()]
+        if role == Qt.ItemDataRole.FontRole and index.column() in (0, 2, 3, 4):
+            return numeric_font()
+        if role == Qt.ItemDataRole.TextAlignmentRole and index.column() in (0, 2, 3, 4):
+            return Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        if role != Qt.ItemDataRole.DisplayRole:
+            return None
         values = (
             version.version,
             "学習用" if version.purpose == "train" else "検証用",
@@ -345,9 +362,15 @@ class CheckTableModel(QAbstractTableModel):
         return 0 if parent is not None and parent.isValid() else len(self.headers)
 
     def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
-        if not index.isValid() or role != Qt.ItemDataRole.DisplayRole:
+        if not index.isValid():
             return None
         check = self.checks[index.row()]
+        if role == Qt.ItemDataRole.FontRole and index.column() == 2:
+            return numeric_font()
+        if role == Qt.ItemDataRole.TextAlignmentRole and index.column() == 2:
+            return Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        if role != Qt.ItemDataRole.DisplayRole:
+            return None
         return (check.label, check.status, check.count)[index.column()]
 
     def headerData(

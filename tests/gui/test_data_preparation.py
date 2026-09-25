@@ -138,7 +138,7 @@ def test_finalize_duplicate_check_disables_creation_and_lists_conflicts(data_pag
     assert len(duplicates) == 2
     assert "item_000007" in dialog.duplicate_label.text()
     assert "item_000009" in dialog.duplicate_label.text()
-    assert "#b42318" in dialog.duplicate_label.styleSheet()
+    assert dialog.duplicate_label.property("state") == "error"
     assert not dialog.create_button.isEnabled()
 
 

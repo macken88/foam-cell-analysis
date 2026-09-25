@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from ....services.backend import Backend
 from ....services.models import DatasetVersion, ImportCandidate
+from ...theme import numeric_font, set_style
 from ...widgets.table import mark_primary, setup_table
 
 
@@ -218,7 +219,13 @@ class ExcelImportDialog(QDialog):
         for row, change in enumerate(self._changes):
             values = [change["item_id"], change["field"], change.get("before", ""), change["after"]]
             for column, value in enumerate(values):
-                self.table.setItem(row, column, QTableWidgetItem(str(value)))
+                item = QTableWidgetItem(str(value))
+                if column == 0:
+                    item.setFont(numeric_font())
+                    item.setTextAlignment(
+                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                    )
+                self.table.setItem(row, column, item)
         self.result_label.setText(f"変更予定 {len(self._changes)} 件")
         self.apply_button.setEnabled(bool(self._changes))
 
@@ -287,13 +294,13 @@ class DatasetFinalizeDialog(QDialog):
             self.purpose, self.base_validation_version
         )
         if duplicates:
-            self.duplicate_label.setStyleSheet("color: #b42318; font-weight: 600;")
+            set_style(self.duplicate_label, state="error")
             self.duplicate_label.setText(
                 f"検証用データセットとの重複 {len(duplicates)} 件\n"
                 + "\n".join(f"{item_id}（{reason}）" for item_id, reason in duplicates)
             )
         else:
-            self.duplicate_label.setStyleSheet("color: #18794e; font-weight: 600;")
+            set_style(self.duplicate_label, state="ok")
             self.duplicate_label.setText("検証用データセットとの重複 0 件　✔")
         self.create_button.setEnabled(not duplicates)
         return duplicates
@@ -381,5 +388,5 @@ def _footer(dialog: QDialog, accept_label: str) -> QHBoxLayout:
 def _readonly(value: str) -> QLabel:
     label = QLabel(value)
     label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-    label.setStyleSheet("background: #f1f3f5; padding: 5px;")
+    set_style(label, role="readonly")
     return label

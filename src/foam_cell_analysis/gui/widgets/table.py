@@ -1,6 +1,5 @@
 """Qt の表ウィジェットに共通設定を適用する。"""
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHeaderView,
@@ -8,6 +7,8 @@ from PySide6.QtWidgets import (
     QTableView,
     QTableWidget,
 )
+
+from ..theme import set_style
 
 
 def setup_table(
@@ -19,12 +20,11 @@ def setup_table(
 ) -> None:
     """表の見出し、選択方式、列幅を共通設定する。"""
     view.verticalHeader().setVisible(False)
-    view.setAlternatingRowColors(True)
+    view.setAlternatingRowColors(False)
     view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
     view.setSelectionMode(selection_mode)
     view.setWordWrap(False)
-    view.setShowGrid(True)
-    view.setGridStyle(Qt.PenStyle.SolidLine)
+    view.setShowGrid(False)
 
     header = view.horizontalHeader()
     header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
@@ -41,7 +41,4 @@ def setup_table(
 
 def mark_primary(button: QPushButton) -> None:
     """ボタンへ主操作用スタイルプロパティを適用する。"""
-    button.setProperty("primary", True)
-    button.style().unpolish(button)
-    button.style().polish(button)
-    button.update()
+    set_style(button, primary=True)

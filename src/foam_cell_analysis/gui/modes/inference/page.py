@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 
 from ...jobs import FakeJob
 from ...navigation import PageId
+from ...theme import numeric_font
 from ...widgets.form import FormSection
 from ...widgets.image_convert import DisplayMode, array_to_pixmap, render
 from ...widgets.image_view import ImageView
@@ -236,6 +237,8 @@ class InferencePage(BasePage):
             )
             self.table.setCellWidget(row, 1, classification)
             model_item = QTableWidgetItem(entry.model_id or "未割り当て")
+            model_item.setFont(numeric_font())
+            model_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             model_item.setFlags(model_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             model_item.setToolTip("画像分類とモデル振り分けから自動決定")
             self.table.setItem(row, 2, model_item)

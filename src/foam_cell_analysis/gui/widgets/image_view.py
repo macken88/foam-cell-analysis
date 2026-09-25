@@ -1,9 +1,10 @@
 """ズーム・パン可能な画像表示部品。"""
 
 from PySide6.QtCore import QPointF, Qt, QTimer
-from PySide6.QtGui import QMouseEvent, QPixmap, QWheelEvent
+from PySide6.QtGui import QBrush, QColor, QMouseEvent, QPixmap, QWheelEvent
 from PySide6.QtWidgets import QGraphicsPixmapItem, QGraphicsScene, QGraphicsView, QLabel
 
+from ..theme import Color, set_style
 from .image_convert import DisplayMode
 
 __all__ = ["DisplayMode", "ImageView", "ViewSynchronizer"]
@@ -19,13 +20,13 @@ class ImageView(QGraphicsView):
         self._scale = 1.0
         self._syncing = False
         self._drag_position = None
-        self.setBackgroundBrush(Qt.GlobalColor.lightGray)
+        self.setBackgroundBrush(QBrush(QColor(Color.IMAGE_BG)))
         self.setDragMode(QGraphicsView.DragMode.NoDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.set_scrollbars_visible(True)
         self.placeholder = QLabel("画像なし", self.viewport())
         self.placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.placeholder.setStyleSheet("color: #666; background: #ddd;")
+        set_style(self.placeholder, role="imagePlaceholder")
 
     @property
     def zoom(self) -> float:

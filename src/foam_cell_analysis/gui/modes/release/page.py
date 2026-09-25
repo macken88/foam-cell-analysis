@@ -1,6 +1,7 @@
 """リリース済みモデルと分類振り分けを管理する画面。"""
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from ...labels import config_key_label, format_datetime, format_score, model_type_label
 from ...navigation import PageId
+from ...theme import Color, numeric_font, set_style
 from ...widgets.form import FormSection
 from ...widgets.page_base import BasePage
 from ...widgets.table import mark_primary, setup_table
@@ -108,7 +110,7 @@ class ReleasedModelsPage(BasePage):
         routing_section.form.addRow(self.routing_table)
         lower_layout.addWidget(routing_section)
         note = QLabel("新しいリリース済みモデルを登録しても自動では切り替わりません。")
-        note.setStyleSheet("color: #555;")
+        set_style(note, role="note")
         lower_layout.addWidget(note)
         actions = QHBoxLayout()
         self.apply_button = QPushButton("変更を適用…")
@@ -182,6 +184,11 @@ class ReleasedModelsPage(BasePage):
             )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
+                if column in (0, 2, 3, 4, 5, 6, 7, 8):
+                    item.setFont(numeric_font())
+                    item.setTextAlignment(
+                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                    )
                 item.setData(Qt.ItemDataRole.UserRole, model.model_id)
                 self.model_table.setItem(row, column, item)
         for column, width in {
@@ -302,14 +309,14 @@ class ReleasedModelsPage(BasePage):
         changes = self._pending_changes()
         for row, classification in enumerate(self.classifications):
             changed = classification in changes
-            color = Qt.GlobalColor.yellow if changed else Qt.GlobalColor.white
+            color = Color.CHANGED if changed else Color.SLIDE
             for column in (0, 1):
                 item = self.routing_table.item(row, column)
                 if item:
-                    item.setBackground(color)
+                    item.setBackground(QColor(color))
             combo = self._routing_controls.get(classification)
             if combo:
-                combo.setStyleSheet("background-color: #fff1bf;" if changed else "")
+                set_style(combo, state="changed" if changed else "")
         self.apply_button.setEnabled(bool(changes))
         self.discard_button.setEnabled(bool(changes))
 
@@ -359,5 +366,11 @@ class ReleasedModelsPage(BasePage):
                 record.after_model_id or "未割り当て",
             )
             for column, value in enumerate(values):
-                self.history_table.setItem(row, column, QTableWidgetItem(value))
+                item = QTableWidgetItem(value)
+                if column == 0:
+                    item.setFont(numeric_font())
+                    item.setTextAlignment(
+                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                    )
+                self.history_table.setItem(row, column, item)
         self.history_table.resizeColumnsToContents()

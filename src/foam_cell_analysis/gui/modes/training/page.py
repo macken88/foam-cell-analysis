@@ -30,6 +30,7 @@ from ...context import AppContext
 from ...jobs import FakeJob
 from ...labels import classification_label, config_key_label, model_type_label, quality_filter_label
 from ...navigation import PageId
+from ...theme import mono_font, set_style
 from ...widgets.form import CollapsibleSection, FormSection
 from ...widgets.page_base import BasePage
 from ...widgets.table import mark_primary
@@ -138,7 +139,8 @@ class TrainingPage(BasePage):
         preview_layout.addWidget(QLabel("設定プレビュー（YAML）"))
         self.yaml_preview = QTextEdit()
         self.yaml_preview.setReadOnly(True)
-        self.yaml_preview.setStyleSheet("font-family: Consolas, monospace; background: #f6f7f9;")
+        self.yaml_preview.setFont(mono_font())
+        set_style(self.yaml_preview, role="panel")
         preview_layout.addWidget(self.yaml_preview, 1)
         splitter.addWidget(preview_panel)
         splitter.setSizes([720, 310])
@@ -174,7 +176,7 @@ class TrainingPage(BasePage):
         self.study.setToolTip("experiment.study_id")
         self.experiment_id = QLineEdit()
         self.experiment_id.setReadOnly(True)
-        self.experiment_id.setStyleSheet("background: #f0f1f3; color: #555;")
+        set_style(self.experiment_id, role="readonly")
         self.experiment_id.setText(
             self.config["experiment"].get("id") or self.ctx.backend.next_experiment_id()
         )
@@ -190,13 +192,13 @@ class TrainingPage(BasePage):
         self.fields.update(widgets)
         self.form_layout.addWidget(section)
         self.dataset_note = QLabel("交差検証分割は正式評価用の検証用データセットとは別です。")
-        self.dataset_note.setStyleSheet("color: #666;")
+        set_style(self.dataset_note, role="note")
         self.form_layout.addWidget(self.dataset_note)
         self.estimate_label = QLabel()
-        self.estimate_label.setStyleSheet("color: #334155; padding: 4px;")
+        set_style(self.estimate_label, state="warning")
         self.form_layout.addWidget(self.estimate_label)
         self.used_items_note = QLabel("実使用データ一覧は学習開始時に確定し、実験に保存されます。")
-        self.used_items_note.setStyleSheet("color: #666;")
+        set_style(self.used_items_note, role="note")
         self.form_layout.addWidget(self.used_items_note)
 
         self.model_type = QComboBox()
@@ -226,7 +228,7 @@ class TrainingPage(BasePage):
             self.model_stack.addWidget(section)
         self.form_layout.addWidget(self.model_stack)
         self.model_note = QLabel()
-        self.model_note.setStyleSheet("color: #666;")
+        set_style(self.model_note, role="note")
         self.form_layout.addWidget(self.model_note)
 
         for key in ("training", "augmentation", "checkpoint"):

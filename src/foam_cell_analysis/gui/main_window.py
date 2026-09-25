@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import ClassVar
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -24,6 +25,7 @@ from .modes.release.page import ReleasedModelsPage
 from .modes.training.experiment_list import ExperimentListPage
 from .modes.training.page import TrainingPage
 from .navigation import PageId
+from .theme import Color, numeric_font
 
 
 class MainWindow(QMainWindow):
@@ -81,6 +83,7 @@ class MainWindow(QMainWindow):
         self.ctx.navigator.navigation_requested.connect(self.navigate)
         self.status_text = QLabel("準備完了")
         self.job_count = QLabel("実行中ジョブ: 0")
+        self.job_count.setFont(numeric_font())
         self.statusBar().addWidget(self.status_text, 1)
         self.statusBar().addPermanentWidget(self.job_count)
         self.ctx.jobs.jobs_changed.connect(
@@ -89,6 +92,7 @@ class MainWindow(QMainWindow):
         self.autosave_text = QLabel(
             f"自動保存 {ctx.backend.get_last_saved_at().astimezone().strftime('%H:%M:%S')}"
         )
+        self.autosave_text.setFont(numeric_font())
         self.statusBar().addPermanentWidget(self.autosave_text)
         self.ctx.status.message.connect(self.status_text.setText)
         self.ctx.status.saved.connect(self._update_saved_time)
@@ -107,7 +111,7 @@ class MainWindow(QMainWindow):
     def _header(label: str) -> QListWidgetItem:
         item = QListWidgetItem(label)
         item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable & ~Qt.ItemFlag.ItemIsEnabled)
-        item.setForeground(Qt.GlobalColor.gray)
+        item.setForeground(QColor(Color.SLATE))
         font = item.font()
         font.setBold(True)
         item.setFont(font)

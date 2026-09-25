@@ -26,6 +26,7 @@ from ...labels import (
     model_type_label,
     quality_filter_label,
 )
+from ...theme import SERIES, Color
 from ...widgets.chart import LineChart
 from ...widgets.table import mark_primary, setup_table
 
@@ -89,10 +90,10 @@ class ExperimentCompareDialog(QDialog):
             for col, config in enumerate(configs, start=1):
                 item = QTableWidgetItem(self._display_value(key, config.get(key)))
                 if key in differing:
-                    item.setBackground(QColor("#fff1c7"))
+                    item.setBackground(QColor(Color.CHANGED))
                 self.table.setItem(row, col, item)
         setup_table(self.table, stretch_column=0)
-        colors = [QColor(color) for color in ("#2563eb", "#dc2626", "#059669", "#9333ea")]
+        colors = [QColor(color) for color in SERIES]
         series = []
         for index, experiment in enumerate(self.experiments):
             points = [entry for entry in experiment.history if entry.map is not None]

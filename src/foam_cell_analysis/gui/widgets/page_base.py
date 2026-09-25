@@ -3,6 +3,7 @@
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 from ..context import AppContext
+from ..theme import set_style
 
 
 class BasePage(QWidget):
@@ -16,9 +17,8 @@ class BasePage(QWidget):
         layout.setContentsMargins(24, 20, 24, 20)
         self.heading = QLabel(title)
         self.heading.setObjectName("pageHeading")
-        self.heading.setStyleSheet("font-size: 22px; font-weight: 600;")
         self.description = QLabel(description)
-        self.description.setStyleSheet("color: #666;")
+        set_style(self.description, role="note")
         layout.addWidget(self.heading)
         layout.addWidget(self.description)
         self.content_layout = QVBoxLayout()

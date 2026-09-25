@@ -2,6 +2,7 @@
 
 from typing import Any
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (
 from ....services.models import Candidate, ExternalResult
 from ...context import AppContext
 from ...labels import config_key_label, format_score, model_type_label
+from ...theme import numeric_font
 from ...widgets.table import mark_primary, setup_table
 
 
@@ -237,9 +239,17 @@ class EvaluationDialog(QDialog):
             metric_values.append(format_score(score))
             count_values.append(str(count))
         for column, value in enumerate(metric_values):
-            self.metrics.setItem(0, column, QTableWidgetItem(value))
+            item = QTableWidgetItem(value)
+            if column:
+                item.setFont(numeric_font())
+                item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.metrics.setItem(0, column, item)
         for column, value in enumerate(count_values):
-            self.metrics.setItem(1, column, QTableWidgetItem(value))
+            item = QTableWidgetItem(value)
+            if column:
+                item.setFont(numeric_font())
+                item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.metrics.setItem(1, column, item)
         self.metrics.setFixedHeight(
             self.metrics.horizontalHeader().height()
             + sum(self.metrics.rowHeight(row) for row in range(self.metrics.rowCount()))
@@ -307,7 +317,11 @@ class EvaluationDialog(QDialog):
         row = self.results.rowCount()
         self.results.insertRow(row)
         for col, cell_value in enumerate((name, value, unit)):
-            self.results.setItem(row, col, QTableWidgetItem(str(cell_value)))
+            item = QTableWidgetItem(str(cell_value))
+            if col == 1:
+                item.setFont(numeric_font())
+                item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.results.setItem(row, col, item)
 
     def apply(self) -> Candidate:
         """表の外部評価を Backend に保存する。"""

@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 
 from ....services.backend import Backend
 from ....services.models import AugmentationProfile, TransformSetting
+from ...theme import Color
 from ...widgets.table import mark_primary
 
 TRANSFORMS = [
@@ -464,7 +465,7 @@ class AugmentationDialog(QDialog):
         """無効な変換を適用順序リストで灰色にする。"""
         for row, key in enumerate(self._order_keys):
             enabled = self.controls[key][0].isChecked()
-            self.order.item(row).setForeground(QColor("#222" if enabled else "#999"))
+            self.order.item(row).setForeground(QColor(Color.GRAPHITE if enabled else Color.IDLE))
 
     @staticmethod
     def _colorize(mask: np.ndarray) -> np.ndarray:

@@ -15,7 +15,9 @@ from PySide6.QtWidgets import (
 from ...jobs import FakeJob
 from ...labels import candidate_status_label, format_score, model_type_label
 from ...navigation import PageId
+from ...theme import numeric_font
 from ...widgets.form import FormSection
+from ...widgets.marks import STATUS_MARKS, TagDelegate
 from ...widgets.page_base import BasePage
 from ...widgets.table import mark_primary, setup_table
 from .dialogs import CandidateDialog, EvaluationDialog, MaskExportDialog, ReleaseDialog
@@ -62,6 +64,10 @@ class CandidatesPage(BasePage):
         )
         setup_table(
             self.table, stretch_column=9, selection_mode=QTableWidget.SelectionMode.SingleSelection
+        )
+        self.table.setItemDelegateForColumn(
+            7,
+            TagDelegate({label: colors for label, colors in STATUS_MARKS.items()}, self.table),
         )
         for column, width in enumerate((58, 72, 105, 82, 115, 92, 66, 78, 78)):
             self.table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
@@ -147,6 +153,11 @@ class CandidatesPage(BasePage):
             self.table.setItem(row, 0, check)
             for col, value in enumerate(values, 1):
                 item = QTableWidgetItem(str(value))
+                if col in (1, 3, 4, 5, 6):
+                    item.setFont(numeric_font())
+                    item.setTextAlignment(
+                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                    )
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.table.setItem(row, col, item)
         self.table.blockSignals(False)

@@ -35,7 +35,9 @@ from ...labels import (
     quality_filter_label,
 )
 from ...navigation import PageId
+from ...theme import SERIES, numeric_font
 from ...widgets.chart import LineChart
+from ...widgets.marks import STATUS_MARKS, TagDelegate
 from ...widgets.page_base import BasePage
 from ...widgets.table import mark_primary, setup_table
 from .dialogs import ExperimentCompareDialog, SendToCandidatesDialog, flatten_config
@@ -76,6 +78,10 @@ class ExperimentListPage(BasePage):
             ]
         )
         setup_table(self.table, stretch_column=8)
+        self.table.setItemDelegateForColumn(
+            6,
+            TagDelegate({label: colors for label, colors in STATUS_MARKS.items()}, self.table),
+        )
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         splitter = QSplitter(Qt.Orientation.Vertical)
         splitter.addWidget(self.table)
@@ -221,6 +227,11 @@ class ExperimentListPage(BasePage):
             ]
             for col, value in enumerate(values, start=1):
                 cell = QTableWidgetItem(value)
+                if col in (1, 4, 7, 8):
+                    cell.setFont(numeric_font())
+                    cell.setTextAlignment(
+                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                    )
                 cell.setData(Qt.ItemDataRole.UserRole, experiment.experiment_id)
                 self.table.setItem(row, col, cell)
         self.table.blockSignals(False)
@@ -285,21 +296,22 @@ class ExperimentListPage(BasePage):
             [
                 (
                     "loss",
-                    QColor("#2563eb"),
+                    QColor(SERIES[0]),
                     [float(p.epoch) for p in points_loss],
                     [float(p.loss) for p in points_loss],
                 ),
                 (
                     "mAP",
-                    QColor("#dc2626"),
+                    QColor(SERIES[1]),
                     [float(p.epoch) for p in points_loss if p.map is not None],
                     [float(p.map) for p in points_loss if p.map is not None],
                 ),
             ]
         )
+        self.chart.set_best(None, None)
         best = next((cp for cp in experiment.checkpoints if cp.name in {"best", "best.pt"}), None)
         if best and best.map is not None:
-            self.chart.set_highlight("mAP", float(best.epoch), float(best.map))
+            self.chart.set_best(float(best.epoch), float(best.map))
         self.checkpoint_table.setRowCount(len(experiment.checkpoints))
         for row, checkpoint in enumerate(experiment.checkpoints):
             values = [
@@ -309,7 +321,13 @@ class ExperimentListPage(BasePage):
                 format_datetime(checkpoint.saved_at),
             ]
             for col, value in enumerate(values):
-                self.checkpoint_table.setItem(row, col, QTableWidgetItem(value))
+                item = QTableWidgetItem(value)
+                if col in (1, 2, 3):
+                    item.setFont(numeric_font())
+                    item.setTextAlignment(
+                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                    )
+                self.checkpoint_table.setItem(row, col, item)
         self.run_table.setRowCount(len(experiment.runs))
         for row, run in enumerate(experiment.runs):
             values = [
@@ -320,7 +338,13 @@ class ExperimentListPage(BasePage):
                 self._format_environment(run.environment),
             ]
             for col, value in enumerate(values):
-                self.run_table.setItem(row, col, QTableWidgetItem(value))
+                item = QTableWidgetItem(value)
+                if col in (0, 1, 2):
+                    item.setFont(numeric_font())
+                    item.setTextAlignment(
+                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                    )
+                self.run_table.setItem(row, col, item)
         self.used_data.setPlainText(
             f"実使用データ数: {len(experiment.used_item_ids)} 件\n"
             + "\n".join(experiment.used_item_ids)

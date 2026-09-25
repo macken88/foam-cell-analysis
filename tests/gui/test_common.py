@@ -82,10 +82,11 @@ def test_setup_table_and_mark_primary(qapp):
     setup_table(table, selection_mode=QAbstractItemView.SelectionMode.ExtendedSelection)
     header = table.horizontalHeader()
     assert table.verticalHeader().isHidden()
-    assert table.alternatingRowColors()
+    assert not table.alternatingRowColors()
     assert table.selectionBehavior() == QAbstractItemView.SelectionBehavior.SelectRows
     assert table.selectionMode() == QAbstractItemView.SelectionMode.ExtendedSelection
     assert not table.wordWrap()
+    assert not table.showGrid()
     assert header.sectionResizeMode(0) == QHeaderView.ResizeMode.ResizeToContents
     assert header.sectionResizeMode(2) == QHeaderView.ResizeMode.Stretch
 
