@@ -54,9 +54,13 @@ class InferencePage(BasePage):
         "粒子解析用二値マスク": DisplayMode.BINARY,
     }
 
-    def __init__(self, ctx, parent=None) -> None:
+    def __init__(self, ctx, parent=None, *, show_heading: bool = True) -> None:
         super().__init__(
-            ctx, "本番推論", "画像分類に応じたリリース済みモデルで推論します。", parent
+            ctx,
+            "本番推論",
+            "画像分類に応じたリリース済みモデルで推論します。",
+            parent,
+            show_heading=show_heading,
         )
         self.inputs: list[InferenceInput] = []
         self.output_path = ""

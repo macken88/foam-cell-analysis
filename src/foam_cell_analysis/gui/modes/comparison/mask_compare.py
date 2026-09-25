@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 
 from ...labels import model_type_label
 from ...navigation import PageId
+from ...theme import body_font
 from ...widgets.image_convert import DisplayMode, array_to_pixmap, render
 from ...widgets.image_view import ImageView, ViewSynchronizer
 from ...widgets.page_base import BasePage
@@ -24,8 +25,14 @@ from ...widgets.page_base import BasePage
 class MaskComparisonPage(BasePage):
     """原画像と候補予測を最大4候補まで比較する。"""
 
-    def __init__(self, ctx, parent=None) -> None:
-        super().__init__(ctx, "マスク比較", "候補モデルの予測結果を比較します。", parent)
+    def __init__(self, ctx, parent=None, *, show_heading: bool = True) -> None:
+        super().__init__(
+            ctx,
+            "マスク比較",
+            "候補モデルの予測結果を比較します。",
+            parent,
+            show_heading=show_heading,
+        )
         self.validation = "val_v003"
         self.candidate_ids: list[str] = []
         self.items = []
@@ -71,8 +78,12 @@ class MaskComparisonPage(BasePage):
         self.labels: list[QLabel] = []
         area = QWidget()
         area.setLayout(self.grid)
+        self.placeholder = QLabel("候補一覧で比較する候補を選んでください")
+        self.placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.placeholder.setFont(body_font(12))
         self.content_layout.addLayout(controls)
         self.content_layout.addLayout(mode_row)
+        self.content_layout.addWidget(self.placeholder)
         self.content_layout.addWidget(area, 1)
         self.back.clicked.connect(lambda: ctx.navigator.navigate(PageId.CANDIDATES))
         self.previous.clicked.connect(lambda: self._move(-1))
@@ -88,6 +99,7 @@ class MaskComparisonPage(BasePage):
         self.validation = params.get("validation_version", "val_v003")
         self.validation_label.setText(f"検証用データセット: {self.validation}")
         self.candidate_ids = params.get("candidate_ids", [])[:4]
+        self.placeholder.setVisible(not self.candidate_ids)
         self._build_views()
         self._load_items()
 

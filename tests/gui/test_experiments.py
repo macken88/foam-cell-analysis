@@ -9,15 +9,15 @@ from foam_cell_analysis.gui.modes.training.dialogs import (
 from foam_cell_analysis.gui.navigation import PageId
 
 
-def test_send_completed_experiment_transitions_with_candidate_parameters(main_window, monkeypatch):
-    page = main_window.pages[PageId.EXPERIMENTS]
+def test_send_completed_experiment_transitions_with_candidate_parameters(shell, monkeypatch):
+    page = shell.page(PageId.EXPERIMENTS)
     target_row = next(
         row for row in range(page.table.rowCount()) if page.table.item(row, 1).text() == "exp_0042"
     )
     page.table.setCurrentCell(target_row, 1)
     received = []
     monkeypatch.setattr(
-        main_window.ctx.navigator,
+        shell.ctx.navigator,
         "navigate",
         lambda page_id, **params: received.append((page_id, params)),
     )

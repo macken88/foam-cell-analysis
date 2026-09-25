@@ -185,6 +185,16 @@ def format_datetime(value: datetime) -> str:
     return value.astimezone().strftime("%Y-%m-%d %H:%M")
 
 
+def running_jobs_label(count: int) -> str:
+    """実行中ジョブ件数を共通表記で返す。"""
+    return f"実行中ジョブ {count}"
+
+
+def autosave_label(value: datetime) -> str:
+    """自動保存時刻を共通表記で返す。"""
+    return f"自動保存 {value.astimezone().strftime('%H:%M:%S')}"
+
+
 def config_key_label(dotted_key: str) -> str:
     """仕様書14章の内部キーを表示名へ変換する。"""
     return _CONFIG_LABELS.get(dotted_key, dotted_key)

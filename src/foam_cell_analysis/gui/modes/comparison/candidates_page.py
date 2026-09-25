@@ -26,9 +26,13 @@ from .dialogs import CandidateDialog, EvaluationDialog, MaskExportDialog, Releas
 class CandidatesPage(BasePage):
     """候補の追加・評価・比較・リリースを行う。"""
 
-    def __init__(self, ctx, parent=None) -> None:
+    def __init__(self, ctx, parent=None, *, show_heading: bool = True) -> None:
         super().__init__(
-            ctx, "モデル比較・リリース", "検証用データセットを切り替えて候補を比較します。", parent
+            ctx,
+            "モデル比較・リリース",
+            "検証用データセットを切り替えて候補を比較します。",
+            parent,
+            show_heading=show_heading,
         )
         self.validation = QComboBox()
         self.validation.addItems([v.version for v in ctx.backend.list_validation_versions()])

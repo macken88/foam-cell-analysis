@@ -9,7 +9,14 @@ from ..theme import set_style
 class BasePage(QWidget):
     """全画面が継承する見出し付きページ。"""
 
-    def __init__(self, ctx: AppContext, title: str, description: str = "", parent=None) -> None:
+    def __init__(
+        self,
+        ctx: AppContext,
+        title: str,
+        description: str = "",
+        parent=None,
+        show_heading: bool = True,
+    ) -> None:
         super().__init__(parent)
         self.ctx = ctx
         self.title = title
@@ -19,6 +26,8 @@ class BasePage(QWidget):
         self.heading.setObjectName("pageHeading")
         self.description = QLabel(description)
         set_style(self.description, role="note")
+        self.heading.setVisible(show_heading)
+        self.description.setVisible(show_heading)
         layout.addWidget(self.heading)
         layout.addWidget(self.description)
         self.content_layout = QVBoxLayout()

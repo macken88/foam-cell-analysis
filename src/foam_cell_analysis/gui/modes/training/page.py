@@ -113,9 +113,15 @@ CHOICES = {
 class TrainingPage(BasePage):
     """実験設定・YAML プレビュー・学習開始を提供する。"""
 
-    def __init__(self, ctx: AppContext, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, ctx: AppContext, parent: QWidget | None = None, *, show_heading: bool = True
+    ) -> None:
         super().__init__(
-            ctx, "モデル学習", "学習設定を作成し、再現可能な実験として記録します。", parent
+            ctx,
+            "モデル学習",
+            "学習設定を作成し、再現可能な実験として記録します。",
+            parent,
+            show_heading=show_heading,
         )
         self.options = ctx.backend.list_training_options()
         self.config = ctx.backend.default_experiment_config("mask_rcnn")

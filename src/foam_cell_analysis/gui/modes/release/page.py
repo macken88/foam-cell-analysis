@@ -61,12 +61,13 @@ class ReleasedModelsPage(BasePage):
 
     classifications = ("分類A", "分類B", "分類C")
 
-    def __init__(self, ctx, parent=None) -> None:
+    def __init__(self, ctx, parent=None, *, show_heading: bool = True) -> None:
         super().__init__(
             ctx,
             "リリース済みモデル・振り分け",
             "リリース済みモデルは読み取り専用です。振り分けの変更は適用後に有効になります。",
             parent,
+            show_heading=show_heading,
         )
         splitter = QSplitter(Qt.Orientation.Vertical)
         self.model_table = QTableWidget(0, 11)

@@ -46,8 +46,16 @@ from .dialogs import ExperimentCompareDialog, SendToCandidatesDialog, flatten_co
 class ExperimentListPage(BasePage):
     """実験一覧と詳細を表示し、実験操作へ誘導する。"""
 
-    def __init__(self, ctx: AppContext, parent: QWidget | None = None) -> None:
-        super().__init__(ctx, "実験一覧", "実験の状態、設定、学習結果を確認します。", parent)
+    def __init__(
+        self, ctx: AppContext, parent: QWidget | None = None, *, show_heading: bool = True
+    ) -> None:
+        super().__init__(
+            ctx,
+            "実験一覧",
+            "実験の状態、設定、学習結果を確認します。",
+            parent,
+            show_heading=show_heading,
+        )
         self.study_filter = QComboBox()
         self.study_filter.addItem("すべて")
         self.model_filter = QComboBox()

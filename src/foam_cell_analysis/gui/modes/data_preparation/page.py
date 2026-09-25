@@ -58,12 +58,15 @@ class DataPreparationPage(BasePage):
         "インスタンスラベル": DisplayMode.INSTANCE_LABEL,
     }
 
-    def __init__(self, ctx: AppContext, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, ctx: AppContext, parent: QWidget | None = None, *, show_heading: bool = True
+    ) -> None:
         super().__init__(
             ctx,
             "データ準備",
             "作業データを編集し、整合性を確認してデータセット版を確定します。",
             parent,
+            show_heading=show_heading,
         )
         self.purpose = "train"
         self.dataset = None

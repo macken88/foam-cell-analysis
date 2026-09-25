@@ -6,10 +6,11 @@ from PySide6.QtCore import QLibraryInfo, QTranslator
 from PySide6.QtWidgets import QApplication
 
 from .gui.context import AppContext, StatusBus
+from .gui.home_window import HomeWindow
 from .gui.jobs import JobManager
-from .gui.main_window import MainWindow
 from .gui.navigation import Navigator
 from .gui.theme import apply_theme
+from .gui.window_manager import WindowManager
 from .services.mock.backend import MockBackend
 
 
@@ -35,6 +36,7 @@ def main() -> int:
     context = AppContext(backend=backend, navigator=navigator, jobs=jobs, status=StatusBus())
     install_translations(app)
     apply_style(app)
-    window = MainWindow(context)
+    manager = WindowManager(context)
+    window = HomeWindow(context, manager)
     window.show()
     return app.exec()

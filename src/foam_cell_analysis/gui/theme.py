@@ -28,6 +28,7 @@ class Color:
     CHANGED = "#FFF4CC"
     IMAGE_BG = "#2E3338"
     HEADER_BG = "#F5F7F8"
+    HOVER_BG = "#F6F8F9"
     STATUS_BG = "#E2E6E9"
     CONTROL_RULE = "#BCC4CB"
     DISABLED = "#A6AEB5"
@@ -118,6 +119,22 @@ def build_stylesheet() -> str:
         f"QGroupBox::title {{ subcontrol-origin: margin; left: 0; "
         f"padding-right: 6px; color: {c.GRAPHITE}; }}",
         f"QStatusBar {{ background: {c.STATUS_BG}; color: {c.SLATE}; }}",
+        f"QFrame#pipelinePanel {{ background: {c.SLIDE}; border: 1px solid {c.RULE}; }}",
+        "QFrame#pipelineStage { background: transparent; border: 0; }",
+        f"QFrame#pipelineStage:hover {{ background: {c.HOVER_BG}; }}",
+        f"QFrame#pipelineStage:focus {{ border: 1px solid {c.GRAPHITE}; }}",
+        f"QFrame#homeUserRow {{ background: {c.SLIDE}; border: 1px solid {c.RULE}; }}",
+        f"QFrame#homeUserRow:hover {{ background: {c.HOVER_BG}; }}",
+        f"QFrame#homeUserRow:focus {{ border: 1px solid {c.GRAPHITE}; }}",
+        f"QFrame#recentOperations {{ border: 0; border-top: 1px solid {c.RULE}; }}",
+        "QPushButton[role='ghost'] { background: transparent; border: 0; padding: 3px 8px; }",
+        f"QPushButton[role='ghost']:hover {{ background: {c.IDLE_BG}; }}",
+        f"QWidget#modeTopbar {{ background: {c.STAGE}; border: 0; "
+        f"border-bottom: 1px solid {c.RULE}; }}",
+        "QTabWidget#modeTabs { background: transparent; border: 0; }",
+        "QTabWidget#modeTabs::pane { border: 0; background: transparent; }",
+        "QTabWidget#modeTabs QWidget { background: transparent; }",
+        f"QTabBar#modeTabBar {{ background: {c.STAGE}; border: 0; }}",
         f"QListWidget#mainSidebar {{ background: {c.STAGE}; border: 0; }}",
         "QListWidget#mainSidebar::item { padding: 6px 12px; }",
         f"QListWidget#mainSidebar::item:selected "

@@ -18,8 +18,17 @@ class PageId(StrEnum):
     INFERENCE = "inference"
 
 
+class ModeId(StrEnum):
+    """独立ウィンドウを持つアプリのモード。"""
+
+    DATA_PREPARATION = "data_preparation"
+    TRAINING = "training"
+    COMPARISON = "comparison"
+    INFERENCE = "inference"
+
+
 class Navigator(QObject):
-    """MainWindow にページ遷移を通知する。"""
+    """ウィンドウ管理側へページ遷移を通知する。"""
 
     navigation_requested = Signal(object, dict)
 
