@@ -10,6 +10,7 @@ class PageId(StrEnum):
     """アプリ内の全ページ。"""
 
     DATA_PREPARATION = "data_preparation"
+    DATASET_HISTORY = "dataset_history"
     TRAINING = "training"
     EXPERIMENTS = "experiments"
     CANDIDATES = "candidates"

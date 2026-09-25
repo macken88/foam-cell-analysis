@@ -127,11 +127,8 @@ class PipelineWidget(QFrame):
     def set_summary(self, summary: HomeSummary) -> None:
         """工程情報を表示する。"""
         self.summary = summary
-        data_value = summary.unconfirmed_changes or summary.data_items
-        data_detail = "件 未確定の変更" if summary.unconfirmed_changes else "件 登録済み"
-        if not summary.unconfirmed_changes and not summary.data_items:
-            data_value = "データを取り込みましょう"
-            data_detail = ""
+        data_value = summary.unassigned_items
+        data_detail = "件 未振り分け"
         data_note = f"最新の版 {summary.latest_train} / {summary.latest_validation}"
         training_value = (
             summary.running_epoch if summary.running_experiment else summary.completed_experiments
@@ -172,9 +169,7 @@ class PipelineWidget(QFrame):
         ):
             label.setText(text)
         self._data_errors.setText(f"⚠ {summary.data_errors} 件のエラー")
-        self._data_errors.setStyleSheet(
-            f"color: {Color.ERROR if summary.data_errors else Color.SLATE}"
-        )
+        set_style(self._data_errors, role="note", state="error" if summary.data_errors else "idle")
         should_pulse = bool(summary.running_experiment) and os.getenv("FOAM_REDUCED_MOTION") != "1"
         if should_pulse and not self._timer.isActive():
             self._timer.start(80)
@@ -316,7 +311,9 @@ class HomeWindow(QMainWindow):
         )
 
     def _show_shortcuts_info(self) -> None:
-        QMessageBox.information(self, "キー割り当て", "キー割り当ての設定は後の版で追加します。")
+        from .keymap_dialog import KeymapDialog
+
+        KeymapDialog(self).exec()
 
     def _open_mode(self, mode: ModeId) -> None:
         page_id = {

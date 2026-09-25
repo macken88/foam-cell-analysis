@@ -12,6 +12,7 @@ class HomeSummary:
     """ホーム画面に必要な表示用データ。"""
 
     unconfirmed_changes: int
+    unassigned_items: int
     data_items: int
     data_errors: int
     latest_train: str
@@ -32,23 +33,22 @@ def build_home_summary(backend: Backend, jobs: JobManager) -> HomeSummary:
     """Backend とジョブ状態からホーム画面用の値を集計する。"""
     train_changes = backend.summarize_working_changes("train")
     validation_changes = backend.summarize_working_changes("val")
-    # 段階③のデータ準備 v2 で未振り分け件数に置き換える。
-    changes = (
-        int(train_changes["added"]) + int(train_changes["removed"]) + int(train_changes["changed"])
+    changes = sum(
+        int(data[key])
+        for data in (train_changes, validation_changes)
+        for key in ("added", "removed", "changed")
     )
-    changes += (
-        int(validation_changes["added"])
-        + int(validation_changes["removed"])
-        + int(validation_changes["changed"])
-    )
-    errors = int(train_changes["missing_metadata"]) + int(validation_changes["missing_metadata"])
+    items = backend.get_working_items()
+    unassigned = sum(item.usage == "unassigned" for item in items)
+    errors = len(backend.validate_all_working_items().errors)
     experiments = backend.list_experiments()
     active = next((job for job in jobs.jobs() if job.key and job.key.startswith("training:")), None)
     experiment_id = active.key.split(":", 1)[1] if active else None
     candidates = backend.list_candidates()
     return HomeSummary(
         unconfirmed_changes=changes,
-        data_items=int(train_changes["n_images"]) + int(validation_changes["n_images"]),
+        unassigned_items=unassigned,
+        data_items=len(items),
         data_errors=errors,
         latest_train=next(
             (item.version for item in reversed(backend.list_dataset_versions("train"))), "未確定"

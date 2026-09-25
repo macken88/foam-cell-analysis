@@ -88,6 +88,7 @@ class MockBackend:
                     quality=["良", "可", "不良"][index % 3],
                     mask_revisions=revisions,
                     selected_mask_revision="rev_001",
+                    usage=purpose,
                     sha256=self._digest(f"{purpose}:{number}"),
                     seed=number,
                 )
@@ -129,6 +130,21 @@ class MockBackend:
                 items[4].included = False
                 items[4].change = "excluded"
             self.working[purpose] = WorkingDataset(purpose, versions[-1], items)
+
+        train = self.working["train"]
+        val = self.working["val"]
+        unassigned = self._items("unassigned", 23, 2000)
+        for item in unassigned[:2]:
+            item.classification = None
+            item.quality = None
+        master = WorkingDataset(
+            "all",
+            train.base_version,
+            train.items + val.items + unassigned,
+            base_train_version=train.base_version,
+            base_val_version=val.base_version,
+        )
+        self.working = {"train": master, "val": master, "all": master}
 
         self._seed_profiles()
         exp42 = self._seed_experiment("exp_0042", "mask_rcnn", "completed", 100)
@@ -348,27 +364,299 @@ class MockBackend:
         )
 
     def get_working_dataset(self, purpose: str = "train") -> WorkingDataset:
-        """用途別作業データセットを返す。"""
-        return self.working[purpose]
+        """学習・検証側へ互換の用途別表示を返す。"""
+        master = self.working["all"]
+        if purpose == "all":
+            return master
+        return WorkingDataset(
+            purpose,
+            master.base_train_version if purpose == "train" else master.base_val_version or "",
+            [item for item in master.items if item.usage == purpose],
+            master.state,
+            master.last_saved_at,
+            master.validation,
+            master.base_train_version,
+            master.base_val_version,
+        )
+
+    def get_working_items(self) -> list[DataItem]:
+        """用途を問わず全ての作業項目を返す。"""
+        return self.working["all"].items
+
+    def update_items(self, item_ids: list[str], **changes: Any) -> None:
+        """複数項目をまとめて更新する。"""
+        self.bulk_update_items("all", item_ids, **changes)
+
+    def set_usage(self, item_ids: list[str], usage: str) -> None:
+        """複数項目へ同じ用途を設定する。"""
+        if usage not in {"unassigned", "train", "val", "excluded"}:
+            raise ValueError("用途の値が正しくありません")
+        self.update_items(item_ids, usage=usage)
+
+    def scan_import_folders(
+        self, paths: dict[str, str], mask_rule: Any = None, channel_rule: Any = None
+    ) -> list[ImportCandidate]:
+        """複数チャンネルの取り込み元を走査する。"""
+        return self.scan_import_source(paths, str(mask_rule or ""))
+
+    def import_folders(
+        self, scans: list[ImportCandidate], uniform_values: dict[str, dict[str, Any]]
+    ) -> list[DataItem]:
+        """フォルダごとの設定を各取り込み画像へ適用する。"""
+        grouped: dict[str, list[ImportCandidate]] = {}
+        for candidate in scans:
+            folder = candidate.source_relpath.rsplit("/", 1)[0]
+            grouped.setdefault(folder, []).append(candidate)
+        imported: list[DataItem] = []
+        for folder, candidates in grouped.items():
+            values = dict(uniform_values.get(folder, {}))
+            classification = values.pop("classification", None)
+            group = self.import_items("all", candidates, classification)
+            if values:
+                self.update_items([item.item_id for item in group], **values)
+            imported.extend(group)
+        return imported
+
+    def preview_auto_split(
+        self, settings: dict[str, Any], item_ids: list[str] | None = None
+    ) -> dict[str, int]:
+        """自動振り分けの実行後件数を返す。"""
+        assignments = self.preview_auto_split_assignments(settings, item_ids)
+        return {
+            usage: sum(value == usage for value in assignments.values())
+            for usage in ("train", "val", "excluded")
+        }
+
+    def preview_auto_split_assignments(
+        self, settings: dict[str, Any], item_ids: list[str] | None = None
+    ) -> dict[str, str]:
+        """変更を保存せず対象ごとの実行後用途を返す。"""
+        allowed = set(item_ids) if item_ids else None
+        item_ids_to_update = [
+            item.item_id
+            for item in self.working["all"].items
+            if item.usage == "unassigned" and (allowed is None or item.item_id in allowed)
+        ]
+        settings = dict(settings)
+        if "ratio" in settings:
+            settings["validation_ratio"] = settings.pop("ratio")
+        if "unit" in settings:
+            settings["by_folder"] = settings.pop("unit") == "source_folder"
+        clone = copy.copy(self)
+        clone.working = {"all": copy.deepcopy(self.working["all"])}
+        clone.working.update({"train": clone.working["all"], "val": clone.working["all"]})
+        clone.apply_auto_split(settings, item_ids)
+        return {item_id: clone._get_item("all", item_id).usage for item_id in item_ids_to_update}
+
+    def apply_auto_split(
+        self, settings: dict[str, Any], item_ids: list[str] | None = None
+    ) -> dict[str, int]:
+        """自動振り分けを作業データへ適用する。"""
+        values = dict(settings)
+        if "ratio" in values:
+            values["validation_ratio"] = values.pop("ratio")
+        if "unit" in values:
+            values["by_folder"] = values.pop("unit") == "source_folder"
+        return self.apply_auto_triage(values, item_ids)
+
+    def validate_items(self, item_ids: list[str] | None = None) -> ValidationReport:
+        """全件または指定項目を検査する。"""
+        report = self.validate_all_working_items()
+        if item_ids is None:
+            return report
+        selected = set(item_ids)
+        errors = [issue for issue in report.errors if issue.item_id in selected]
+        return ValidationReport(report.checks, errors)
+
+    def summarize_finalize(self) -> dict[str, dict[str, int | str]]:
+        """学習用・検証用の一括確定内容を集計する。"""
+        return {purpose: self.summarize_working_changes(purpose) for purpose in ("train", "val")}
+
+    def finalize_working(
+        self, comment: str = "", create_archive: bool = False
+    ) -> list[DatasetVersion]:
+        """学習・検証の変更版を同時に確定する。"""
+        return self.finalize_working_dataset(comment, create_archive)
+
+    def validate_all_working_items(self) -> ValidationReport:
+        """学習・検証に使う項目の必須メタデータを自動検査する。"""
+        dataset = self.working["all"]
+        errors = [
+            ValidationIssue("エラー", item.item_id, "必須メタデータ", "分類または品質が未設定です")
+            for item in dataset.items
+            if item.usage in {"train", "val"}
+            and (not item.classification or not item.quality or not item.mask_revisions)
+        ]
+        dataset.validation = ValidationReport(
+            [
+                CheckResult(
+                    "metadata", "必須メタデータ入力済み", "NG" if errors else "OK", len(errors)
+                )
+            ],
+            errors,
+        )
+        return dataset.validation
+
+    def apply_auto_triage(
+        self, settings: dict[str, Any], item_ids: list[str] | None = None
+    ) -> dict[str, int]:
+        """未振り分け画像を分類別に安定した疑似乱数で振り分ける。"""
+        dataset = self.working["all"]
+        allowed = set(item_ids) if item_ids else None
+        candidates = [
+            item
+            for item in dataset.items
+            if item.usage == "unassigned" and (allowed is None or item.item_id in allowed)
+        ]
+        ratio = max(0, min(100, int(settings.get("validation_ratio", 20))))
+        seed = int(settings.get("seed", 42))
+        by_folder = bool(settings.get("by_folder", False))
+        stratify = bool(settings.get("stratify", True))
+        bad_to_excluded = bool(settings.get("bad_quality_to_excluded", False))
+        buckets: dict[str, list[DataItem]] = {}
+        folder_classes: dict[str, str] = {}
+        if by_folder and stratify:
+            folder_counts: dict[str, dict[str, int]] = {}
+            for item in candidates:
+                classes = folder_counts.setdefault(item.source_folder, {})
+                label = item.classification or "未設定"
+                classes[label] = classes.get(label, 0) + 1
+            folder_classes = {
+                folder: max(classes, key=classes.get) for folder, classes in folder_counts.items()
+            }
+        for item in candidates:
+            bucket = (
+                folder_classes[item.source_folder]
+                if by_folder and stratify
+                else (item.classification or "未設定")
+                if stratify
+                else "all"
+            )
+            buckets.setdefault(bucket, []).append(item)
+        counts = {"train": 0, "val": 0, "excluded": 0}
+        for key, values in buckets.items():
+            if by_folder:
+                folders: dict[str, list[DataItem]] = {}
+                for item in values:
+                    folders.setdefault(item.source_folder, []).append(item)
+                ordered_folders = sorted(
+                    folders, key=lambda folder: self._digest(f"{seed}:{key}:{folder}")
+                )
+                target = round(len(values) * ratio / 100)
+                validation_folders: set[str] = set()
+                validation_count = 0
+                for folder in ordered_folders:
+                    size = len(folders[folder])
+                    if abs(validation_count + size - target) <= abs(validation_count - target):
+                        validation_folders.add(folder)
+                        validation_count += size
+                assignments = [
+                    (item, "val" if item.source_folder in validation_folders else "train")
+                    for item in values
+                ]
+            else:
+                ordered = sorted(
+                    values, key=lambda item: self._digest(f"{seed}:{key}:{item.item_id}")
+                )
+                n_val = round(len(ordered) * ratio / 100)
+                assignments = [
+                    (item, "val" if index < n_val else "train")
+                    for index, item in enumerate(ordered)
+                ]
+            for item, usage in assignments:
+                if bad_to_excluded and item.quality == "不良":
+                    usage = "excluded"
+                item.usage = usage
+                item.change = "added" if item.change == "added" else "changed"
+                counts[usage] += 1
+        dataset.last_saved_at = self._now()
+        self.validate_all_working_items()
+        return counts
+
+    def finalize_working_dataset(
+        self, comment: str = "", create_archive: bool = False
+    ) -> list[DatasetVersion]:
+        """変更のある用途だけを一回の操作で確定する。"""
+        report = self.validate_all_working_items()
+        if report.errors:
+            raise ValueError("整合性エラーを解消してください")
+        dataset = self.working["all"]
+        created: list[DatasetVersion] = []
+        for purpose, base in (
+            ("train", dataset.base_train_version),
+            ("val", dataset.base_val_version),
+        ):
+            items = [item for item in dataset.items if item.usage == purpose]
+            changed = [item for item in dataset.items if item.change and item.usage == purpose]
+            latest = next((v for v in reversed(self.versions) if v.purpose == purpose), None)
+            item_ids = [item.item_id for item in items]
+            if latest and latest.item_ids == item_ids and not changed:
+                continue
+            version = DatasetVersion(
+                self.next_dataset_version(purpose),
+                purpose,
+                base,
+                self._now(),
+                item_ids,
+                len(items),
+                comment=comment,
+                base_validation_version=None,
+            )
+            self.versions.append(version)
+            created.append(version)
+            if create_archive:
+                self.record_archive_result(version.version, "mock_archive")
+            if purpose == "train":
+                dataset.base_train_version = version.version
+            else:
+                dataset.base_val_version = version.version
+        for item in dataset.items:
+            item.change = None
+            item.previous_change = None
+        dataset.base_version = dataset.base_train_version or dataset.base_val_version or ""
+        linked_val = next(
+            (version.version for version in reversed(created) if version.purpose == "val"),
+            next(
+                (
+                    version.version
+                    for version in reversed(self.versions)
+                    if version.purpose == "val"
+                ),
+                None,
+            ),
+        )
+        for version in created:
+            if version.purpose == "train":
+                version.base_validation_version = linked_val
+        dataset.last_saved_at = self._now()
+        return created
 
     def update_item(self, purpose: str, item_id: str, **changes: Any) -> DataItem:
         """項目を更新し、変更状態・自動保存時刻を更新する。"""
-        dataset = self.working[purpose]
+        dataset = self.working["all"]
         item = next(item for item in dataset.items if item.item_id == item_id)
         was_included = item.included
         original_change = item.previous_change if item.change == "excluded" else item.change
+        legacy_included = "included" in changes
+        if legacy_included:
+            changes["usage"] = "train" if changes.pop("included") else "excluded"
         for key, value in changes.items():
             if not hasattr(item, key):
                 raise AttributeError(key)
             setattr(item, key, value)
-        if "included" in changes and not item.included:
+        if "usage" in changes and item.usage == "excluded":
             item.previous_change = original_change
             item.change = "excluded"
-        elif "included" in changes and item.included and not was_included:
+        elif "usage" in changes and item.included and not was_included:
             if original_change == "added":
                 item.change = "added"
             elif any(
-                key in changes for key in ("classification", "quality", "selected_mask_revision")
+                key in changes
+                for key in (
+                    ("classification", "quality", "selected_mask_revision")
+                    if legacy_included
+                    else ("usage", "classification", "quality", "selected_mask_revision")
+                )
             ):
                 item.change = "changed"
             else:
@@ -377,9 +665,11 @@ class MockBackend:
             item.change = "excluded"
         elif original_change == "added":
             item.change = "added"
-        elif any(key in changes for key in ("classification", "quality", "selected_mask_revision")):
+        elif any(
+            key in changes for key in ("classification", "quality", "selected_mask_revision")
+        ) or ("usage" in changes and not legacy_included):
             item.change = "changed"
-        if "included" in changes and item.included:
+        if "usage" in changes and item.included:
             item.previous_change = None
         dataset.state = "WORKING"
         dataset.validation = None
@@ -393,7 +683,7 @@ class MockBackend:
 
     def add_imported_items(self, purpose: str, items: list[DataItem]) -> list[DataItem]:
         """作業中データセットへ項目を追加する。"""
-        dataset = self.working[purpose]
+        dataset = self.working["all"]
         for item in items:
             item.change = "added"
             dataset.items.append(item)
@@ -411,7 +701,7 @@ class MockBackend:
 
     def validate_working_dataset(self, purpose: str) -> ValidationReport:
         """8項目の整合性確認を行い結果を保存する。"""
-        dataset = self.working[purpose]
+        dataset = self.working["all"]
         checks = [
             CheckResult(f"check_{index:02d}", name)
             for index, name in enumerate(self.check_names, 1)
@@ -421,7 +711,7 @@ class MockBackend:
                 "エラー", item.item_id, self.check_names[4], "画像分類または品質が未設定です"
             )
             for item in dataset.items
-            if item.included and (not item.classification or not item.quality)
+            if item.usage in {"train", "val"} and (not item.classification or not item.quality)
         ]
         for check in checks:
             if check.key == "check_05":
@@ -445,18 +735,28 @@ class MockBackend:
 
     def summarize_working_changes(self, purpose: str) -> dict[str, int | str]:
         """確定ダイアログ用に作業差分と件数を集計する。"""
-        dataset = self.working[purpose]
+        dataset = self.working["all"]
+        items = [item for item in dataset.items if item.usage == purpose]
+        latest = next(
+            (version for version in reversed(self.versions) if version.purpose == purpose), None
+        )
+        item_ids = [item.item_id for item in items]
+        has_changes = bool(
+            (latest is None and items)
+            or (latest is not None and latest.item_ids != item_ids)
+            or any(item.change for item in items)
+        )
         return {
-            "added": sum(item.change == "added" for item in dataset.items),
-            "removed": sum(item.change == "excluded" for item in dataset.items),
-            "changed": sum(item.change == "changed" for item in dataset.items),
-            "n_images": sum(item.included for item in dataset.items),
-            "n_masks": sum(item.included and bool(item.mask_revisions) for item in dataset.items),
+            "added": sum(item.change == "added" for item in items),
+            "removed": sum(item.change == "excluded" for item in items),
+            "changed": sum(item.change == "changed" for item in items),
+            "n_images": len(items),
+            "n_masks": sum(bool(item.mask_revisions) for item in items),
             "missing_metadata": sum(
-                item.included and (not item.classification or not item.quality)
-                for item in dataset.items
+                (not item.classification or not item.quality) for item in items
             ),
             "next_version": self.next_dataset_version(purpose),
+            "has_changes": has_changes,
         }
 
     def check_dataset_duplicates(
@@ -465,7 +765,7 @@ class MockBackend:
         """学習用データと基準検証版の識別子・ハッシュ重複を返す。"""
         if purpose != "train" or validation_version is None:
             return []
-        train_items = [item for item in self.working[purpose].items if item.included]
+        train_items = [item for item in self.working["all"].items if item.usage == "train"]
         validation_items = self._items_for_version(validation_version)
         val_ids = {item.item_id for item in validation_items}
         val_hashes = {item.sha256 for item in validation_items}
@@ -482,7 +782,7 @@ class MockBackend:
         base_validation_version: str | None = None,
     ) -> DatasetVersion:
         """検証済み作業データを新しい版として確定する。"""
-        dataset = self.working[purpose]
+        dataset = self.working["all"]
         if dataset.state != "VALIDATED":
             raise ValueError("整合性確認が完了していません")
         duplicates = self.check_dataset_duplicates(purpose, base_validation_version)
@@ -491,17 +791,25 @@ class MockBackend:
         version = DatasetVersion(
             version=self.next_dataset_version(purpose),
             purpose=purpose,
-            parent_version=dataset.base_version,
+            parent_version=(
+                dataset.base_train_version if purpose == "train" else dataset.base_val_version
+            ),
             created_at=self._now(),
-            item_ids=[item.item_id for item in dataset.items if item.included],
-            n_images=sum(item.included for item in dataset.items),
+            item_ids=[item.item_id for item in dataset.items if item.usage == purpose],
+            n_images=sum(item.usage == purpose for item in dataset.items),
             comment=comment,
             base_validation_version=base_validation_version,
         )
         self.versions.append(version)
+        if purpose == "train":
+            dataset.base_train_version = version.version
+        else:
+            dataset.base_val_version = version.version
         dataset.base_version = version.version
         dataset.state = "WORKING"
         for item in dataset.items:
+            if item.usage != purpose:
+                continue
             item.change = None
             item.previous_change = None
         return version
@@ -529,7 +837,7 @@ class MockBackend:
 
     def get_last_saved_at(self, purpose: str = "train") -> datetime:
         """作業データセットの自動保存時刻を返す。"""
-        return self.working[purpose].last_saved_at
+        return self.working["all"].last_saved_at
 
     def scan_import_source(
         self, image_dirs: dict[str, str], mask_dir: str
@@ -575,6 +883,7 @@ class MockBackend:
                 quality=None,
                 mask_revisions=["rev_001"] if candidate.mask_available else [],
                 selected_mask_revision="rev_001" if candidate.mask_available else "",
+                usage="unassigned",
                 change="added",
                 sha256=candidate.sha256,
                 seed=candidate.seed,
@@ -768,7 +1077,11 @@ class MockBackend:
             items = self.working["train"].items
         else:
             items = self._items_for_version(dataset_version)
-        filtered = [item for item in items if item.included]
+        filtered = (
+            [item for item in items if item.usage == "train"]
+            if dataset_version is None
+            else [item for item in items if item.included]
+        )
         if classification != "all":
             filtered = [item for item in filtered if item.classification == classification]
         if quality_filter == "good_only":

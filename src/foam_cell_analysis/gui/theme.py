@@ -160,6 +160,7 @@ def build_stylesheet() -> str:
         f"QLabel[role='imagePlaceholder'] {{ color: {c.SLATE}; background: {c.IMAGE_BG}; }}",
         f"QLabel[role='imageOverlayLabel'] {{ color: {c.WHITE}; background: {c.GRAPHITE}; "
         "padding: 2px 5px; border: 0; font-size: 8pt; }",
+        f"QFrame[role='chipSeparator'] {{ background: {c.RULE}; border: 0; }}",
         f"QLabel[usage='train'] {{ background: {c.TRAIN_BG}; color: {c.TRAIN}; "
         "border-radius: 3px; padding: 0 7px; }",
         f"QLabel[usage='val'] {{ background: {c.VAL_BG}; color: {c.VAL_INK}; "
@@ -182,6 +183,7 @@ def build_stylesheet() -> str:
         "QPushButton[role='countChip'] { border: 1px solid transparent; background: transparent; }",
         f"QPushButton[role='countChip']:checked {{ background: {c.GRAPHITE}; "
         f"color: {c.WHITE}; border-color: {c.GRAPHITE}; }}",
+        f"QLabel[state='activeChipText'] {{ color: {c.WHITE}; }}",
         f"QPushButton[usage='error'] {{ color: {c.ERROR}; }}",
         f"QPushButton[usage='error'] QLabel {{ color: {c.ERROR}; }}",
         f"QLabel[role='countSwatch'][usage='train'] {{ background: {c.TRAIN}; }}",
