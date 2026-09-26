@@ -24,6 +24,13 @@ from .models import (
 )
 
 
+def normalization_for_weights(weights: str) -> tuple[list[float], list[float]]:
+    """TorchVision の Mask R-CNN 事前学習重みに対応する画像正規化値を返す。"""
+    if weights not in {"coco", "imagenet"}:
+        raise ValueError(f"未対応の事前学習済み重みです: {weights}")
+    return [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
+
+
 class Backend(Protocol):
     """GUI が呼び出す全データ操作 API。実装は Qt に依存しない。"""
 

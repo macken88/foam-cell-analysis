@@ -46,7 +46,7 @@ from ...widgets.image_convert import DisplayMode, array_to_pixmap, render
 from ...widgets.image_view import ImageView
 from ...widgets.marks import USAGE_MARKS, CountChip, DisplayToggle, TagDelegate
 from ...widgets.page_base import BasePage
-from ...widgets.table import restore_row_selection
+from ...widgets.table import fit_table_columns, restore_row_selection, setup_table
 from .dialogs import (
     AutoTriageDialog,
     ContinuousTriageDialog,
@@ -1278,7 +1278,7 @@ class DatasetHistoryPage(BasePage):
         self.table.setSortingEnabled(False)
         self.table.horizontalHeader().setStretchLastSection(False)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        self.table.resizeColumnsToContents()
+        setup_table(self.table)
         self.content_layout.addWidget(self.table)
         self.thumbnail_button.clicked.connect(self.open_thumbnails)
         self.table.doubleClicked.connect(lambda _index: self.open_thumbnails())
@@ -1286,6 +1286,7 @@ class DatasetHistoryPage(BasePage):
 
     def refresh(self) -> None:
         self.model.set_versions(self.ctx.backend.list_dataset_versions())
+        fit_table_columns(self.table)
 
     def on_enter(self, params: dict) -> None:
         self.refresh()

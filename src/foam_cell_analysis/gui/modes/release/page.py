@@ -25,7 +25,7 @@ from ...navigation import PageId
 from ...theme import Color, numeric_font, set_style
 from ...widgets.form import FormSection
 from ...widgets.page_base import BasePage
-from ...widgets.table import mark_primary, restore_row_selection, setup_table
+from ...widgets.table import fit_table_columns, mark_primary, restore_row_selection, setup_table
 
 
 class RoutingChangesDialog(QDialog):
@@ -45,7 +45,7 @@ class RoutingChangesDialog(QDialog):
                 (classification, before or "未割り当て", after or "未割り当て")
             ):
                 self.table.setItem(row, column, QTableWidgetItem(value))
-        self.table.resizeColumnsToContents()
+        fit_table_columns(self.table)
         layout.addWidget(self.table)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok
@@ -261,20 +261,7 @@ class ReleasedModelsPage(BasePage):
                     )
                 item.setData(Qt.ItemDataRole.UserRole, model.model_id)
                 self.model_table.setItem(row, column, item)
-        for column, width in {
-            0: 92,
-            1: 110,
-            2: 78,
-            3: 90,
-            4: 120,
-            5: 110,
-            6: 140,
-            7: 70,
-            8: 70,
-            9: 140,
-            11: 170,
-        }.items():
-            self.model_table.setColumnWidth(column, width)
+        fit_table_columns(self.model_table)
         model_rows = {
             self.model_table.item(row, 0).text(): row for row in range(self.model_table.rowCount())
         }
@@ -487,8 +474,7 @@ class ReleasedModelsPage(BasePage):
                 self.routing_table.setCellWidget(row, 2, container)
         finally:
             self._rendering = False
-        self.routing_table.setColumnWidth(0, 110)
-        self.routing_table.setColumnWidth(1, 190)
+        fit_table_columns(self.routing_table)
         self._update_routing_rows()
 
     def _pending_changes(self) -> dict[str, str | None]:
@@ -567,4 +553,4 @@ class ReleasedModelsPage(BasePage):
                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
                     )
                 self.history_table.setItem(row, column, item)
-        self.history_table.resizeColumnsToContents()
+        fit_table_columns(self.history_table)

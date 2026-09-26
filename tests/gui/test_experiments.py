@@ -123,6 +123,66 @@ def test_overview_has_empty_hint_and_two_column_selected_details(shell):
     assert page.overview_table.item(0, 0).text() == "実験群"
 
 
+def test_experiment_tables_fit_contents_and_keep_manually_resized_columns(shell, qapp):
+    """実験クリックで各表を内容幅にし、手動幅を選択・更新後も保つ。"""
+    page = shell.page(PageId.EXPERIMENTS)
+    page.resize(1500, 1000)
+    page.show()
+    row = next(
+        row for row in range(page.table.rowCount()) if page.table.item(row, 1).text() == "exp_0042"
+    )
+    cell = page.table.visualItemRect(page.table.item(row, 1))
+    QTest.mouseClick(
+        page.table.viewport(),
+        Qt.MouseButton.LeftButton,
+        pos=cell.center(),
+    )
+    qapp.processEvents()
+
+    for table in (
+        page.table,
+        page.overview_table,
+        page.cv_table,
+        page.oof_table,
+        page.checkpoint_table,
+        page.run_table,
+    ):
+        for column in range(table.columnCount()):
+            header_width = table.horizontalHeader().sectionSizeHint(column)
+            content_width = max((table.sizeHintForColumn(column) for _ in [0]), default=0)
+            assert table.columnWidth(column) >= min(max(header_width, content_width), 360)
+
+    header = page.overview_table.horizontalHeader()
+    before = page.overview_table.columnWidth(0)
+    edge = header.sectionViewportPosition(0) + before - 1
+    QTest.mousePress(
+        header.viewport(),
+        Qt.MouseButton.LeftButton,
+        pos=QPoint(edge, header.height() // 2),
+    )
+    QTest.mouseMove(header.viewport(), QPoint(edge + 100, header.height() // 2), delay=20)
+    QTest.mouseRelease(
+        header.viewport(),
+        Qt.MouseButton.LeftButton,
+        pos=QPoint(edge + 100, header.height() // 2),
+    )
+    qapp.processEvents()
+    manual_width = page.overview_table.columnWidth(0)
+    assert manual_width >= before + 80
+
+    other_row = next(
+        row for row in range(page.table.rowCount()) if page.table.item(row, 1).text() == "exp_0043"
+    )
+    rect = page.table.visualItemRect(page.table.item(other_row, 1))
+    QTest.mouseClick(page.table.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
+    page.refresh()
+    qapp.processEvents()
+    assert page.overview_table.columnWidth(0) == manual_width
+    page.refresh_on_activate()
+    qapp.processEvents()
+    assert page.overview_table.columnWidth(0) == manual_width
+
+
 def test_comparison_series_colors_keep_theme_order_after_refresh(mock_backend):
     experiments = [mock_backend.get_experiment(key) for key in ("exp_0042", "exp_0043", "exp_0044")]
     dialog = ExperimentCompareDialog(experiments)

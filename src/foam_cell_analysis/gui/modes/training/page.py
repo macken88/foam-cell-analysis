@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ....services.backend import normalization_for_weights
 from ...context import DEFAULT_CHANNEL, AppContext
 from ...jobs import FakeJob
 from ...labels import classification_label, config_key_label, model_type_label, quality_filter_label
@@ -244,6 +245,10 @@ class TrainingPage(BasePage):
         self.model_note = QLabel()
         set_style(self.model_note, role="note")
         self.form_layout.addWidget(self.model_note)
+        self.normalization_reset_note = QLabel()
+        set_style(self.normalization_reset_note, role="note")
+        self.normalization_reset_note.setWordWrap(True)
+        self.form_layout.addWidget(self.normalization_reset_note)
 
         for key in ("training", "augmentation", "checkpoint"):
             section, widgets = self._make_section(key, self.config[key], key)
@@ -294,6 +299,16 @@ class TrainingPage(BasePage):
             path = f"{prefix}.{key}"
             if path in {"data.used_item_ids", "data.input_channels"}:
                 continue
+            if (
+                top == "model"
+                and model_name == "mask_rcnn"
+                and path
+                in {
+                    "model.input.image_mean",
+                    "model.input.image_std",
+                }
+            ):
+                continue
             if isinstance(value, dict):
                 if key in {"rpn", "roi"}:
                     child = FormSection(LABELS[key])
@@ -304,6 +319,12 @@ class TrainingPage(BasePage):
                     child_label = LABELS.get(key, config_key_label(path))
                     child = FormSection(child_label)
                     self._add_values(child, value, path, widgets, top, model_name)
+                    if path == "model.input" and model_name == "mask_rcnn":
+                        self.model_normalization_note = QLabel()
+                        self.model_normalization_note.setFont(numeric_font())
+                        self.model_normalization_note.setWordWrap(True)
+                        set_style(self.model_normalization_note, role="note")
+                        child.form.addRow("画像平均・標準偏差", self.model_normalization_note)
                     section.form.addRow(child)
                 continue
             if path == "model.type":
@@ -418,10 +439,24 @@ class TrainingPage(BasePage):
         self.model_note.setText(
             "セル確率閾値・フロー閾値はモデル比較・リリースの推論設定で管理します。"
         )
+        if not is_cellpose:
+            self._update_normalization_note()
 
     def _on_config_changed(self, *_args) -> None:
         self._update_estimate()
+        if hasattr(self, "model_normalization_note"):
+            self._update_normalization_note()
         self._refresh_yaml()
+
+    def _update_normalization_note(self) -> None:
+        """現在選択中の重みに対応する読み取り専用正規化値を表示する。"""
+        weights = self._model_widgets["mask_rcnn"]["model.pretrained_weights"].currentData()
+        mean, std = normalization_for_weights(weights)
+        mean_text = ", ".join(f"{value:.3f}" for value in mean)
+        std_text = ", ".join(f"{value:.3f}" for value in std)
+        self.model_normalization_note.setText(
+            f"事前学習済み重みから自動で決定（平均 {mean_text} / 標準偏差 {std_text}）"
+        )
 
     def eventFilter(self, watched, event) -> bool:
         """フォーカス中の設定に対応する YAML 行を強調する。"""
@@ -463,6 +498,10 @@ class TrainingPage(BasePage):
             for part in key_path[:-1]:
                 target = target[part]
             target[key_path[-1]] = value
+        if model_type == "mask_rcnn":
+            mean, std = normalization_for_weights(result["model"].get("pretrained_weights", "coco"))
+            result["model"]["input"]["image_mean"] = mean
+            result["model"]["input"]["image_std"] = std
         result["data"]["input_channels"] = [DEFAULT_CHANNEL]
         result["experiment"]["id"] = self._edit_id or self.experiment_id.text().strip()
         return result
@@ -682,6 +721,8 @@ class TrainingPage(BasePage):
     def on_enter(self, params: dict[str, Any]) -> None:
         """複製・下書き編集の設定を読み込む。"""
         self._refresh_options()
+        self.normalization_reset_message = ""
+        self.normalization_reset_note.clear()
         copy_from = params.get("copy_from")
         edit = params.get("edit")
         if not copy_from and not edit:
@@ -689,7 +730,27 @@ class TrainingPage(BasePage):
         source = self.ctx.backend.get_experiment(copy_from or edit)
         self._edit_id = edit
         self.config = copy.deepcopy(source.config.values)
+        self.normalization_reset_message = ""
+        if self.config.get("model", {}).get("type") == "mask_rcnn":
+            saved_input = self.config["model"].get("input", {})
+            weights = self.config["model"].get("pretrained_weights", "coco")
+            expected_mean, expected_std = normalization_for_weights(weights)
+            saved_mean, saved_std = saved_input.get("image_mean"), saved_input.get("image_std")
+            if saved_mean != expected_mean or saved_std != expected_std:
+                self.normalization_reset_message = (
+                    "元の実験の値（平均 "
+                    f"{', '.join(map(str, saved_mean or []))} / 標準偏差 "
+                    f"{', '.join(map(str, saved_std or []))}）から、"
+                    "事前学習済み重みの値に置き直しました"
+                )
+            saved_input["image_mean"] = expected_mean
+            saved_input["image_std"] = expected_std
         self.config["experiment"]["id"] = edit if edit else self.ctx.backend.next_experiment_id()
         self._configs_by_model.clear()
         self._build_form()
+        self.normalization_reset_note.setText(self.normalization_reset_message)
         self._refresh_yaml()
+
+    def refresh_on_activate(self) -> None:
+        """前面化時は選択肢だけ更新し、複製時の注記を維持する。"""
+        self._refresh_options()

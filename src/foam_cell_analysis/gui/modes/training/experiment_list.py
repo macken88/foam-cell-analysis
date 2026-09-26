@@ -41,7 +41,7 @@ from ...theme import Color, numeric_font, set_style
 from ...widgets.chart import LineChart
 from ...widgets.marks import STATUS_MARKS, TagDelegate
 from ...widgets.page_base import BasePage
-from ...widgets.table import mark_primary, setup_table
+from ...widgets.table import fit_table_columns, mark_primary, setup_table
 from .dialogs import ExperimentCompareDialog, SendToCandidatesDialog, flatten_config
 
 
@@ -313,6 +313,7 @@ class ExperimentListPage(BasePage):
                     break
         self.table.verticalScrollBar().setValue(scroll_value)
         self._current_changed()
+        fit_table_columns(self.table)
         self._update_buttons()
 
     def _checked_experiments(self) -> list[Experiment]:
@@ -345,6 +346,7 @@ class ExperimentListPage(BasePage):
             self.checkpoint_table.setRowCount(0)
             self.run_table.setRowCount(0)
             self.used_data.clear()
+            fit_table_columns(self.table)
             self._update_buttons()
             return
         config = experiment.config.values
@@ -515,6 +517,15 @@ class ExperimentListPage(BasePage):
                 for item_id in experiment.used_item_ids
             )
         )
+        for table in (
+            self.table,
+            self.overview_table,
+            self.cv_table,
+            self.oof_table,
+            self.checkpoint_table,
+            self.run_table,
+        ):
+            fit_table_columns(table)
         self._update_buttons()
 
     def _update_buttons(self) -> None:

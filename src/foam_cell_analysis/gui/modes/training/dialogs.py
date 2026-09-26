@@ -30,7 +30,7 @@ from ...labels import (
 )
 from ...theme import SERIES, Color
 from ...widgets.chart import LineChart
-from ...widgets.table import mark_primary, setup_table
+from ...widgets.table import fit_table_columns, mark_primary, setup_table
 
 
 def flatten_config(value: dict[str, Any], prefix: str = "") -> dict[str, Any]:
@@ -102,6 +102,7 @@ class ExperimentCompareDialog(QDialog):
                     item.setBackground(QColor(Color.CHANGED))
                 self.table.setItem(row, col, item)
         setup_table(self.table, stretch_column=0)
+        fit_table_columns(self.table)
         colors = [QColor(color) for color in SERIES]
         series = []
         for index, experiment in enumerate(self.experiments):

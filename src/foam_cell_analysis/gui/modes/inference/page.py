@@ -31,7 +31,7 @@ from ...widgets.image_convert import DisplayMode, array_to_pixmap, render
 from ...widgets.image_view import ImageView
 from ...widgets.marks import STATUS_MARKS, DisplayToggle, TagDelegate
 from ...widgets.page_base import BasePage
-from ...widgets.table import mark_primary, restore_row_selection, setup_table
+from ...widgets.table import fit_table_columns, mark_primary, restore_row_selection, setup_table
 
 
 @dataclass
@@ -290,7 +290,7 @@ class InferencePage(BasePage):
             count_item.setFont(numeric_font())
             count_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self.table.setItem(row, 4, count_item)
-        self.table.resizeColumnsToContents()
+        fit_table_columns(self.table)
         rows = {
             row for row, entry in enumerate(self.inputs) if entry.filename in selected_filenames
         }

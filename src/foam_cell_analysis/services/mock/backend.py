@@ -10,6 +10,7 @@ from typing import Any, ClassVar
 
 import numpy as np
 
+from ..backend import normalization_for_weights
 from ..models import (
     AugmentationProfile,
     Candidate,
@@ -1184,6 +1185,22 @@ class MockBackend:
             results.append(
                 {"level": "warning", "message": "GPU メモリ使用量が大きくなる可能性があります"}
             )
+        model = config.get("model", {})
+        if model.get("type") == "mask_rcnn":
+            expected_mean, expected_std = normalization_for_weights(
+                model.get("pretrained_weights", "coco")
+            )
+            image_config = model.get("input", {})
+            if (
+                image_config.get("image_mean") != expected_mean
+                or image_config.get("image_std") != expected_std
+            ):
+                results.append(
+                    {
+                        "level": "warning",
+                        "message": "画像平均・標準偏差が事前学習済み重みの値と異なります",
+                    }
+                )
         comparable = copy.deepcopy(config)
         comparable.get("experiment", {}).pop("id", None)
         comparable.get("experiment", {}).pop("description", None)

@@ -21,7 +21,7 @@ from ...navigation import PageId
 from ...theme import Color, numeric_font
 from ...widgets.marks import STATUS_MARKS, TagDelegate
 from ...widgets.page_base import BasePage
-from ...widgets.table import mark_primary, setup_table
+from ...widgets.table import fit_table_columns, mark_primary, setup_table
 from .dialogs import CandidateDialog, EvaluationDialog, MaskExportDialog, ReleaseDialog
 
 
@@ -271,6 +271,7 @@ class CandidatesPage(BasePage):
                     break
         if hasattr(self, "_activation_scroll_value"):
             self.table.verticalScrollBar().setValue(self._activation_scroll_value)
+        fit_table_columns(self.table)
         self._update_buttons()
 
     def _selected(self):

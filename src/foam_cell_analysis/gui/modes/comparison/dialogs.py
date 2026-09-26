@@ -30,7 +30,7 @@ from ....services.models import Candidate, ExternalResult
 from ...context import AppContext
 from ...labels import config_key_label, format_score, model_type_label
 from ...theme import numeric_font
-from ...widgets.table import mark_primary, setup_table
+from ...widgets.table import fit_table_columns, mark_primary, setup_table
 
 
 class CandidateDialog(QDialog):
@@ -254,6 +254,7 @@ class EvaluationDialog(QDialog):
                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
                     )
                 self.metrics.setItem(row, column, item)
+        fit_table_columns(self.metrics)
         self.metrics.setFixedHeight(
             self.metrics.horizontalHeader().height()
             + sum(self.metrics.rowHeight(row) for row in range(self.metrics.rowCount()))
@@ -268,6 +269,7 @@ class EvaluationDialog(QDialog):
             self.metrics.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         for item in candidate.external_results:
             self._append_result(item.name, item.value, item.unit)
+        fit_table_columns(self.results)
         self.add_row = QPushButton("行を追加")
         self.remove_row = QPushButton("選択行を削除")
         self.software, self.date, self.comment = (
@@ -328,6 +330,7 @@ class EvaluationDialog(QDialog):
                 item.setFont(numeric_font())
                 item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self.results.setItem(row, col, item)
+        fit_table_columns(self.results)
 
     def apply(self) -> Candidate:
         """表の外部評価を Backend に保存する。"""

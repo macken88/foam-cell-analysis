@@ -5,6 +5,7 @@ from PySide6.QtWidgets import QMessageBox
 
 from foam_cell_analysis.gui.modes.training.augmentation_dialog import AugmentationDialog
 from foam_cell_analysis.gui.navigation import PageId
+from foam_cell_analysis.gui.theme import numeric_font
 
 
 def test_training_start_navigates_and_records_final_model(shell, qapp):
@@ -166,6 +167,38 @@ def test_model_type_switch_changes_model_specific_controls(shell):
     page.model_type.setCurrentIndex(0)
     assert page.config["model"]["type"] == "mask_rcnn"
     assert "model.backbone" in page._model_widgets["mask_rcnn"]
+
+
+def test_mask_rcnn_normalization_is_read_only_and_tracks_pretrained_weights(shell, qapp):
+    """重み選択を操作すると固定正規化値が表示と YAML に反映される。"""
+    from PySide6.QtCore import Qt
+
+    page = shell.page(PageId.TRAINING)
+    weights = page._model_widgets["mask_rcnn"]["model.pretrained_weights"]
+    weights.setFocus()
+    QTest.keyClick(weights, Qt.Key.Key_End)
+    qapp.processEvents()
+
+    assert weights.currentData() == "imagenet"
+    assert "model.input.image_mean" not in page._model_widgets["mask_rcnn"]
+    assert "model.input.image_std" not in page._model_widgets["mask_rcnn"]
+    assert page.model_normalization_note.font().family() == numeric_font().family()
+    assert "0.485, 0.456, 0.406" in page.model_normalization_note.text()
+    assert "0.229, 0.224, 0.225" in page.model_normalization_note.text()
+    yaml = page.yaml_preview.toPlainText()
+    assert "image_mean:\n    - 0.485\n    - 0.456\n    - 0.406" in yaml
+    assert "image_std:\n    - 0.229\n    - 0.224\n    - 0.225" in yaml
+
+
+def test_backend_warns_when_api_config_overrides_weight_normalization(mock_backend):
+    """API から異なる正規化値が渡されたとき検証警告を返す。"""
+    config = mock_backend.default_experiment_config("mask_rcnn")
+    config["model"]["input"]["image_mean"] = [0.1, 0.2, 0.3]
+    warnings = mock_backend.validate_experiment_config(config)
+
+    assert any(
+        item["level"] == "warning" and "画像平均・標準偏差" in item["message"] for item in warnings
+    )
 
 
 def test_used_augmentation_profile_is_saved_as_new_version(mock_backend):

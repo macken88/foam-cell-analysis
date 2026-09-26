@@ -324,9 +324,10 @@
 <ul>
 <li>min_size</li>
 <li>max_size</li>
-<li>image_mean</li>
-<li>image_std</li>
+<li>image_mean（読み取り専用。事前学習済み重みに応じて Backend が決定）</li>
+<li>image_std（読み取り専用。事前学習済み重みに応じて Backend が決定）</li>
 </ul>
+<p>COCO / ImageNet 重みはいずれも TorchVision の ImageNet 正規化値（平均 [0.485, 0.456, 0.406]、標準偏差 [0.229, 0.224, 0.225]）を使う。1チャンネル画像は3チャンネルへ複製して入力する。設定 YAML と実験記録には再現性のため値を保存し、既存実験の表示では保存値を表示する。</p>
 </div>
 <div>
 <h3>RPN</h3>
@@ -717,6 +718,7 @@ Range       : -180 ～ +180 deg</pre>
 <tr><td>学習するバックボーン層数</td><td>trainable_backbone_layers</td><td>バックボーンのうち、学習対象として更新する層数。</td></tr>
 <tr><td>入力画像の短辺サイズ</td><td>min_size</td><td>モデル入力時に画像をリサイズする際の短辺側の基準サイズ。</td></tr>
 <tr><td>入力画像の最大辺サイズ</td><td>max_size</td><td>リサイズ後の画像長辺が超えないようにする最大サイズ。</td></tr>
+<tr><td>画像平均 / 画像標準偏差</td><td>image_mean / image_std</td><td>事前学習済み重み（COCO / ImageNet）に基づき Backend が自動決定する ImageNet 正規化値。画面では読み取り専用で表示し、YAML と実験記録へ保存する。1チャンネル入力も3チャンネル複製するため3値を使う。</td></tr>
 <tr><td>アンカーサイズ</td><td>anchor_sizes</td><td>RPNが物体候補を探索する際に用いる基準サイズ。対象物サイズとの適合が重要。</td></tr>
 <tr><td>アンカー縦横比</td><td>anchor_aspect_ratios</td><td>RPNアンカーの縦横比候補。</td></tr>
 <tr><td>RPN前景IoU閾値</td><td>rpn_fg_iou_thresh</td><td>アンカーを前景として扱うためのIoU閾値。</td></tr>
@@ -833,6 +835,9 @@ model:
   input:
     min_size: 1024
     max_size: 1536
+    # 事前学習済み重みから自動決定（画面では読み取り専用）
+    image_mean: [0.485, 0.456, 0.406]
+    image_std: [0.229, 0.224, 0.225]
 
   anchors:
     sizes: [...]
