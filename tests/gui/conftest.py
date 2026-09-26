@@ -29,8 +29,12 @@ def qapp():
 
 @pytest.fixture(autouse=True)
 def isolated_app_settings(tmp_path, monkeypatch):
-    """テストごとに空の設定ファイルを使い、利用者の設定を読み書きしない。"""
+    """テストごとに空の設定ファイルを使い、利用者の設定を読み書きしない。
+
+    キー割り当て（%APPDATA%\foam-cell-analysis\keymap.json）も一時フォルダへ向ける。
+    """
     monkeypatch.setenv(SETTINGS_FILE_ENV, str(tmp_path / "settings.ini"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
 
 
 @pytest.fixture(autouse=True)
