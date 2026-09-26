@@ -57,6 +57,7 @@ class MockBackend:
         self.experiments: dict[str, Experiment] = {}
         self.training_queue_ids: list[str] = []
         self.training_retry_reservations: dict[str, dict[str, Any]] = {}
+        self._retry_reservation_seq = 0
         self.fail_training_ids: set[str] = set()
         self.profiles: dict[str, AugmentationProfile] = {}
         self.inference_configs: dict[str, InferenceConfig] = {}
@@ -1360,19 +1361,31 @@ class MockBackend:
                 "この実験は旧形式の設定で記録されているため再試行できません。"
                 "『設定を複製して新規実験』で、現在の形式に移した設定から始めてください。"
             )
-        pending = sum(
-            reservation["experiment_id"] == experiment_id and reservation["status"] == "queued"
-            for reservation in self.training_retry_reservations.values()
-        )
-        attempt = len(experiment.runs) + pending + 1
-        queue_id = f"retry:{experiment_id}:{attempt}"
+        # 予約の識別子は通し番号で一意にする（試行番号は取り消しで詰まるため使わない）
+        self._retry_reservation_seq += 1
+        queue_id = f"retry:{experiment_id}:{self._retry_reservation_seq}"
         self.training_retry_reservations[queue_id] = {
             "experiment_id": experiment_id,
-            "attempt": attempt,
+            "attempt": None,
             "status": "queued",
         }
         self.training_queue_ids.append(queue_id)
         return self.list_training_queue()[-1]
+
+    def _expected_retry_attempt(self, queue_id: str) -> int:
+        """予約の試行番号を返す。待機中はキューの並びから見込みの番号を求める。"""
+        reservation = self.training_retry_reservations[queue_id]
+        if reservation["attempt"] is not None:
+            return reservation["attempt"]
+        experiment_id = reservation["experiment_id"]
+        ahead = 0
+        for key in self.training_queue_ids:
+            if key == queue_id:
+                break
+            other = self.training_retry_reservations.get(key)
+            if other and other["experiment_id"] == experiment_id and other["status"] == "queued":
+                ahead += 1
+        return len(self.experiments[experiment_id].runs) + ahead + 1
 
     def list_training_queue(self) -> list[Experiment]:
         entries = []
@@ -1383,7 +1396,7 @@ class MockBackend:
                 entry.status = reservation["status"]
                 entry.queue_id = key
                 entry.queue_is_retry = True
-                entry.queue_retry_attempt = reservation["attempt"]
+                entry.queue_retry_attempt = self._expected_retry_attempt(key)
                 entries.append(entry)
             elif key in self.experiments:
                 entry = self.experiments[key]
@@ -1459,6 +1472,7 @@ class MockBackend:
                     continue
                 experiment = self.retry_experiment(reservation["experiment_id"])
                 reservation["status"] = "running"
+                reservation["attempt"] = len(experiment.runs)
                 queue_item = copy.deepcopy(experiment)
                 queue_item.queue_id = key
                 queue_item.queue_is_retry = True

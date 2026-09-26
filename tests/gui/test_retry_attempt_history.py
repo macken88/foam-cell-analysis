@@ -221,3 +221,74 @@ def test_retry_candidate_keeps_source_attempt_and_oof_snapshot(shell, monkeypatc
     job = shell.ctx.jobs.find(f"training:{experiment.experiment_id}")
     if job:
         job.cancel()
+
+
+def test_rereserving_after_cancel_keeps_retry_reservations_distinct(shell, monkeypatch, qapp):
+    """予約を取り消して再予約しても、予約が重複せず、1 件の削除で 1 件だけ消える。"""
+    backend = shell.ctx.backend
+    original = backend.get_experiment("exp_0044")
+    run_count = len(original.runs)
+    active = backend.add_training_queue_item(backend.default_experiment_config("mask_rcnn"))
+    shell.navigate(PageId.TRAINING_QUEUE)
+    queue = shell.page(PageId.TRAINING_QUEUE)
+    QTest.mouseClick(queue.run_button, Qt.MouseButton.LeftButton)
+    assert wait_for(qapp, lambda: shell.ctx.jobs.has_training_job)
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
+    )
+
+    def reserve_retry():
+        shell.navigate(PageId.EXPERIMENTS)
+        page = shell.page(PageId.EXPERIMENTS)
+        row = _select_experiment(page, original.experiment_id)
+        QTest.mouseClick(
+            page.table.viewport(),
+            Qt.MouseButton.LeftButton,
+            pos=page.table.visualRect(page.table.model().index(row, 1)).center(),
+        )
+        page.action_map["retry"].trigger()
+
+    def retry_rows():
+        queue.refresh()
+        return [
+            row
+            for row, entry in enumerate(queue.model.entries)
+            if entry.queue_is_retry and entry.status == "queued"
+        ]
+
+    def retry_labels():
+        return [
+            queue.model.data(queue.model.index(row, 2), Qt.ItemDataRole.DisplayRole)
+            for row in retry_rows()
+        ]
+
+    reserve_retry()
+    reserve_retry()
+    shell.navigate(PageId.TRAINING_QUEUE)
+    assert retry_labels() == [
+        f"exp_0044（再試行 {run_count + 1}）",
+        f"exp_0044（再試行 {run_count + 2}）",
+    ]
+
+    # 先の予約を取り消し、もう一度予約する
+    queue.table.selectRow(retry_rows()[0])
+    QTest.mouseClick(queue.delete_button, Qt.MouseButton.LeftButton)
+    reserve_retry()
+    shell.navigate(PageId.TRAINING_QUEUE)
+    ids = [queue.model.entries[row].queue_id for row in retry_rows()]
+    assert len(ids) == len(set(ids)) == 2
+    assert retry_labels() == [
+        f"exp_0044（再試行 {run_count + 1}）",
+        f"exp_0044（再試行 {run_count + 2}）",
+    ]
+
+    # 1 件だけ削除すると、もう 1 件は残る
+    queue.table.selectRow(retry_rows()[0])
+    QTest.mouseClick(queue.delete_button, Qt.MouseButton.LeftButton)
+    assert retry_labels() == [f"exp_0044（再試行 {run_count + 1}）"]
+    assert len(original.runs) == run_count
+    assert active.experiment_id in {entry.experiment_id for entry in backend.list_training_queue()}
+    for job in shell.ctx.jobs.training_jobs:
+        job.cancel()
