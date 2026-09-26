@@ -3,7 +3,6 @@
 from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
-    QButtonGroup,
     QComboBox,
     QGridLayout,
     QHBoxLayout,
@@ -13,11 +12,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ...context import DEFAULT_CHANNEL
 from ...labels import model_type_label
 from ...navigation import PageId
-from ...theme import body_font, set_style
+from ...theme import body_font
 from ...widgets.image_convert import DisplayMode, array_to_pixmap, render
 from ...widgets.image_view import ImageView, ViewSynchronizer
+from ...widgets.marks import DisplayToggle
 from ...widgets.page_base import BasePage
 
 
@@ -38,6 +39,7 @@ class MaskComparisonPage(BasePage):
         self.index = 0
         self.shortcuts = ctx.shortcuts
         self.shortcuts.changed.connect(self._shortcuts_changed)
+        self.ctx.display.changed.connect(self._display_changed)
         self.back = QPushButton("← 候補一覧へ戻る")
         self.validation_label = QLabel("検証用データセット: val_v003")
         self.classification = QComboBox()
@@ -51,38 +53,21 @@ class MaskComparisonPage(BasePage):
         controls.addWidget(self.classification)
         controls.addWidget(QLabel("対象画像:"))
         controls.addWidget(self.item_select, 1)
-        self.mode_group = QButtonGroup(self)
-        self.mode_buttons: dict[DisplayMode, QPushButton] = {}
+        self.display_toggle = DisplayToggle(ctx.display)
+        self.display_toggle.alternate_selected.connect(self._toggle_display)
         mode_row = QHBoxLayout()
-        mode_row.addWidget(QLabel("表示形式:"))
-        for text, mode in (
-            ("原画像", DisplayMode.IMAGE),
-            ("オーバーレイ", DisplayMode.OVERLAY),
-            ("インスタンスラベル", DisplayMode.INSTANCE_LABEL),
-            ("二値マスク", DisplayMode.BINARY),
-        ):
-            button = QPushButton(text)
-            button.setCheckable(True)
-            set_style(button, role="segment")
-            self.mode_group.addButton(button)
-            self.mode_buttons[mode] = button
-            mode_row.addWidget(button)
-        self.mode_buttons[DisplayMode.OVERLAY].setChecked(True)
-        self._channel = "A"
+        mode_row.addWidget(self.display_toggle)
         mode_row.addStretch(1)
         self.previous = QPushButton("← 前の画像")
         self.next = QPushButton("次の画像 →")
-        self.fit = QPushButton("全体表示 F")
+        self.fit = QPushButton("全体表示")
         self.position = QLabel()
         mode_row.addWidget(self.previous)
         mode_row.addWidget(self.next)
         mode_row.addWidget(self.fit)
         mode_row.addWidget(self.position)
-        self.hint = QLabel(
-            f"{self.shortcuts.display_key(self.shortcuts['display_mode'])} 表示形式　"
-            f"{self.shortcuts.display_key(self.shortcuts['channel_prev'])}/"
-            f"{self.shortcuts.display_key(self.shortcuts['channel_next'])} チャンネル"
-        )
+        self.previous.setToolTip(f"前の画像（{self.shortcuts['previous_image']}）")
+        self.next.setToolTip(f"次の画像（{self.shortcuts['next_image']}）")
         self.grid = QGridLayout()
         self.views: list[ImageView] = []
         area = QWidget()
@@ -94,7 +79,6 @@ class MaskComparisonPage(BasePage):
         self.content_layout.addLayout(mode_row)
         self.content_layout.addWidget(self.placeholder)
         self.content_layout.addWidget(area, 1)
-        self.content_layout.addWidget(self.hint)
         self.area = area
         self.area.installEventFilter(self)
         self.back.clicked.connect(lambda: ctx.navigator.navigate(PageId.CANDIDATES))
@@ -103,9 +87,6 @@ class MaskComparisonPage(BasePage):
         self.fit.clicked.connect(self._fit_all)
         self.classification.currentTextChanged.connect(self._load_items)
         self.item_select.currentIndexChanged.connect(self._select_item)
-        self.mode_group.buttonToggled.connect(
-            lambda _button, checked: checked and self._render_current()
-        )
 
     def on_enter(self, params: dict) -> None:
         self.validation = params.get("validation_version", "val_v003")
@@ -175,13 +156,12 @@ class MaskComparisonPage(BasePage):
                 view.set_image(None)
             return
         item = self.items[self.index]
-        self._channel = self._channel if self._channel in item.channels else item.channels[0]
-        mode = next(key for key, button in self.mode_buttons.items() if button.isChecked())
-        signature = (item.item_id, self._channel, mode, tuple(self.candidate_ids))
+        mode = self._display_mode()
+        signature = (item.item_id, DEFAULT_CHANNEL, mode, tuple(self.candidate_ids))
         if signature == getattr(self, "_render_signature", None):
             self.position.setText(f"({self.index + 1} / {len(self.items)})")
             return
-        image = self.ctx.backend.get_item_image("val", item.item_id, self._channel)
+        image = self.ctx.backend.get_item_image("val", item.item_id, DEFAULT_CHANNEL)
         for index, view in enumerate(self.views):
             candidate_id = self.candidate_for_view[index]
             labels = (
@@ -205,16 +185,7 @@ class MaskComparisonPage(BasePage):
         QTimer.singleShot(0, self.synchronizer.fit_all)
 
     def _cycle_display_mode(self) -> None:
-        modes = (DisplayMode.IMAGE, DisplayMode.OVERLAY, DisplayMode.INSTANCE_LABEL)
-        current = next(key for key, button in self.mode_buttons.items() if button.isChecked())
-        mode = modes[(modes.index(current) + 1) % len(modes)] if current in modes else modes[0]
-        self.mode_buttons[mode].setChecked(True)
-        labels = {
-            DisplayMode.IMAGE: "原画像",
-            DisplayMode.OVERLAY: "オーバーレイ",
-            DisplayMode.INSTANCE_LABEL: "インスタンスラベル",
-        }
-        self.ctx.status.show_message(f"表示形式: {labels[mode]}")
+        self.display_toggle.set_alternate(not self.display_toggle.is_alternate)
 
     def eventFilter(self, watched, event) -> bool:
         if event.type() == QEvent.Type.KeyPress:
@@ -234,39 +205,52 @@ class MaskComparisonPage(BasePage):
             if self.shortcuts.matches("display_mode", event):
                 self._cycle_display_mode()
                 return True
-            if self.shortcuts.matches("channel_prev", event):
-                self._move_channel(-1)
+            if self.shortcuts.matches("previous_image", event):
+                self._move(-1)
                 return True
-            if self.shortcuts.matches("channel_next", event):
-                self._move_channel(1)
+            if self.shortcuts.matches("next_image", event):
+                self._move(1)
                 return True
         return super().eventFilter(watched, event)
 
     def _shortcuts_changed(self) -> None:
         """共有キー変更をヒント表示へ反映する。"""
-        self.hint.setText(
-            f"{self.shortcuts.display_key(self.shortcuts['display_mode'])} 表示形式　"
-            f"{self.shortcuts.display_key(self.shortcuts['channel_prev'])}/"
-            f"{self.shortcuts.display_key(self.shortcuts['channel_next'])} チャンネル"
+        self.fit.setToolTip(f"全体表示（{self.shortcuts.display_key(self.shortcuts['fit_view'])}）")
+        self.previous.setToolTip(
+            f"前の画像（{self.shortcuts.display_key(self.shortcuts['previous_image'])}）"
+        )
+        self.next.setToolTip(
+            f"次の画像（{self.shortcuts.display_key(self.shortcuts['next_image'])}）"
         )
 
-    def _move_channel(self, delta: int) -> None:
-        if self.items and self.items[self.index].channels:
-            channels = self.items[self.index].channels
-            current = self._channel if self._channel in channels else channels[0]
-            self._channel = channels[(channels.index(current) + delta) % len(channels)]
-            self.ctx.status.show_message(f"チャンネル: {self._channel}")
-            self._render_current()
+    def _display_mode(self) -> DisplayMode:
+        """二択表示を候補画像の描画モードへ変換する。"""
+        if not self.display_toggle.is_alternate:
+            return DisplayMode.IMAGE
+        return {
+            "オーバーレイ": DisplayMode.OVERLAY,
+            "インスタンスラベル": DisplayMode.INSTANCE_LABEL,
+            "二値マスク": DisplayMode.BINARY,
+        }[self.ctx.display.value]
+
+    def _toggle_display(self, _alternate: bool) -> None:
+        """表示切替後に候補画像を描き直す。"""
+        self._render_current()
+
+    def _display_changed(self, _name: str) -> None:
+        """他画面で変わった表示設定を反映する。"""
+        self._render_signature = None
+        self._render_current()
 
     def _fit_all(self) -> None:
         self.synchronizer.fit_all()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
-        if event.key() == Qt.Key.Key_Left:
+        if self.shortcuts.matches("previous_image", event):
             self._move(-1)
-        elif event.key() == Qt.Key.Key_Right:
+        elif self.shortcuts.matches("next_image", event):
             self._move(1)
-        elif event.key() == Qt.Key.Key_F:
+        elif self.shortcuts.matches("fit_view", event):
             self._fit_all()
         else:
             super().keyPressEvent(event)

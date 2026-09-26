@@ -6,7 +6,7 @@ from dataclasses import replace
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QKeyEvent, QPainter, QPen
+from PySide6.QtGui import QColor, QKeyEvent, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -302,7 +302,23 @@ class HomeWindow(QMainWindow):
         file_menu = self.menuBar().addMenu("ファイル")
         file_menu.addAction("終了", self.close)
         settings_menu = self.menuBar().addMenu("設定")
-        settings_menu.addAction("キー割り当て…", self._show_shortcuts_info)
+        settings_menu.addAction("キー割り当て一覧…", self._show_shortcuts_info)
+        display_menu = settings_menu.addMenu("原画像と切り替える表示")
+        self.display_actions = {}
+        for name in sorted(self.ctx.display.MODES):
+            action = display_menu.addAction(name)
+            action.setCheckable(True)
+            action.setChecked(name == self.ctx.display.value)
+            action.triggered.connect(
+                lambda checked=False, value=name: self.ctx.display.set_value(value)
+            )
+            self.display_actions[name] = action
+        self.ctx.display.changed.connect(self._display_changed)
+        self.help_shortcut = QShortcut(QKeySequence(self.ctx.shortcuts["help"]), self)
+        self.help_shortcut.activated.connect(self._show_shortcuts_info)
+        self.f1_shortcut = QShortcut(QKeySequence("F1"), self)
+        self.f1_shortcut.activated.connect(self._show_shortcuts_info)
+        self.ctx.shortcuts.changed.connect(self._shortcuts_changed)
         help_menu = self.menuBar().addMenu("ヘルプ")
         help_menu.addAction(
             "バージョン情報",
@@ -312,9 +328,18 @@ class HomeWindow(QMainWindow):
         )
 
     def _show_shortcuts_info(self) -> None:
-        from .keymap_dialog import KeymapDialog
+        from .keymap_dialog import show_keymap_window
 
-        KeymapDialog(self, self.ctx.shortcuts).exec()
+        show_keymap_window(self, self.ctx)
+
+    def _display_changed(self, name: str) -> None:
+        """共有表示設定の選択状態を更新する。"""
+        for value, action in self.display_actions.items():
+            action.setChecked(value == name)
+
+    def _shortcuts_changed(self) -> None:
+        """キー割り当て変更をホームのヘルプ操作へ反映する。"""
+        self.help_shortcut.setKey(QKeySequence(self.ctx.shortcuts["help"]))
 
     def _open_mode(self, mode: ModeId) -> None:
         page_id = {

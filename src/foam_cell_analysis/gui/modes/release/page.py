@@ -133,8 +133,9 @@ class ReleasedModelsPage(BasePage):
         self.routing_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.routing_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.routing_table.setMinimumWidth(720)
+        self.routing_table.horizontalHeader().setStretchLastSection(False)
         self.routing_table.horizontalHeader().setSectionResizeMode(
-            2, QHeaderView.ResizeMode.Stretch
+            QHeaderView.ResizeMode.Interactive
         )
         self.routing_table.setColumnWidth(0, 110)
         self.routing_table.setColumnWidth(1, 190)

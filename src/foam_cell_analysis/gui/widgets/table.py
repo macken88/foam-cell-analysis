@@ -27,16 +27,12 @@ def setup_table(
     view.setShowGrid(False)
 
     header = view.horizontalHeader()
-    header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+    header.setStretchLastSection(False)
+    header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
     column_count = view.model().columnCount() if view.model() is not None else 0
-    target_column = column_count - 1 if stretch_column is None else stretch_column
-    if target_column < 0:
-        header.setStretchLastSection(True)
-    elif target_column >= column_count:
+    if stretch_column is not None and stretch_column >= column_count:
         raise ValueError("stretch_column が列数の範囲外です")
-    else:
-        header.setStretchLastSection(False)
-        header.setSectionResizeMode(target_column, QHeaderView.ResizeMode.Stretch)
+    view.resizeColumnsToContents()
 
 
 def mark_primary(button: QPushButton) -> None:

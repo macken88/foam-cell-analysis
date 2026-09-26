@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pytest
 from PySide6.QtCore import QEvent, QPoint, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QDialog, QDialogButtonBox, QFileDialog, QLabel, QMessageBox
+from PySide6.QtWidgets import QDialog, QDialogButtonBox, QFileDialog, QMessageBox
 
 from foam_cell_analysis.gui.context import AppContext
 from foam_cell_analysis.gui.jobs import JobManager
@@ -230,7 +230,7 @@ def test_review_09_keymap_cancel_discards_staged_changes(shell, qapp):
     original = shortcuts["usage_train"]
     dialog = KeymapDialog(None, shortcuts)
     row = dialog.actions.index("usage_train")
-    dialog.table.setCurrentCell(row, 1)
+    dialog.table.setCurrentCell(row, 2)
     dialog.table.setFocus()
     QTest.keyClick(dialog.table, Qt.Key.Key_F2)
     editor = dialog.table.focusWidget()
@@ -247,7 +247,7 @@ def test_review_09_keymap_cancel_discards_staged_changes(shell, qapp):
 def test_review_10_keymap_editor_captures_modifier_sequence(qapp, shell):
     dialog = KeymapDialog(None, shell.ctx.shortcuts)
     row = dialog.actions.index("display_mode")
-    dialog.table.setCurrentCell(row, 1)
+    dialog.table.setCurrentCell(row, 2)
     dialog.table.setFocus()
     QTest.keyClick(dialog.table, Qt.Key.Key_F2)
     editor = dialog.table.focusWidget()
@@ -260,7 +260,7 @@ def test_review_10_keymap_editor_captures_modifier_sequence(qapp, shell):
     )
     QTest.keyClick(editor, Qt.Key.Key_Return)
     qapp.processEvents()
-    assert dialog.table.item(row, 1).text() == "Ctrl+Alt+J"
+    assert dialog.table.item(row, 2).text() == "Ctrl+Alt+J"
     assert dialog.shortcuts["display_mode"] == "Ctrl+Alt+J"
     dialog.reject()
 
@@ -279,7 +279,7 @@ def test_review_11_saving_keymap_by_mouse_updates_open_pages_and_triage(qapp, sh
             ("display_mode", Qt.Key.Key_U, Qt.KeyboardModifier.NoModifier),
         ):
             row = dialog.actions.index(action_name)
-            cell = dialog.table.item(row, 1)
+            cell = dialog.table.item(row, 2)
             dialog.table.scrollToItem(cell)
             qapp.processEvents()
             rect = dialog.table.visualItemRect(cell)
@@ -301,25 +301,21 @@ def test_review_11_saving_keymap_by_mouse_updates_open_pages_and_triage(qapp, sh
     action = next(
         action
         for action in data_page.other_button.menu().actions()
-        if action.text() == "キー割り当て…"
+        if action.text() == "キー割り当て一覧…"
     )
     with patch.object(KeymapDialog, "exec", edit_and_save):
         _click_menu_action(qapp, data_page.other_button, action)
+        shell.ctx.keymap_window.change_button.click()
     assert dialog_results == [QDialog.DialogCode.Accepted]
     assert shell.ctx.shortcuts["usage_train"] == "Alt+T"
     assert shell.ctx.shortcuts["display_mode"] == "U"
-    data_hint_keys = [
-        label.text() for group in data_page.hints._groups for label in group.findChildren(QLabel)
-    ]
-    assert "Alt+T" in data_hint_keys
-    assert "U" in data_hint_keys
-    assert "U 表示形式" in compare_page.hint.text()
-    inference_hint_keys = [
-        label.text()
-        for group in inference_page.hints._groups
-        for label in group.findChildren(QLabel)
-    ]
-    assert "U" in inference_hint_keys
+    assert (
+        shell.ctx.keymap_window.table.item(
+            shell.ctx.keymap_window.actions.index("display_mode"), 2
+        ).text()
+        == "U"
+    )
+    assert compare_page.shortcuts["display_mode"] == "U"
     assert inference_page.shortcuts["usage_train"] == "Alt+T"
     item = next(item for item in data_page.items if item.usage == "unassigned")
     dialog = ContinuousTriageDialog(
@@ -329,6 +325,7 @@ def test_review_11_saving_keymap_by_mouse_updates_open_pages_and_triage(qapp, sh
         shell.ctx.backend,
         shell.ctx.shortcuts,
     )
+    assert "Alt+T" in dialog.usage_buttons["train"][0].text()
     dialog.show()
     dialog.setFocus()
     QTest.keyClick(dialog, Qt.Key.Key_T, Qt.KeyboardModifier.AltModifier)
@@ -356,7 +353,7 @@ def test_rereview_02_shifted_punctuation_shortcuts_and_editor_normalize(qapp, sh
 
     dialog = KeymapDialog(None, shell.ctx.shortcuts)
     row = dialog.actions.index("zoom_out")
-    cell = dialog.table.item(row, 1)
+    cell = dialog.table.item(row, 2)
     dialog.show()
     dialog.table.scrollToItem(cell)
     qapp.processEvents()
@@ -379,7 +376,7 @@ def test_rereview_02_shifted_punctuation_shortcuts_and_editor_normalize(qapp, sh
 def test_rereview_02_keymap_capture_normalizes_shifted_plus(qapp, shell):
     dialog = KeymapDialog(None, shell.ctx.shortcuts)
     row = dialog.actions.index("zoom_in")
-    cell = dialog.table.item(row, 1)
+    cell = dialog.table.item(row, 2)
     dialog.show()
     dialog.table.scrollToItem(cell)
     qapp.processEvents()
@@ -413,9 +410,9 @@ def test_review_12_default_shortcuts_cover_clear_help_navigation_and_zoom(shell,
     ):
         QTest.keyClick(page.table, Qt.Key.Key_K)
     assert item.classification == "分類B"
-    with patch.object(QMessageBox, "information") as info:
-        QTest.keyClick(page.table, Qt.Key.Key_F1)
-        assert info.call_count == 1
+    QTest.keyClick(page.table, Qt.Key.Key_F1)
+    assert shell.ctx.keymap_window is not None
+    assert shell.ctx.keymap_window.isVisible()
     before = page.image_view.zoom
     QTest.keyClick(page.image_view, Qt.Key.Key_Plus)
     assert page.image_view.zoom > before
@@ -461,7 +458,7 @@ def test_review_14_imported_usage_is_visible_and_source_filter_says_all(shell, q
     page = shell.page(PageId.DATA_PREPARATION)
 
     def finish_import(dialog):
-        dialog.channel_rows["A"].setText("C:/review/images")
+        dialog.image_edit.setText("C:/review/images")
         dialog.mask_edit.setText("C:/review/masks")
         dialog._accept()
         return dialog.result()
@@ -566,7 +563,7 @@ def test_review_19_data_preparation_other_menu_has_required_actions(shell):
     labels = [action.text() for action in page.other_button.menu().actions()]
     assert "新しいマスク版を取り込む" in labels
     assert "アーカイブ作成…" in labels
-    assert "キー割り当て…" in labels
+    assert "キー割り当て一覧…" in labels
 
 
 def test_review_19_archive_menu_action_records_archive_for_latest_versions(

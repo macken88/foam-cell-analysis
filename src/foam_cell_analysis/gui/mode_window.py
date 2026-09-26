@@ -3,6 +3,7 @@
 from datetime import datetime
 
 from PySide6.QtCore import QEvent, Qt, Signal
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -19,7 +20,7 @@ from .context import AppContext
 from .labels import autosave_label, running_jobs_label
 from .navigation import ModeId, PageId
 from .theme import numeric_font
-from .widgets.marks import KeyCap, LayoutButton
+from .widgets.marks import LayoutButton
 
 MODE_LABELS = {
     ModeId.DATA_PREPARATION: "データ準備",
@@ -82,10 +83,9 @@ class ModeWindow(QMainWindow):
         home_label = QLabel("⌂ ホーム")
         home_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         home_layout.addWidget(home_label)
-        keycap = KeyCap("Ctrl+H")
-        keycap.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        keycap.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        home_layout.addWidget(keycap)
+        self.home_button.setToolTip(
+            f"ホームへ戻る（{ctx.shortcuts.display_key(ctx.shortcuts['home'])}）"
+        )
         self.home_button.clicked.connect(self.home_requested.emit)
         top.addWidget(self.home_button, 0, Qt.AlignmentFlag.AlignLeft)
         top.addSpacing(16)
@@ -126,12 +126,31 @@ class ModeWindow(QMainWindow):
         self._update_job_count(self.ctx.jobs.running_count)
         self._update_saved_time(ctx.backend.get_last_saved_at())
         self._install_home_shortcut()
+        self.ctx.shortcuts.changed.connect(self._shortcuts_changed)
+        help_menu = self.menuBar().addMenu("ヘルプ")
+        help_menu.addAction("キー割り当て一覧…", self._open_keymap)
+        self._help_shortcut = QShortcut(QKeySequence(self.ctx.shortcuts["help"]), self)
+        self._help_shortcut.activated.connect(self._open_keymap)
+        self._f1_shortcut = QShortcut(QKeySequence("F1"), self)
+        self._f1_shortcut.activated.connect(self._open_keymap)
 
     def _install_home_shortcut(self) -> None:
-        from PySide6.QtGui import QKeySequence, QShortcut
-
-        self.home_shortcut = QShortcut(QKeySequence("Ctrl+H"), self)
+        self.home_shortcut = QShortcut(QKeySequence(self.ctx.shortcuts["home"]), self)
         self.home_shortcut.activated.connect(self.home_requested.emit)
+
+    def _shortcuts_changed(self) -> None:
+        """共有キー割り当てをホーム操作へ反映する。"""
+        self.home_shortcut.setKey(QKeySequence(self.ctx.shortcuts["home"]))
+        self._help_shortcut.setKey(QKeySequence(self.ctx.shortcuts["help"]))
+        self.home_button.setToolTip(
+            f"ホームへ戻る（{self.ctx.shortcuts.display_key(self.ctx.shortcuts['home'])}）"
+        )
+
+    def _open_keymap(self) -> None:
+        """キー割り当て一覧を前面に表示する。"""
+        from .keymap_dialog import show_keymap_window
+
+        show_keymap_window(self, self.ctx)
 
     def add_page(self, page_id: PageId, page: QWidget, title: str, description: str) -> None:
         """ページをタブとして追加する。"""

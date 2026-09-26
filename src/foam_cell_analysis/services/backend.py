@@ -122,6 +122,9 @@ class Backend(Protocol):
     def list_dataset_versions(self, purpose: str | None = None) -> list[DatasetVersion]:
         """確定済みデータセット版を返す。"""
 
+    def get_dataset_version_items(self, version: str) -> list[DataItem]:
+        """指定版に含まれる確定時点の画像一覧を返す。"""
+
     def list_validation_versions(self) -> list[DatasetVersion]:
         """検証用データセット版を返す。"""
 

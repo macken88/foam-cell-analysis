@@ -10,12 +10,28 @@ def test_default_mapping_covers_data_preparation_actions(tmp_path):
     assert shortcuts["auto_triage"] == "Ctrl+D"
     assert shortcuts["filter_errors"] == "Alt+6"
     assert shortcuts["display_mode"] == "M"
-    assert shortcuts["channel_prev"] == "["
-    assert shortcuts["channel_next"] == "]"
+    assert shortcuts["previous_image"] == "Left"
+    assert shortcuts["next_image"] == "Right"
+    assert "channel_prev" not in shortcuts.mapping
     assert "toggle_view" not in shortcuts.mapping
     assert set(shortcuts.mapping) == set(DEFAULT_SHORTCUTS)
     assert ("1–9", "分類") in shortcuts.hint_items()
     assert ("Enter", "連続振り分け") in shortcuts.hint_items()
+
+
+def test_legacy_channel_keys_are_ignored_without_load_error(tmp_path):
+    """旧 keymap.json のチャンネル操作は安全に読み飛ばす。"""
+    path = tmp_path / "keymap.json"
+    path.write_text(
+        '{"channel_prev": "[", "channel_next": "]", "usage_train": "T"}',
+        encoding="utf-8",
+    )
+
+    shortcuts = ShortcutMap(path)
+
+    assert shortcuts["usage_train"] == "T"
+    assert "channel_prev" not in shortcuts.mapping
+    assert "channel_next" not in shortcuts.mapping
 
 
 def test_hint_bar_tracks_custom_classification_keys(tmp_path):

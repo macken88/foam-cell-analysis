@@ -101,6 +101,7 @@ def test_result_preview_mode_shortcut_changes_display_and_status(qapp, mock_back
     page.ctx.status.message.connect(messages.append)
     page.image_view.setFocus()
     QTest.keyClick(page.image_view, Qt.Key.Key_M)
-    assert page.display_buttons["オーバーレイ"].isChecked()
-    assert messages[-1] == "表示形式: オーバーレイ"
+    assert not page.display_toggle.is_alternate
+    QTest.keyClick(page.image_view, Qt.Key.Key_M)
+    assert page.display_toggle.is_alternate
     page.close()

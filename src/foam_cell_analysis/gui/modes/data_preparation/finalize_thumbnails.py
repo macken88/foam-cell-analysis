@@ -16,15 +16,20 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QColor, QImage, QPainter, QPen
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
+    QHBoxLayout,
     QLabel,
     QListView,
     QStyle,
     QStyledItemDelegate,
+    QTabWidget,
     QVBoxLayout,
+    QWidget,
 )
 
 from ....services.models import DataItem
+from ...context import DEFAULT_CHANNEL
 from ...theme import Color, body_font
 from ...widgets.image_convert import array_to_pixmap
 
@@ -61,6 +66,8 @@ class FinalizeThumbnailModel(QAbstractListModel):
         self.items: list[DataItem] = []
         self.errors: dict[str, str] = {}
         self.filter_name = "changed"
+        self.classification_filter = "すべて"
+        self.quality_filter = "すべて"
         self.view = None
         self._pending: set[str] = set()
         self._tasks: dict[str, Future] = {}
@@ -81,6 +88,13 @@ class FinalizeThumbnailModel(QAbstractListModel):
         QTimer.singleShot(0, self.request_visible)
 
     def _matches(self, item: DataItem, errors: dict[str, str]) -> bool:
+        if (
+            self.classification_filter != "すべて"
+            and item.classification != self.classification_filter
+        ):
+            return False
+        if self.quality_filter != "すべて" and item.quality != self.quality_filter:
+            return False
         if self.filter_name == "all":
             return True
         if self.filter_name == "changed":
@@ -274,10 +288,103 @@ class ThumbnailPreviewDialog(QDialog):
         layout = QVBoxLayout(self)
         self.image_label = QLabel()
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        image = backend.get_item_image(
-            "all", item.item_id, item.channels[0] if item.channels else "A"
-        )
+        image = backend.get_item_image("all", item.item_id, DEFAULT_CHANNEL)
         self.image_label.setPixmap(array_to_pixmap(image))
         layout.addWidget(self.image_label, 1)
         purpose = "学習" if item.usage == "train" else "検証"
         layout.addWidget(QLabel(f"{item.item_id}　{item.source_filename}　用途: {purpose}"))
+
+
+class DatasetVersionThumbnailWindow(QDialog):
+    """確定済み版の画像内容を読み取り専用で確認する。"""
+
+    def __init__(self, parent, backend, version, linked_validation=None) -> None:
+        super().__init__(parent, Qt.WindowType.Window)
+        self.setWindowTitle(f"{version.version} のサムネイル")
+        self.resize(1040, 760)
+        self.backend = backend
+        self.version = version
+        layout = QVBoxLayout(self)
+        layout.addWidget(
+            QLabel(
+                f"{version.version}　{version.created_at:%Y-%m-%d %H:%M}　"
+                f"{version.n_images} 件　{version.comment or 'コメントなし'}"
+            )
+        )
+        self.tabs = QTabWidget()
+        layout.addWidget(self.tabs, 1)
+        self.models = {}
+        self.views = {}
+        versions = [(version, version.version)]
+        if version.purpose == "train" and linked_validation:
+            versions.append((linked_validation, f"基準検証用 {linked_validation.version}"))
+        for record, title in versions:
+            page = QWidget()
+            page_layout = QVBoxLayout(page)
+            filters = QHBoxLayout()
+            classification = QComboBox()
+            classification.addItems(["すべて", "分類A", "分類B", "分類C"])
+            quality = QComboBox()
+            quality.addItems(["すべて", "良", "可", "不良", "未設定"])
+            count = QLabel()
+            filters.addWidget(QLabel("画像分類"))
+            filters.addWidget(classification)
+            filters.addSpacing(14)
+            filters.addWidget(QLabel("品質"))
+            filters.addWidget(quality)
+            filters.addStretch(1)
+            filters.addWidget(count)
+            page_layout.addLayout(filters)
+            view = FinalizeThumbnailView()
+            model = FinalizeThumbnailModel(backend, self)
+            model.filter_name = "all"
+            items = backend.get_dataset_version_items(record.version)
+            model.set_items(items, {})
+            view.setModel(model)
+            view.setItemDelegate(FinalizeThumbnailDelegate(view))
+            model.attach_view(view)
+            page_layout.addWidget(view, 1)
+            classification.currentTextChanged.connect(
+                lambda value, m=model, source=items, q=quality, label=count: self._filter(
+                    m, source, value, q.currentText(), label
+                )
+            )
+            quality.currentTextChanged.connect(
+                lambda value, m=model, source=items, c=classification, label=count: self._filter(
+                    m, source, c.currentText(), value, label
+                )
+            )
+            view.clicked.connect(lambda index, m=model: self._preview(m, index))
+            self.models[record.version] = model
+            self.views[record.version] = view
+            self.tabs.addTab(page, title)
+            self._update_count(model, count, len(items))
+
+    def _filter(self, model, items, classification, quality, label) -> None:
+        """分類と品質で一覧を絞り込む。"""
+        model.classification_filter = classification
+        model.quality_filter = "未設定" if quality == "未設定" else quality
+        if quality == "未設定":
+            model.beginResetModel()
+            model.items = [
+                item
+                for item in items
+                if (classification == "すべて" or item.classification == classification)
+                and not item.quality
+            ]
+            model.endResetModel()
+        else:
+            model.set_items(items, {})
+        self._update_count(model, label, len(items))
+        QTimer.singleShot(0, model.request_visible)
+
+    @staticmethod
+    def _update_count(model, label, total) -> None:
+        """絞り込み後の件数を表示する。"""
+        label.setText(f"{model.rowCount()} / {total} 件")
+
+    def _preview(self, model, index) -> None:
+        """選択画像を拡大する。"""
+        item = index.data(Qt.ItemDataRole.UserRole)
+        if isinstance(item, DataItem):
+            ThumbnailPreviewDialog(self, self.backend, item).exec()

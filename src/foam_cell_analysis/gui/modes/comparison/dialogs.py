@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGridLayout,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QLineEdit,
     QPlainTextEdit,
@@ -225,10 +224,6 @@ class EvaluationDialog(QDialog):
         self.metrics = QTableWidget(2, 5)
         self.metrics.setHorizontalHeaderLabels(["評価項目", "全体", "分類A", "分類B", "分類C"])
         setup_table(self.metrics, stretch_column=4)
-        for column in range(1, 5):
-            self.metrics.horizontalHeader().setSectionResizeMode(
-                column, QHeaderView.ResizeMode.Stretch
-            )
         evaluation = candidate.evaluations[validation]
         classes = ["分類A", "分類B", "分類C"]
         all_count = sum(value[1] for value in evaluation.per_class.values())
@@ -259,11 +254,6 @@ class EvaluationDialog(QDialog):
         self.results = QTableWidget(0, 3)
         self.results.setHorizontalHeaderLabels(["項目名", "値", "単位"])
         setup_table(self.results, stretch_column=0)
-        self.results.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.results.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.results.horizontalHeader().setSectionResizeMode(
-            2, QHeaderView.ResizeMode.ResizeToContents
-        )
         if self.read_only:
             self.results.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
             self.metrics.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)

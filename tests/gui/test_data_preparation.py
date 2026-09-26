@@ -209,23 +209,22 @@ def test_preview_shortcuts_work_from_table_but_not_search_input(qapp):
     page.ctx.status.message.connect(messages.append)
     page.table.setFocus()
     QTest.keyClick(page.table, Qt.Key.Key_M)
-    assert page.display_combo.currentText() == "オーバーレイ"
-    assert messages[-1] == "表示形式: オーバーレイ"
-    QTest.keyClick(page.table, Qt.Key.Key_BracketLeft)
-    assert page.channel_combo.currentText() == "C"
+    assert not page.display_toggle.is_alternate
+    QTest.keyClick(page.table, Qt.Key.Key_M)
+    assert page.display_toggle.is_alternate
     page.search.setFocus()
     QTest.keyClick(page.search, Qt.Key.Key_M)
     assert page.search.text().casefold() == "m"
-    assert page.display_combo.currentText() == "オーバーレイ"
+    assert page.display_toggle.is_alternate
     page.close()
 
 
-def test_continuous_triage_shortcuts_change_mode_and_channel(qapp, qtbot):
+def test_continuous_triage_shortcuts_toggle_mode_and_move_image(qapp, qtbot):
     backend = MockBackend()
     page = _page(qapp, backend)
-    item = next(item for item in backend.get_working_items() if item.usage == "unassigned")
+    items = [item for item in backend.get_working_items() if item.usage == "unassigned"][:2]
     dialog = ContinuousTriageDialog(
-        page, [item], lambda *_args, **_kwargs: None, backend, page.shortcuts
+        page, items, lambda *_args, **_kwargs: None, backend, page.shortcuts
     )
     qtbot.addWidget(dialog)
     messages = []
@@ -233,11 +232,11 @@ def test_continuous_triage_shortcuts_change_mode_and_channel(qapp, qtbot):
     dialog.show()
     dialog.setFocus()
     QTest.keyClick(dialog, Qt.Key.Key_M)
-    assert dialog.display_mode == DisplayMode.INSTANCE_LABEL
-    assert messages[-1] == "表示形式: インスタンスラベル"
-    QTest.keyClick(dialog, Qt.Key.Key_BracketRight)
-    assert dialog.channel_index == 1
-    assert messages[-1] == "チャンネル: B"
+    assert dialog.display_mode == DisplayMode.IMAGE
+    QTest.keyClick(dialog, Qt.Key.Key_M)
+    assert dialog.display_mode == DisplayMode.OVERLAY
+    QTest.keyClick(dialog, Qt.Key.Key_Right)
+    assert dialog.index == 1
     dialog.close()
     page.close()
 

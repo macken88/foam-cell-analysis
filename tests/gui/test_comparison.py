@@ -14,7 +14,6 @@ from foam_cell_analysis.gui.modes.comparison.dialogs import (
 )
 from foam_cell_analysis.gui.modes.comparison.mask_compare import MaskComparisonPage
 from foam_cell_analysis.gui.navigation import Navigator
-from foam_cell_analysis.gui.widgets.image_convert import DisplayMode
 from foam_cell_analysis.services.mock.backend import MockBackend
 
 
@@ -74,10 +73,10 @@ def test_mask_comparison_shortcuts_update_every_slot_and_status(qtbot):
     ctx.status.message.connect(messages.append)
     page.views[0].setFocus()
     QTest.keyClick(page.views[0], Qt.Key.Key_M)
-    assert page.mode_buttons[DisplayMode.INSTANCE_LABEL].isChecked()
-    assert messages[-1] == "表示形式: インスタンスラベル"
-    QTest.keyClick(page.views[0], Qt.Key.Key_BracketRight)
-    assert page._channel == "B"
+    assert not page.display_toggle.is_alternate
+    start = page.index
+    QTest.keyClick(page.views[0], Qt.Key.Key_Right)
+    assert page.index == (start + 1) % len(page.items)
     assert all(not view.scene().items() == [] for view in page.views)
 
 
@@ -140,18 +139,13 @@ def test_detail_evaluation_and_mask_export_dialogs(qtbot):
     assert evaluation.metrics.height() <= 100
     assert all(
         evaluation.metrics.horizontalHeader().sectionResizeMode(column)
-        == QHeaderView.ResizeMode.Stretch
-        for column in range(1, 5)
+        == QHeaderView.ResizeMode.Interactive
+        for column in range(evaluation.metrics.columnCount())
     )
-    assert (
-        evaluation.results.horizontalHeader().sectionResizeMode(0) == QHeaderView.ResizeMode.Stretch
-    )
-    assert (
-        evaluation.results.horizontalHeader().sectionResizeMode(1) == QHeaderView.ResizeMode.Stretch
-    )
-    assert (
-        evaluation.results.horizontalHeader().sectionResizeMode(2)
-        == QHeaderView.ResizeMode.ResizeToContents
+    assert all(
+        evaluation.results.horizontalHeader().sectionResizeMode(column)
+        == QHeaderView.ResizeMode.Interactive
+        for column in range(evaluation.results.columnCount())
     )
     evaluation.show()
     QTest.qWait(50)

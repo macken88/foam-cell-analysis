@@ -7,7 +7,6 @@ from pathlib import Path
 
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtWidgets import (
-    QButtonGroup,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -30,7 +29,7 @@ from ...theme import Color, numeric_font, set_style
 from ...widgets.form import FormSection
 from ...widgets.image_convert import DisplayMode, array_to_pixmap, render
 from ...widgets.image_view import ImageView
-from ...widgets.marks import STATUS_MARKS, KeyHintBar, TagDelegate
+from ...widgets.marks import STATUS_MARKS, DisplayToggle, TagDelegate
 from ...widgets.page_base import BasePage
 from ...widgets.table import mark_primary, setup_table
 
@@ -51,11 +50,6 @@ class InferencePage(BasePage):
     """分類別のリリースモデルで画像を推論する。"""
 
     classifications = ("分類A", "分類B", "分類C")
-    modes = {
-        "原画像": DisplayMode.IMAGE,
-        "オーバーレイ": DisplayMode.OVERLAY,
-        "インスタンスラベル": DisplayMode.INSTANCE_LABEL,
-    }
 
     def __init__(self, ctx, parent=None, *, show_heading: bool = True) -> None:
         super().__init__(
@@ -72,6 +66,7 @@ class InferencePage(BasePage):
         self._build_ui()
         self.refresh_routing()
         self.shortcuts.changed.connect(self._shortcuts_changed)
+        self.ctx.display.changed.connect(self._display_changed)
 
     def _build_ui(self) -> None:
         input_section = FormSection("入力画像")
@@ -139,38 +134,15 @@ class InferencePage(BasePage):
         self.output_section.add_row("", actions)
 
         preview_section = FormSection("結果プレビュー")
-        self.display_group = QButtonGroup(self)
-        self.display_buttons: dict[str, QPushButton] = {}
-        display_row = QWidget()
-        display_layout = QHBoxLayout(display_row)
-        display_layout.setContentsMargins(0, 0, 0, 0)
-        for index, label in enumerate(self.modes):
-            button = QPushButton(label)
-            button.setCheckable(True)
-            button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-            set_style(button, role="segment")
-            if index == 0:
-                button.setChecked(True)
-            self.display_group.addButton(button)
-            self.display_buttons[label] = button
-            display_layout.addWidget(button)
-        display_layout.addStretch(1)
-        preview_section.add_row("", display_row)
+        self.display_toggle = DisplayToggle(self.ctx.display)
+        self.display_toggle.alternate_selected.connect(lambda _value: self._render_selected())
+        preview_section.add_row("", self.display_toggle)
         self.image_view = ImageView()
         self.image_view.setMinimumSize(360, 320)
         preview_section.add_row("", self.image_view)
         self.detection_count = QLabel("検出数: —")
         self.image_view.set_overlay_labels("", "")
         preview_section.form.addRow(self.detection_count)
-        self.hints = KeyHintBar(
-            [
-                (self.shortcuts.display_key(self.shortcuts["display_mode"]), "表示形式"),
-                (self.shortcuts.display_key(self.shortcuts["zoom_in"]), "拡大"),
-                (self.shortcuts.display_key(self.shortcuts["zoom_out"]), "縮小"),
-                (self.shortcuts.display_key(self.shortcuts["fit_view"]), "全体表示"),
-            ]
-        )
-        preview_section.form.addRow(self.hints)
 
         self.error_banner = QWidget()
         set_style(self.error_banner, role="errorBanner")
@@ -206,9 +178,6 @@ class InferencePage(BasePage):
         self.run_button.clicked.connect(self.run_inference)
         self.route_button.clicked.connect(self.open_routing)
         self.table.itemSelectionChanged.connect(self._selection_changed)
-        self.display_group.buttonToggled.connect(
-            lambda _button, checked: checked and self._render_selected()
-        )
         self.image_view.installEventFilter(self)
         self.image_view.viewport().installEventFilter(self)
 
@@ -432,9 +401,7 @@ class InferencePage(BasePage):
             self.image_view.set_overlay_labels("", "")
             return
         entry = self.inputs[rows[0].row()]
-        selected_mode = next(
-            label for label, button in self.display_buttons.items() if button.isChecked()
-        )
+        selected_mode = self.display_toggle.is_alternate
         signature = (entry.filename, entry.model_id, entry.status, selected_mode, id(entry.image))
         if entry.status != "完了" or entry.image is None or entry.labels is None:
             if signature == getattr(self, "_render_signature", None):
@@ -446,7 +413,7 @@ class InferencePage(BasePage):
             return
         if signature == getattr(self, "_render_signature", None):
             return
-        mode = self.modes[selected_mode]
+        mode = self._display_mode()
         self.image_view.set_image(array_to_pixmap(render(entry.image, entry.labels, mode)))
         self._render_signature = signature
         count = len(set(entry.labels.ravel()) - {0})
@@ -468,26 +435,32 @@ class InferencePage(BasePage):
                 return True
             if not self.shortcuts.matches("display_mode", event):
                 return super().eventFilter(watched, event)
-            modes = tuple(self.modes)
-            current = next(
-                label for label, button in self.display_buttons.items() if button.isChecked()
-            )
-            label = modes[(modes.index(current) + 1) % len(modes)]
-            self.display_buttons[label].setChecked(True)
-            self.ctx.status.show_message(f"表示形式: {label}")
+            self.display_toggle.set_alternate(not self.display_toggle.is_alternate)
             return True
         return super().eventFilter(watched, event)
 
     def _shortcuts_changed(self) -> None:
-        """共有キー変更後に推論画面のヒントを更新する。"""
-        self.hints.set_hints(
-            [
-                (self.shortcuts.display_key(self.shortcuts["display_mode"]), "表示形式"),
-                (self.shortcuts.display_key(self.shortcuts["zoom_in"]), "拡大"),
-                (self.shortcuts.display_key(self.shortcuts["zoom_out"]), "縮小"),
-                (self.shortcuts.display_key(self.shortcuts["fit_view"]), "全体表示"),
-            ]
+        """共有キー変更後に操作ツールチップを更新する。"""
+        self.run_button.setToolTip(
+            f"推論を実行（{self.shortcuts.display_key(self.shortcuts.get('run_inference', ''))}）"
+            if self.shortcuts.get("run_inference")
+            else "推論を実行"
         )
+
+    def _display_mode(self) -> DisplayMode:
+        """二択表示から描画モードを得る。"""
+        if not self.display_toggle.is_alternate:
+            return DisplayMode.IMAGE
+        return {
+            "オーバーレイ": DisplayMode.OVERLAY,
+            "インスタンスラベル": DisplayMode.INSTANCE_LABEL,
+            "二値マスク": DisplayMode.BINARY,
+        }[self.ctx.display.value]
+
+    def _display_changed(self, _name: str) -> None:
+        """共有表示設定を結果プレビューへ反映する。"""
+        self._render_signature = None
+        self._render_selected()
 
     def open_routing(self) -> None:
         """リリース済みモデル・振り分け画面を開く。"""

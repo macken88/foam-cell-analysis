@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...context import AppContext
+from ...context import DEFAULT_CHANNEL, AppContext
 from ...jobs import FakeJob
 from ...labels import classification_label, config_key_label, model_type_label, quality_filter_label
 from ...navigation import PageId
@@ -48,7 +48,6 @@ LABELS = {
     "seed": "乱数シード",
     "classification": "画像分類",
     "quality_filter": "品質条件",
-    "input_channels": "入力チャンネル",
     "epochs": "エポック数",
     "batch_size": "バッチサイズ",
     "learning_rate": "学習率",
@@ -286,7 +285,7 @@ class TrainingPage(BasePage):
     ) -> None:
         for key, value in values.items():
             path = f"{prefix}.{key}"
-            if path == "data.used_item_ids":
+            if path in {"data.used_item_ids", "data.input_channels"}:
                 continue
             if isinstance(value, dict):
                 if key in {"rpn", "roi"}:
@@ -312,18 +311,6 @@ class TrainingPage(BasePage):
 
     def _control(self, path: str, value: Any) -> QWidget:
         """内部キーに応じた入力部品を作る。"""
-        if path == "data.input_channels":
-            holder = QWidget()
-            row = QHBoxLayout(holder)
-            row.setContentsMargins(0, 0, 0, 0)
-            current = set(value)
-            for channel in self.options["channels"]:
-                box = QCheckBox(f"チャンネル{channel}")
-                box.setObjectName(f"channel_{channel}")
-                box.setChecked(channel in current)
-                box.setToolTip(path)
-                row.addWidget(box)
-            return holder
         if path in CHOICES:
             source, _special = CHOICES[path]
             items = source if isinstance(source, list) else self.options.get(source, [])
@@ -467,16 +454,11 @@ class TrainingPage(BasePage):
             for part in key_path[:-1]:
                 target = target[part]
             target[key_path[-1]] = value
+        result["data"]["input_channels"] = [DEFAULT_CHANNEL]
         result["experiment"]["id"] = self._edit_id or self.experiment_id.text().strip()
         return result
 
     def _read_control(self, path: str, widget: QWidget) -> Any:
-        if path == "data.input_channels":
-            return [
-                box.objectName().removeprefix("channel_")
-                for box in widget.findChildren(QCheckBox)
-                if box.isChecked()
-            ]
         if isinstance(widget, QComboBox):
             return widget.currentData()
         if isinstance(widget, QCheckBox):

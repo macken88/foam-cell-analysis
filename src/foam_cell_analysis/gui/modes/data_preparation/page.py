@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 
-from PySide6.QtCore import QEvent, Qt
+from PySide6.QtCore import QByteArray, QEvent, QSettings, Qt
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QSplitter,
     QStyle,
     QStyledItemDelegate,
@@ -38,12 +39,11 @@ from PySide6.QtWidgets import (
 )
 
 from ....services.models import DataItem, ImportCandidate
-from ...context import AppContext
-from ...keymap_dialog import KeymapDialog
+from ...context import DEFAULT_CHANNEL, AppContext
 from ...theme import Color, numeric_font, set_style
 from ...widgets.image_convert import DisplayMode, array_to_pixmap, render
 from ...widgets.image_view import ImageView
-from ...widgets.marks import USAGE_MARKS, CountChip, KeyHintBar, TagDelegate
+from ...widgets.marks import USAGE_MARKS, CountChip, DisplayToggle, TagDelegate
 from ...widgets.page_base import BasePage
 from .dialogs import (
     AutoTriageDialog,
@@ -52,6 +52,7 @@ from .dialogs import (
     ImportDialog,
     ImportSettingsDialog,
 )
+from .finalize_thumbnails import DatasetVersionThumbnailWindow
 from .table_model import (
     USAGE_TEXT,
     DataPreparationTableModel,
@@ -210,6 +211,10 @@ class DataPreparationPage(BasePage):
         for button in (self.import_button, self.auto_button, self.excel_button, self.other_button):
             toolbar.addWidget(button)
         toolbar.addStretch(1)
+        self.finalize_error_button = QPushButton()
+        self.finalize_error_button.setVisible(False)
+        self.finalize_error_button.clicked.connect(lambda: self._filter_usage("errors"))
+        toolbar.addWidget(self.finalize_error_button)
         toolbar.addWidget(self.finalize_button)
         root.addLayout(toolbar)
         chips = QHBoxLayout()
@@ -264,7 +269,7 @@ class DataPreparationPage(BasePage):
         filter_controls.addWidget(self.source_combo)
         self.search = QLineEdit()
         self.search.setMinimumWidth(175)
-        self.search.setPlaceholderText("識別子・ファイル名を検索（Ctrl+F）")
+        self.search.setPlaceholderText("識別子・ファイル名を検索")
         self.search.textChanged.connect(self._search_changed)
         filter_controls.addWidget(self.search, 1)
         root.addLayout(filter_controls)
@@ -277,10 +282,8 @@ class DataPreparationPage(BasePage):
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.verticalHeader().hide()
         self.table.setSortingEnabled(False)
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        for column, width in enumerate((140, 108, 125, 90, 78, 62, 74, 32)):
-            self.table.setColumnWidth(column, width)
+        self.table.horizontalHeader().setStretchLastSection(False)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         usage_mapping = {
             USAGE_TEXT[key]: (values[1], values[2], values[3])
             for key, values in USAGE_MARKS.items()
@@ -292,6 +295,7 @@ class DataPreparationPage(BasePage):
         self.table.setItemDelegateForColumn(
             5, ValueComboDelegate(["未設定", "良", "可", "不良"], self.table)
         )
+        self.table.resizeColumnsToContents()
         self.model.edit_requested.connect(self._table_edit_requested)
         self.splitter.addWidget(self.table)
         self.preview_panel = QWidget()
@@ -302,8 +306,11 @@ class DataPreparationPage(BasePage):
         preview.addWidget(self.preview_meta)
         self.image_view = ImageView()
         self.image_view.setMinimumWidth(300)
+        self.display_toggle = DisplayToggle(ctx.display)
+        self.display_toggle.alternate_selected.connect(self._show_preview)
+        preview.addWidget(self.display_toggle)
         preview.addWidget(self.image_view, 1)
-        self.image_caption = QLabel("画像表示形式・チャンネル")
+        self.image_caption = QLabel("画像表示形式")
         set_style(self.image_caption, role="note")
         preview.addWidget(self.image_caption)
         edits = QHBoxLayout()
@@ -319,27 +326,28 @@ class DataPreparationPage(BasePage):
         for value in ("良", "可", "不良"):
             self.quality_combo.addItem(value, value)
         self.mask_combo = QComboBox()
-        self.display_combo = QComboBox()
-        self.display_combo.addItems(["原画像", "オーバーレイ", "インスタンスラベル", "二値化"])
-        self.channel_combo = QComboBox()
-        self.channel_combo.addItems(["A", "B", "C"])
+        for combo in (self.usage_combo, self.class_combo, self.quality_combo, self.mask_combo):
+            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+            combo.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        edits.setSpacing(20)
         for combo in (self.usage_combo, self.class_combo, self.quality_combo, self.mask_combo):
             combo.currentIndexChanged.connect(
                 lambda _index, control=combo: self._edit_selection(control)
             )
+        self.edit_combos = {}
         for label, combo in (
             ("用途", self.usage_combo),
             ("分類", self.class_combo),
             ("品質", self.quality_combo),
             ("マスク", self.mask_combo),
         ):
-            edits.addWidget(QLabel(label))
-            edits.addWidget(combo)
+            pair = QHBoxLayout()
+            pair.setSpacing(6)
+            pair.addWidget(QLabel(label))
+            pair.addWidget(combo)
+            edits.addLayout(pair)
+            self.edit_combos[label] = combo
         preview.addLayout(edits)
-        display = QHBoxLayout()
-        display.addWidget(self.display_combo)
-        display.addWidget(self.channel_combo)
-        preview.addLayout(display)
         self.selection_note = QLabel("0 件選択中。変更は選択中のすべてに適用")
         preview.addWidget(self.selection_note)
         self.splitter.addWidget(self.preview_panel)
@@ -347,8 +355,6 @@ class DataPreparationPage(BasePage):
         self.splitter.setStretchFactor(1, 2)
         self.splitter.setSizes([900, 588])
         root.addWidget(self.splitter, 1)
-        self.hints = KeyHintBar(self.shortcuts.hint_items())
-        root.addWidget(self.hints)
         self.table.selectionModel().selectionChanged.connect(
             lambda *_: self._selection_changed(self.table)
         )
@@ -360,10 +366,17 @@ class DataPreparationPage(BasePage):
         self.import_button.clicked.connect(self.import_data)
         self.auto_button.clicked.connect(self.auto_triage)
         self.finalize_button.clicked.connect(self.finalize)
-        self.display_combo.currentIndexChanged.connect(self._show_preview)
-        self.channel_combo.currentIndexChanged.connect(self._show_preview)
+        settings = QSettings("FoamCellAnalysis", "FoamCellAnalysis")
+        if settings.value("dataPreparation/columnWidths"):
+            self.table.horizontalHeader().restoreState(
+                QByteArray.fromBase64(settings.value("dataPreparation/columnWidths").encode())
+            )
+        self._saving_column_widths = True
+        self.table.horizontalHeader().sectionResized.connect(self._save_column_widths)
         self.refresh()
         self.shortcuts.changed.connect(self._shortcuts_changed)
+        self.ctx.display.changed.connect(self._display_preference_changed)
+        self._shortcuts_changed()
 
     def _make_menus(self) -> None:
         excel = QMenu(self)
@@ -372,7 +385,17 @@ class DataPreparationPage(BasePage):
         self.excel_button.setMenu(excel)
         other = QMenu(self)
         other.addAction("連続振り分け…", self.open_triage)
-        other.addAction("キー割り当て…", self.open_keymap)
+        other.addAction("キー割り当て一覧…", self.open_keymap)
+        display_menu = other.addMenu("原画像と切り替える表示")
+        self.display_actions = {}
+        for name in sorted(self.ctx.display.MODES):
+            action = display_menu.addAction(name)
+            action.setCheckable(True)
+            action.setChecked(name == self.ctx.display.value)
+            action.triggered.connect(
+                lambda checked=False, value=name: self.ctx.display.set_value(value)
+            )
+            self.display_actions[name] = action
         other.addAction("元に戻す", self.undo_stack.undo)
         other.addAction("やり直す", self.undo_stack.redo)
         self.mask_revision_action = QAction("新しいマスク版を取り込む", self)
@@ -458,7 +481,21 @@ class DataPreparationPage(BasePage):
             ("errors", "filter_errors"),
         ):
             self.chips[chip].setToolTip(self.shortcuts.display_key(self.shortcuts[name]))
-        self.hints.set_hints(self.shortcuts.hint_items())
+        for button, name in (
+            (self.import_button, "import"),
+            (self.auto_button, "auto_triage"),
+            (self.finalize_button, "finalize"),
+        ):
+            button.setToolTip(
+                f"{button.text().replace('…', '').strip()}（"
+                f"{self.shortcuts.display_key(self.shortcuts[name])}）"
+            )
+        self.search.setToolTip(f"検索（{self.shortcuts.display_key(self.shortcuts['search'])}）")
+        self.excel_button.setToolTip(
+            "Excel 入出力（"
+            f"{self.shortcuts.display_key(self.shortcuts['export_excel'])} / "
+            f"{self.shortcuts.display_key(self.shortcuts['import_excel'])}）"
+        )
 
     def _apply_changes(self, item_ids: list[str], changes: dict) -> None:
         if "usage" in changes and len(changes) == 1:
@@ -483,7 +520,8 @@ class DataPreparationPage(BasePage):
             first = next((item.item_id for item in self.items if item.item_id in item_ids), "")
             suffix = f" ほか {len(item_ids) - 1}件" if len(item_ids) > 1 else ""
             self.ctx.status.show_message(
-                f"{first}{suffix} を {label} にしました（Ctrl+Z で元に戻す）"
+                f"{first}{suffix} を {label} にしました（"
+                f"{self.shortcuts.display_key(self.shortcuts['undo'])} で元に戻す）"
             )
 
     def _restore_change_flags(self, values: dict[str, tuple[str | None, str | None]]) -> None:
@@ -533,7 +571,7 @@ class DataPreparationPage(BasePage):
             self.image_view.set_image(None)
             self._preview_signature = None
             self.preview_meta.setText("画像を選択してください")
-            self.image_caption.setText("画像表示形式・チャンネル")
+            self.image_caption.setText("画像表示形式")
             self.mask_combo.clear()
             for control in (
                 self.usage_combo,
@@ -575,26 +613,9 @@ class DataPreparationPage(BasePage):
         self.class_combo.blockSignals(False)
         self.quality_combo.blockSignals(False)
         self.mask_combo.blockSignals(False)
-        channels = item.channels or ["A"]
-        if [
-            self.channel_combo.itemText(index) for index in range(self.channel_combo.count())
-        ] != channels:
-            selected_channel = self.channel_combo.currentText()
-            self.channel_combo.blockSignals(True)
-            self.channel_combo.clear()
-            self.channel_combo.addItems(channels)
-            self.channel_combo.setCurrentIndex(
-                max(0, self.channel_combo.findText(selected_channel))
-            )
-            self.channel_combo.blockSignals(False)
-        channel = self.channel_combo.currentText() or (item.channels[0] if item.channels else "A")
+        channel = DEFAULT_CHANNEL
         image = self.ctx.backend.get_item_image("all", item.item_id, channel)
-        mode = (
-            DisplayMode.IMAGE,
-            DisplayMode.OVERLAY,
-            DisplayMode.INSTANCE_LABEL,
-            DisplayMode.BINARY,
-        )[self.display_combo.currentIndex()]
+        mode = self._preview_mode()
         labels = (
             self.ctx.backend.get_item_mask("all", item.item_id, item.selected_mask_revision)
             if item.mask_revisions
@@ -605,7 +626,9 @@ class DataPreparationPage(BasePage):
         if not skip_unchanged or signature != getattr(self, "_preview_signature", None):
             self.image_view.set_image(array_to_pixmap(render(image, labels, mode)))
             self._preview_signature = signature
-        self.image_caption.setText(f"{self.display_combo.currentText()} ・ チャンネル {channel}")
+        self.image_caption.setText(
+            "原画像" if mode == DisplayMode.IMAGE else self.ctx.display.value
+        )
 
     def _filter_usage(self, name: str) -> None:
         mapping = {
@@ -728,7 +751,13 @@ class DataPreparationPage(BasePage):
         self.source_combo.setCurrentIndex(max(0, self.source_combo.findData(selected_folder)))
         self.source_combo.blockSignals(False)
         self.finalize_button.setEnabled(not errors)
-        self.finalize_button.setToolTip("整合性エラーを解消してください" if errors else "")
+        finalize_tip = f"確定（{self.shortcuts.display_key(self.shortcuts['finalize'])}）"
+        if errors:
+            finalize_tip += "　整合性エラーを解消してください"
+        self.finalize_button.setToolTip(finalize_tip)
+        self.finalize_error_button.setText(f"⚠ エラー {len(errors)} 件を直すと確定できます")
+        set_style(self.finalize_error_button, usage="error")
+        self.finalize_error_button.setVisible(bool(errors))
         if not self._selected_ids and self.model.visible_items():
             self._selected_ids = [self.model.visible_items()[0].item_id]
         if self._selected_ids:
@@ -782,7 +811,8 @@ class DataPreparationPage(BasePage):
             before = {
                 item.item_id: item.usage
                 for item in self.items
-                if item.usage == "unassigned" and (target_ids is None or item.item_id in target_ids)
+                if (target_ids is not None or item.usage == "unassigned")
+                and (target_ids is None or item.item_id in target_ids)
             }
             before_flags = {
                 item.item_id: (item.change, item.previous_change)
@@ -914,7 +944,9 @@ class DataPreparationPage(BasePage):
                 workbook.close()
 
     def open_keymap(self) -> None:
-        KeymapDialog(self, self.shortcuts).exec()
+        from ...keymap_dialog import show_keymap_window
+
+        show_keymap_window(self, self.ctx)
 
     def choose_classification(self) -> None:
         """選択項目へ分類をまとめて設定する。"""
@@ -928,8 +960,7 @@ class DataPreparationPage(BasePage):
 
     def show_key_help(self) -> None:
         """現在のキー割り当てを表示する。"""
-        details = "\n".join(f"{key}　{label}" for key, label in self.shortcuts.hint_items())
-        QMessageBox.information(self, "キー操作", details)
+        self.open_keymap()
 
     def _clear_selection_or_filter(self) -> None:
         """最初は選択を解除し、次はすべての絞り込みを解除する。"""
@@ -973,18 +1004,47 @@ class DataPreparationPage(BasePage):
         self.ctx.status.show_message("データセットのアーカイブを作成しました")
 
     def _cycle_preview_mode(self) -> None:
-        modes = (0, 1, 2)
-        current = self.display_combo.currentIndex()
-        next_mode = modes[(modes.index(current) + 1) % len(modes)] if current in modes else modes[0]
-        self.display_combo.setCurrentIndex(next_mode)
-        self.ctx.status.show_message(f"表示形式: {self.display_combo.currentText()}")
+        self.display_toggle.set_alternate(not self.display_toggle.is_alternate)
+        self.ctx.status.show_message(
+            "表示形式: "
+            + (self.ctx.display.value if self.display_toggle.is_alternate else "原画像")
+        )
 
-    def _step_channel(self, delta: int) -> None:
-        if self.channel_combo.count() == 0:
+    def _preview_mode(self) -> DisplayMode:
+        """二択表示の選択を描画モードへ変換する。"""
+        if not self.display_toggle.is_alternate:
+            return DisplayMode.IMAGE
+        return {
+            "オーバーレイ": DisplayMode.OVERLAY,
+            "インスタンスラベル": DisplayMode.INSTANCE_LABEL,
+            "二値マスク": DisplayMode.BINARY,
+        }[self.ctx.display.value]
+
+    def _move_image(self, delta: int) -> None:
+        """作業表で前後の画像行を選ぶ。"""
+        visible = self.model.visible_items()
+        if not visible:
             return
-        index = (self.channel_combo.currentIndex() + delta) % self.channel_combo.count()
-        self.channel_combo.setCurrentIndex(index)
-        self.ctx.status.show_message(f"チャンネル: {self.channel_combo.currentText()}")
+        current = next(
+            (index for index, item in enumerate(visible) if item.item_id in self._selected_ids), 0
+        )
+        row = max(0, min(len(visible) - 1, current + delta))
+        self._select_only_row(row, visible[row].item_id)
+        self._show_preview()
+
+    def _display_preference_changed(self, name: str) -> None:
+        """共有表示名と全プレビューを更新する。"""
+        for key, action in self.display_actions.items():
+            action.setChecked(key == name)
+        self._show_preview()
+
+    def _save_column_widths(self, *_args) -> None:
+        """作業表の利用者設定幅を保存する。"""
+        if getattr(self, "_saving_column_widths", False):
+            QSettings("FoamCellAnalysis", "FoamCellAnalysis").setValue(
+                "dataPreparation/columnWidths",
+                self.table.horizontalHeader().saveState().toBase64().data().decode(),
+            )
 
     def eventFilter(self, watched, event) -> bool:
         if event.type() == QEvent.Type.KeyPress and watched in (
@@ -998,6 +1058,12 @@ class DataPreparationPage(BasePage):
             focus = self.focusWidget()
             if isinstance(focus, (QComboBox, QLineEdit)):
                 return super().eventFilter(watched, event)
+            if self.shortcuts.matches("previous_image", event):
+                self._move_image(-1)
+                return True
+            if self.shortcuts.matches("next_image", event):
+                self._move_image(1)
+                return True
             if self.shortcuts.matches("zoom_in", event):
                 self.image_view.zoom_by(1.2)
                 return True
@@ -1021,12 +1087,6 @@ class DataPreparationPage(BasePage):
                     return True
             if self.shortcuts.matches("display_mode", event):
                 self._cycle_preview_mode()
-                return True
-            if self.shortcuts.matches("channel_prev", event):
-                self._step_channel(-1)
-                return True
-            if self.shortcuts.matches("channel_next", event):
-                self._step_channel(1)
                 return True
             if self.shortcuts.matches("class_dialog", event) and self._selected_ids:
                 self.choose_classification()
@@ -1144,11 +1204,22 @@ class DatasetHistoryPage(BasePage):
             show_heading,
         )
         self.model = DatasetHistoryModel(self)
+        self.thumbnail_windows = {}
+        controls = QHBoxLayout()
+        self.thumbnail_button = QPushButton("サムネイルで確認…")
+        controls.addStretch(1)
+        controls.addWidget(self.thumbnail_button)
+        self.content_layout.addLayout(controls)
         self.table = QTableView()
         self.table.setModel(self.model)
         self.table.verticalHeader().hide()
         self.table.setSortingEnabled(False)
+        self.table.horizontalHeader().setStretchLastSection(False)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.table.resizeColumnsToContents()
         self.content_layout.addWidget(self.table)
+        self.thumbnail_button.clicked.connect(self.open_thumbnails)
+        self.table.doubleClicked.connect(lambda _index: self.open_thumbnails())
         self.refresh()
 
     def refresh(self) -> None:
@@ -1156,6 +1227,28 @@ class DatasetHistoryPage(BasePage):
 
     def on_enter(self, params: dict) -> None:
         self.refresh()
+
+    def open_thumbnails(self) -> None:
+        """選択した確定版のサムネイルウィンドウを開く。"""
+        rows = self.table.selectionModel().selectedRows()
+        if not rows:
+            return
+        version = self.model.versions[rows[0].row()]
+        window = self.thumbnail_windows.get(version.version)
+        if window is None:
+            linked = next(
+                (
+                    item
+                    for item in self.ctx.backend.list_dataset_versions("val")
+                    if item.version == version.base_validation_version
+                ),
+                None,
+            )
+            window = DatasetVersionThumbnailWindow(self, self.ctx.backend, version, linked)
+            self.thumbnail_windows[version.version] = window
+        window.show()
+        window.raise_()
+        window.activateWindow()
 
     def refresh_on_activate(self) -> None:
         """版一覧を更新し、選択中の版を再選択する。"""

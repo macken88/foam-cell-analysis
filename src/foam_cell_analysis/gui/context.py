@@ -3,12 +3,14 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QSettings, Signal
 
 from ..services.backend import Backend
 from .jobs import JobManager
 from .navigation import Navigator
 from .shortcuts import ShortcutMap
+
+DEFAULT_CHANNEL = "A"  # GUI は現時点で先頭チャンネルだけを使う。複数チャンネル対応時に拡張する。
 
 
 class StatusBus(QObject):
@@ -26,6 +28,32 @@ class StatusBus(QObject):
         self.saved.emit(value)
 
 
+class DisplayPreference(QObject):
+    """原画像と切り替える表示を保存して全画面へ通知する。"""
+
+    changed = Signal(str)
+    MODES = {"オーバーレイ", "インスタンスラベル", "二値マスク"}
+
+    def __init__(self, settings: QSettings | None = None) -> None:
+        super().__init__()
+        self.settings = settings or QSettings("FoamCellAnalysis", "FoamCellAnalysis")
+        value = self.settings.value("display/alternate", "オーバーレイ")
+        self._value = value if value in self.MODES else "オーバーレイ"
+
+    @property
+    def value(self) -> str:
+        """現在の切替表示を返す。"""
+        return self._value
+
+    def set_value(self, value: str) -> None:
+        """設定を保存し、全画面へ変更を通知する。"""
+        if value not in self.MODES or value == self._value:
+            return
+        self._value = value
+        self.settings.setValue("display/alternate", value)
+        self.changed.emit(value)
+
+
 @dataclass
 class AppContext:
     """Backend、画面遷移、バックグラウンドジョブを束ねる。"""
@@ -35,3 +63,5 @@ class AppContext:
     jobs: JobManager
     status: StatusBus = field(default_factory=StatusBus)
     shortcuts: ShortcutMap = field(default_factory=ShortcutMap)
+    display: DisplayPreference = field(default_factory=DisplayPreference)
+    keymap_window: QObject | None = None

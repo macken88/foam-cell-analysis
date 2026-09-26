@@ -74,7 +74,9 @@ class CandidatesPage(BasePage):
             TagDelegate({label: colors for label, colors in STATUS_MARKS.items()}, self.table),
         )
         for column, width in enumerate((58, 72, 105, 82, 115, 92, 66, 78, 78)):
-            self.table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
+            self.table.horizontalHeader().setSectionResizeMode(
+                column, QHeaderView.ResizeMode.Interactive
+            )
             self.table.setColumnWidth(column, width)
         self.table.setEditTriggers(QTableWidget.EditTrigger.AllEditTriggers)
         self.buttons: dict[str, QPushButton] = {}

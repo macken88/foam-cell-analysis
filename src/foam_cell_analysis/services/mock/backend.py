@@ -61,6 +61,15 @@ class MockBackend:
         self.routing: dict[str, str | None] = {name: None for name in self.classifications}
         self.routing_history: list[RoutingHistory] = []
         self._seed()
+        items_by_id = {item.item_id: item for item in self.working["all"].items}
+        self._version_items = {
+            version.version: [
+                copy.deepcopy(items_by_id[item_id])
+                for item_id in version.item_ids
+                if item_id in items_by_id
+            ]
+            for version in self.versions
+        }
 
     @staticmethod
     def _now() -> datetime:
@@ -145,6 +154,15 @@ class MockBackend:
             base_val_version=val.base_version,
         )
         self.working = {"train": master, "val": master, "all": master}
+        validation_by_version = {
+            version.version.rsplit("_", 1)[-1]: version.version
+            for version in self.versions
+            if version.purpose == "val"
+        }
+        for version in self.versions:
+            if version.purpose == "train":
+                key = version.version.rsplit("_", 1)[-1]
+                version.base_validation_version = validation_by_version.get(key)
 
         self._seed_profiles()
         exp42 = self._seed_experiment("exp_0042", "mask_rcnn", "completed", 100)
@@ -431,11 +449,13 @@ class MockBackend:
         self, settings: dict[str, Any], item_ids: list[str] | None = None
     ) -> dict[str, str]:
         """変更を保存せず対象ごとの実行後用途を返す。"""
-        allowed = set(item_ids) if item_ids else None
+        allowed = set(item_ids) if item_ids is not None else None
+        include_assigned = bool(settings.get("include_assigned", False))
         item_ids_to_update = [
             item.item_id
             for item in self.working["all"].items
-            if item.usage == "unassigned" and (allowed is None or item.item_id in allowed)
+            if (include_assigned or item.usage == "unassigned")
+            and (allowed is None or item.item_id in allowed)
         ]
         settings = dict(settings)
         if "ratio" in settings:
@@ -510,11 +530,13 @@ class MockBackend:
     ) -> dict[str, int]:
         """未振り分け画像を分類別に安定した疑似乱数で振り分ける。"""
         dataset = self.working["all"]
-        allowed = set(item_ids) if item_ids else None
+        allowed = set(item_ids) if item_ids is not None else None
+        include_assigned = bool(settings.get("include_assigned", False))
         candidates = [
             item
             for item in dataset.items
-            if item.usage == "unassigned" and (allowed is None or item.item_id in allowed)
+            if (include_assigned or item.usage == "unassigned")
+            and (allowed is None or item.item_id in allowed)
         ]
         ratio = max(0, min(100, int(settings.get("validation_ratio", 20))))
         seed = int(settings.get("seed", 42))
@@ -611,6 +633,7 @@ class MockBackend:
                 base_validation_version=None,
             )
             self.versions.append(version)
+            self._version_items[version.version] = copy.deepcopy(items)
             created.append(version)
             if create_archive:
                 self.record_archive_result(version.version, "mock_archive")
@@ -812,6 +835,9 @@ class MockBackend:
             base_validation_version=base_validation_version,
         )
         self.versions.append(version)
+        self._version_items[version.version] = copy.deepcopy(
+            [item for item in dataset.items if item.usage == purpose]
+        )
         if purpose == "train":
             dataset.base_train_version = version.version
         else:
@@ -830,6 +856,10 @@ class MockBackend:
         return [
             version for version in self.versions if purpose is None or version.purpose == purpose
         ]
+
+    def get_dataset_version_items(self, version: str) -> list[DataItem]:
+        """指定版の確定時スナップショットを返す。"""
+        return copy.deepcopy(self._version_items.get(version, []))
 
     def list_validation_versions(self) -> list[DatasetVersion]:
         """検証用確定データセット版を返す。"""

@@ -28,10 +28,11 @@ from PySide6.QtWidgets import (
 )
 
 from ....services.models import DataItem, ImportCandidate
+from ...context import DEFAULT_CHANNEL
 from ...theme import Color, numeric_font, set_style
 from ...widgets.image_convert import DisplayMode, array_to_pixmap, render
 from ...widgets.image_view import ImageView
-from ...widgets.marks import KeyHintBar
+from ...widgets.marks import DisplayToggle
 from .finalize_thumbnails import (
     FinalizeThumbnailDelegate,
     FinalizeThumbnailModel,
@@ -41,31 +42,26 @@ from .finalize_thumbnails import (
 
 
 class ImportDialog(QDialog):
-    """複数の取り込み元フォルダと画像チャンネルを選ぶ。"""
+    """先頭チャンネルの取り込み元フォルダを選ぶ。"""
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("データ取り込み")
-        self.setMinimumSize(640, 300)
+        self.setMinimumSize(640, 220)
         self.image_dirs: dict[str, str] = {}
         self.mask_dir = ""
         layout = QVBoxLayout(self)
         layout.addWidget(
-            QLabel(
-                "画像チャンネルごとのフォルダを選択してください。取り込み後に各フォルダの統一項目を設定します。"
-            )
+            QLabel("画像フォルダを選択してください。取り込み後に各フォルダの統一項目を設定します。")
         )
         form = QFormLayout()
-        self.channel_rows = {}
-        for channel in ("A", "B", "C"):
-            edit = QLineEdit()
-            browse = QPushButton("参照…")
-            row = QHBoxLayout()
-            row.addWidget(edit, 1)
-            row.addWidget(browse)
-            browse.clicked.connect(lambda _=False, e=edit: self._browse(e))
-            form.addRow(f"チャンネル {channel}", row)
-            self.channel_rows[channel] = edit
+        self.image_edit = QLineEdit()
+        browse_image = QPushButton("参照…")
+        image_row = QHBoxLayout()
+        image_row.addWidget(self.image_edit, 1)
+        image_row.addWidget(browse_image)
+        browse_image.clicked.connect(lambda: self._browse(self.image_edit))
+        form.addRow("画像フォルダ", image_row)
         self.mask_edit = QLineEdit()
         browse_mask = QPushButton("参照…")
         mask_row = QHBoxLayout()
@@ -89,13 +85,10 @@ class ImportDialog(QDialog):
             edit.setText(path)
 
     def _accept(self) -> None:
-        self.image_dirs = {
-            key: edit.text().strip()
-            for key, edit in self.channel_rows.items()
-            if edit.text().strip()
-        }
+        image_dir = self.image_edit.text().strip()
+        self.image_dirs = {DEFAULT_CHANNEL: image_dir} if image_dir else {}
         self.mask_dir = self.mask_edit.text().strip()
-        if self.image_dirs.get("A"):
+        if image_dir:
             self.accept()
 
 
@@ -123,7 +116,9 @@ class ImportSettingsDialog(QDialog):
         layout.addLayout(options)
         self.table = QTableWidget(len(folders), 5)
         self.table.setHorizontalHeaderLabels(["フォルダ", "画像数", "用途", "画像分類", "品質"])
-        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.horizontalHeader().setStretchLastSection(False)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.table.resizeColumnsToContents()
         self.rows = []
         settings = QSettings("FoamCellAnalysis", "FoamCellAnalysis")
         for row, (folder, candidates) in enumerate(folders.items()):
@@ -221,6 +216,9 @@ class AutoTriageDialog(QDialog):
         target_row.addWidget(self.target_selected)
         target_row.addStretch(1)
         form.addRow("対象", target_row)
+        self.selected_note = QLabel("選択中を対象にした場合、現在の用途を上書きして振り分けます。")
+        self.selected_note.setVisible(bool(self.selected_ids))
+        form.addRow("", self.selected_note)
         self.ratio = QSpinBox()
         self.ratio.setRange(0, 100)
         self.ratio.setSuffix(" %")
@@ -246,7 +244,8 @@ class AutoTriageDialog(QDialog):
             ["分類", "学習（現在 → 実行後）", "検証（現在 → 実行後）", "検証の割合"]
         )
         self.preview.verticalHeader().hide()
-        self.preview.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.preview.horizontalHeader().setStretchLastSection(False)
+        self.preview.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.preview.setColumnWidth(0, 125)
         self.preview.setColumnWidth(1, 245)
         self.preview.setColumnWidth(2, 245)
@@ -279,6 +278,7 @@ class AutoTriageDialog(QDialog):
             "bad_quality_to_excluded": self.bad_to_excluded.isChecked(),
             "seed": self.seed.value(),
             "target_selected": self.target_selected.isChecked(),
+            "include_assigned": self.target_selected.isChecked(),
         }
 
     def _accept(self) -> None:
@@ -294,7 +294,8 @@ class AutoTriageDialog(QDialog):
         candidates = [
             item
             for item in self.items
-            if item.usage == "unassigned" and (target_ids is None or item.item_id in target_ids)
+            if (target_ids is not None or item.usage == "unassigned")
+            and (target_ids is None or item.item_id in target_ids)
         ]
         by_class: dict[str, list[DataItem]] = defaultdict(list)
         for item in candidates:
@@ -321,11 +322,18 @@ class AutoTriageDialog(QDialog):
                 if assignments
                 else round(len(values) * ratio / 100)
             )
+            replaced_ids = target_ids or set()
             train_now = sum(
-                i.usage == "train" and i.classification == classification for i in self.items
+                i.usage == "train"
+                and i.classification == classification
+                and i.item_id not in replaced_ids
+                for i in self.items
             )
             val_now = sum(
-                i.usage == "val" and i.classification == classification for i in self.items
+                i.usage == "val"
+                and i.classification == classification
+                and i.item_id not in replaced_ids
+                for i in self.items
             )
             train_total = train_now + train_after
             val_total = val_now + val_after
@@ -377,9 +385,10 @@ class DatasetFinalizeDialog(QDialog):
         self.table.setHorizontalHeaderLabels(
             ["用途", "新しい版", "親版", "件数", "追加", "除外", "変更"]
         )
-        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.horizontalHeader().setStretchLastSection(False)
         self.table.verticalHeader().hide()
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.table.resizeColumnsToContents()
         changed_purposes = []
         summaries = backend.summarize_finalize()
         for row, purpose in enumerate(("train", "val")):
@@ -468,20 +477,40 @@ class DatasetFinalizeDialog(QDialog):
         thumbnail_layout.addWidget(self.thumbnail_tabs, 1)
         tabs.addTab(thumbnail_page, "サムネイルで確認")
         layout.addWidget(tabs, 1)
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        self.confirm_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        buttons = QHBoxLayout()
+        self.error_summary_button = QPushButton()
+        self.error_summary_button.setVisible(bool(self.errors))
+        self.error_summary_button.clicked.connect(self._show_error_rows)
+        buttons.addWidget(self.error_summary_button)
+        buttons.addStretch(1)
+        self.confirm_button = QPushButton()
         self.confirm_button.setText(
             " と ".join(f"{name}用版" for name in changed_purposes) + "を作成"
             if changed_purposes
             else "確定"
         )
         self.confirm_button.setEnabled(not self.errors and bool(changed_purposes))
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("キャンセル")
-        buttons.accepted.connect(self._accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        self.cancel_button = QPushButton("キャンセル")
+        self.confirm_button.clicked.connect(self._accept)
+        self.cancel_button.clicked.connect(self.reject)
+        buttons.addWidget(self.confirm_button)
+        buttons.addWidget(self.cancel_button)
+        layout.addLayout(buttons)
+        self._update_error_summary()
+
+    def _update_error_summary(self) -> None:
+        """無効な確定操作の理由を件数付きで示す。"""
+        count = len(self.errors)
+        self.error_summary_button.setText(f"⚠ エラー {count} 件を直すと確定できます")
+        set_style(self.error_summary_button, usage="error")
+        self.error_summary_button.setVisible(count > 0)
+
+    def _show_error_rows(self) -> None:
+        """確定ダイアログを閉じ、エラー行だけを表示する。"""
+        self.reject()
+        parent = self.parent()
+        if hasattr(parent, "_filter_usage"):
+            parent._filter_usage("errors")
 
     def _filter_thumbnails(self, index: int) -> None:
         """用途ごとの一覧へ選択中の絞り込みを適用する。"""
@@ -530,7 +559,13 @@ class ContinuousTriageDialog(QDialog):
     """一枚ずつ用途・分類・品質を設定する連続振り分け画面。"""
 
     def __init__(
-        self, parent, items: list[DataItem], on_update, backend=None, shortcuts=None
+        self,
+        parent,
+        items: list[DataItem],
+        on_update,
+        backend=None,
+        shortcuts=None,
+        display_preference=None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("連続振り分け")
@@ -540,9 +575,8 @@ class ContinuousTriageDialog(QDialog):
         self.on_update = on_update
         self.backend = backend
         self.shortcuts = shortcuts
-        self.display_modes = (DisplayMode.IMAGE, DisplayMode.OVERLAY, DisplayMode.INSTANCE_LABEL)
-        self.display_mode = DisplayMode.OVERLAY
-        self.channel_index = 0
+        self.display_preference = display_preference or parent.ctx.display
+        self.display_mode = self._configured_display_mode()
         self.current_item_id: str | None = None
         self.setMinimumSize(900, 580)
         layout = QVBoxLayout(self)
@@ -551,9 +585,10 @@ class ContinuousTriageDialog(QDialog):
         self.item_label.setFont(numeric_font(14))
         layout.addWidget(self.counter)
         layout.addWidget(self.item_label)
+        self.display_toggle = DisplayToggle(self.display_preference)
+        self.display_toggle.alternate_selected.connect(self._toggle_mode)
+        layout.addWidget(self.display_toggle)
         if shortcuts:
-            self.hints = KeyHintBar(self._hint_items())
-            layout.addWidget(self.hints)
             shortcuts.changed.connect(self._shortcuts_changed)
         self.target_unassigned = QRadioButton("未振り分けのみ")
         self.target_unassigned.setChecked(True)
@@ -578,12 +613,20 @@ class ContinuousTriageDialog(QDialog):
         body.addWidget(self.filmstrip)
         layout.addLayout(body, 1)
         row = QHBoxLayout()
-        for usage, text in (("train", "学習"), ("val", "検証"), ("excluded", "不採用")):
+        self.usage_buttons = {}
+        for usage, text, action in (
+            ("train", "学習", "usage_train"),
+            ("val", "検証", "usage_val"),
+            ("excluded", "不採用", "usage_excluded"),
+            ("unassigned", "未振り分け", "usage_unassigned"),
+        ):
             button = QPushButton(text)
+            self.usage_buttons[usage] = (button, action, text)
             button.clicked.connect(lambda _=False, value=usage: self.assign(value))
             row.addWidget(button)
         layout.addLayout(row)
         meta = QHBoxLayout()
+        meta.setSpacing(20)
         self.classification = QComboBox()
         self.classification.addItem("未設定", None)
         for value in ("分類A", "分類B", "分類C"):
@@ -592,10 +635,12 @@ class ContinuousTriageDialog(QDialog):
         self.quality.addItem("未設定", None)
         for value in ("良", "可", "不良"):
             self.quality.addItem(value, value)
-        meta.addWidget(QLabel("分類"))
-        meta.addWidget(self.classification)
-        meta.addWidget(QLabel("品質"))
-        meta.addWidget(self.quality)
+        for label, combo in (("分類", self.classification), ("品質", self.quality)):
+            pair = QHBoxLayout()
+            pair.setSpacing(6)
+            pair.addWidget(QLabel(label))
+            pair.addWidget(combo)
+            meta.addLayout(pair)
         meta.addStretch(1)
         layout.addLayout(meta)
         self.classification.currentIndexChanged.connect(
@@ -609,6 +654,9 @@ class ContinuousTriageDialog(QDialog):
         layout.addWidget(self.next_box)
         self.target_unassigned.toggled.connect(lambda checked: checked and self._set_target(False))
         self.target_filtered.toggled.connect(lambda checked: checked and self._set_target(True))
+        if shortcuts:
+            self._shortcuts_changed()
+            self.display_preference.changed.connect(self._display_changed)
         cancel = QPushButton("閉じる")
         cancel.clicked.connect(self.accept)
         layout.addWidget(cancel)
@@ -641,24 +689,12 @@ class ContinuousTriageDialog(QDialog):
             self.on_update(self.items[self.index].item_id, **{field: value})
             self._show_item()
 
-    def _hint_items(self) -> list[tuple[str, str]]:
-        """現在のキー割り当てからプレビューのヒントを作る。"""
-        return [
-            (self.shortcuts.display_key(self.shortcuts[name]), label)
-            for name, label in (
-                ("display_mode", "表示形式"),
-                ("channel_prev", "前チャンネル"),
-                ("channel_next", "次チャンネル"),
-                ("zoom_in", "拡大"),
-                ("zoom_out", "縮小"),
-                ("fit_view", "全体表示"),
-            )
-        ]
-
     def _shortcuts_changed(self) -> None:
-        """共有キー変更をヒント行へ反映する。"""
-        if hasattr(self, "hints"):
-            self.hints.set_hints(self._hint_items())
+        """共有キー変更を用途ボタンへ反映する。"""
+        if hasattr(self, "usage_buttons"):
+            for button, action, text in self.usage_buttons.values():
+                key = self.shortcuts.display_key(self.shortcuts[action])
+                button.setText(f"{text}　{key}")
 
     def assign(self, usage: str) -> None:
         if self.items:
@@ -710,8 +746,7 @@ class ContinuousTriageDialog(QDialog):
                 combo.setCurrentIndex(max(0, combo.findData(value)))
                 combo.blockSignals(False)
             if self.backend:
-                self.channel_index %= max(1, len(item.channels))
-                channel = item.channels[self.channel_index] if item.channels else "A"
+                channel = DEFAULT_CHANNEL
                 self.current_channel = channel
                 image = self.backend.get_item_image("all", item.item_id, channel)
                 labels = (
@@ -737,6 +772,7 @@ class ContinuousTriageDialog(QDialog):
                 ("usage_train", "train"),
                 ("usage_val", "val"),
                 ("usage_excluded", "excluded"),
+                ("usage_unassigned", "unassigned"),
             ):
                 if self.shortcuts.matches(action, event):
                     self.assign(usage)
@@ -759,31 +795,45 @@ class ContinuousTriageDialog(QDialog):
             return True
         return super().eventFilter(watched, event)
 
-    def _handle_view_shortcut(self, event: QKeyEvent) -> bool:
-        """プレビュー表示形式とチャンネルのショートカットを処理する。"""
-        if self.shortcuts and self.shortcuts.matches("display_mode", event):
-            index = self.display_modes.index(self.display_mode)
-            self.display_mode = self.display_modes[(index + 1) % len(self.display_modes)]
-            labels = {
-                DisplayMode.IMAGE: "原画像",
-                DisplayMode.OVERLAY: "オーバーレイ",
-                DisplayMode.INSTANCE_LABEL: "インスタンスラベル",
-            }
-            if self.parent() and hasattr(self.parent(), "ctx"):
-                self.parent().ctx.status.show_message(f"表示形式: {labels[self.display_mode]}")
+    def _configured_display_mode(self) -> DisplayMode:
+        """共有設定の表示名を描画モードへ変換する。"""
+        return {
+            "オーバーレイ": DisplayMode.OVERLAY,
+            "インスタンスラベル": DisplayMode.INSTANCE_LABEL,
+            "二値マスク": DisplayMode.BINARY,
+        }[self.display_preference.value]
+
+    def _toggle_mode(self, alternate: bool) -> None:
+        self.display_mode = self._configured_display_mode() if alternate else DisplayMode.IMAGE
+        self._show_item()
+
+    def _display_changed(self, _name: str) -> None:
+        """共有表示名の変更を現在の画像へ反映する。"""
+        if self.display_toggle.is_alternate:
+            self.display_mode = self._configured_display_mode()
             self._show_item()
+
+    def _shortcuts_changed(self) -> None:
+        """用途ボタンに現在のキー割り当てを反映する。"""
+        if not self.shortcuts:
+            return
+        for button, action, text in self.usage_buttons.values():
+            key = self.shortcuts.display_key(self.shortcuts[action])
+            button.setText(f"{text}　{key}")
+            button.setToolTip(f"{text}（{key}）")
+
+    def _handle_view_shortcut(self, event: QKeyEvent) -> bool:
+        """二択表示とズームのショートカットを処理する。"""
+        if self.shortcuts and self.shortcuts.matches("display_mode", event):
+            self.display_toggle.set_alternate(not self.display_toggle.is_alternate)
             event.accept()
             return True
-        if self.shortcuts and (
-            self.shortcuts.matches("channel_prev", event)
-            or self.shortcuts.matches("channel_next", event)
-        ):
-            self.channel_index += -1 if self.shortcuts.matches("channel_prev", event) else 1
-            if self.items:
-                self.channel_index %= max(1, len(self.items[self.index].channels))
-            self._show_item()
-            if self.parent() and hasattr(self.parent(), "ctx"):
-                self.parent().ctx.status.show_message(f"チャンネル: {self.current_channel}")
+        if self.shortcuts and self.shortcuts.matches("previous_image", event):
+            self._select_row(max(0, self.index - 1))
+            event.accept()
+            return True
+        if self.shortcuts and self.shortcuts.matches("next_image", event):
+            self._select_row(min(len(self.items) - 1, self.index + 1))
             event.accept()
             return True
         if self.shortcuts and self.shortcuts.matches("zoom_in", event):

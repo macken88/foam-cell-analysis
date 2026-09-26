@@ -20,6 +20,31 @@ from PySide6.QtWidgets import (
 from .shortcuts import LABELS, ShortcutMap
 from .theme import set_style
 
+SHORTCUT_CATEGORIES = {
+    "usage_": "振り分け",
+    "quality_": "品質",
+    "class_": "分類",
+    "filter_": "絞り込み",
+    "previous_image": "画像移動",
+    "next_image": "画像移動",
+    "display_mode": "表示",
+    "zoom_": "表示",
+    "fit_view": "表示",
+    "help": "ヘルプ",
+    "import": "データ準備",
+    "auto_triage": "データ準備",
+    "finalize": "データ準備",
+    "search": "データ準備",
+}
+
+
+def shortcut_category(action: str) -> str:
+    """操作 ID から利用者向け分類を返す。"""
+    return next(
+        (label for prefix, label in SHORTCUT_CATEGORIES.items() if action.startswith(prefix)),
+        "共通操作",
+    )
+
 
 class ShortcutKeyEdit(QLineEdit):
     """一打鍵のキーと修飾キーを記録する欄。"""
@@ -64,18 +89,21 @@ class KeymapDialog(QDialog):
         self.target_shortcuts = shortcut_map
         self.shortcuts = shortcut_map.copy() if shortcut_map else ShortcutMap()
         layout = QVBoxLayout(self)
-        self.table = QTableWidget(len(self.shortcuts.mapping), 2)
-        self.table.setHorizontalHeaderLabels(["操作", "キー"])
+        self.table = QTableWidget(len(self.shortcuts.mapping), 3)
+        self.table.setHorizontalHeaderLabels(["操作", "分類", "キー"])
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setColumnWidth(0, 300)
-        self.table.setItemDelegateForColumn(1, ShortcutKeyDelegate(self.table))
+        self.table.setItemDelegateForColumn(2, ShortcutKeyDelegate(self.table))
         self.actions = list(self.shortcuts.mapping)
         for row, action in enumerate(self.actions):
             label = QTableWidgetItem(LABELS.get(action, action))
             label.setFlags(label.flags() & ~Qt.ItemFlag.ItemIsEditable)
             key = QTableWidgetItem(self.shortcuts.display_key(self.shortcuts[action]))
+            category = QTableWidgetItem(shortcut_category(action))
+            category.setFlags(category.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.table.setItem(row, 0, label)
-            self.table.setItem(row, 1, key)
+            self.table.setItem(row, 1, category)
+            self.table.setItem(row, 2, key)
         layout.addWidget(self.table)
         self.duplicate_label = QLabel("")
         set_style(self.duplicate_label, state="error")
@@ -98,7 +126,7 @@ class KeymapDialog(QDialog):
         self.table.itemChanged.connect(self._key_changed)
 
     def _key_changed(self, item: QTableWidgetItem) -> None:
-        if item.column() != 1:
+        if item.column() != 2:
             return
         action = self.actions[item.row()]
         key = QKeySequence(item.text()).toString(QKeySequence.SequenceFormat.PortableText)
@@ -118,7 +146,7 @@ class KeymapDialog(QDialog):
                 self.shortcuts.assign(action, key, swap=True)
                 for row, name in enumerate(self.actions):
                     if name in conflicts:
-                        self.table.item(row, 1).setText(self.shortcuts.display_key(old_key))
+                        self.table.item(row, 2).setText(self.shortcuts.display_key(old_key))
                 self.duplicate_label.clear()
             else:
                 item.setText(self.shortcuts.display_key(self.shortcuts[action]))
@@ -161,4 +189,59 @@ class KeymapDialog(QDialog):
                 QMessageBox.warning(self, "読み込みエラー", str(error))
                 return
             for row, action in enumerate(self.actions):
-                self.table.item(row, 1).setText(self.shortcuts.display_key(self.shortcuts[action]))
+                self.table.item(row, 2).setText(self.shortcuts.display_key(self.shortcuts[action]))
+
+
+class KeymapWindow(QDialog):
+    """現在の割り当てを一覧し、変更ダイアログを開く非モーダル画面。"""
+
+    def __init__(self, parent, shortcut_map: ShortcutMap) -> None:
+        super().__init__(parent, Qt.WindowType.Window)
+        self.setWindowTitle("キー割り当て一覧")
+        self.resize(640, 560)
+        self.target_shortcuts = shortcut_map
+        layout = QVBoxLayout(self)
+        self.table = QTableWidget(len(shortcut_map.mapping), 3)
+        self.table.setHorizontalHeaderLabels(["操作名", "分類", "現在のキー"])
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.actions = list(shortcut_map.mapping)
+        for row, action in enumerate(self.actions):
+            values = (
+                LABELS.get(action, action),
+                shortcut_category(action),
+                shortcut_map.display_key(shortcut_map[action]),
+            )
+            for column, value in enumerate(values):
+                self.table.setItem(row, column, QTableWidgetItem(value))
+        self.table.resizeColumnsToContents()
+        self.table.horizontalHeader().setStretchLastSection(False)
+        layout.addWidget(self.table)
+        self.change_button = QPushButton("変更…")
+        self.change_button.clicked.connect(self.change)
+        layout.addWidget(self.change_button)
+        shortcut_map.changed.connect(self.refresh)
+
+    def refresh(self) -> None:
+        """共有キー割り当てを一覧へ反映する。"""
+        for row, action in enumerate(self.actions):
+            self.table.item(row, 2).setText(
+                self.target_shortcuts.display_key(self.target_shortcuts[action])
+            )
+
+    def change(self) -> None:
+        """割り当て編集ダイアログを開く。"""
+        dialog = KeymapDialog(self, self.target_shortcuts)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.refresh()
+
+
+def show_keymap_window(parent, context) -> KeymapWindow:
+    """アプリ共通のキー一覧を作成または前面表示する。"""
+    window = context.keymap_window
+    if window is None:
+        window = KeymapWindow(parent, context.shortcuts)
+        context.keymap_window = window
+    window.show()
+    window.raise_()
+    window.activateWindow()
+    return window

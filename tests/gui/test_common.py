@@ -87,12 +87,15 @@ def test_setup_table_and_mark_primary(qapp):
     assert table.selectionMode() == QAbstractItemView.SelectionMode.ExtendedSelection
     assert not table.wordWrap()
     assert not table.showGrid()
-    assert header.sectionResizeMode(0) == QHeaderView.ResizeMode.ResizeToContents
-    assert header.sectionResizeMode(2) == QHeaderView.ResizeMode.Stretch
+    assert header.sectionResizeMode(0) == QHeaderView.ResizeMode.Interactive
+    assert not header.stretchLastSection()
+    assert header.sectionResizeMode(2) == QHeaderView.ResizeMode.Interactive
 
     second_table = QTableWidget(2, 2)
     setup_table(second_table, stretch_column=0)
-    assert second_table.horizontalHeader().sectionResizeMode(0) == QHeaderView.ResizeMode.Stretch
+    assert (
+        second_table.horizontalHeader().sectionResizeMode(0) == QHeaderView.ResizeMode.Interactive
+    )
     button = QPushButton("保存")
     mark_primary(button)
     assert button.property("primary") is True

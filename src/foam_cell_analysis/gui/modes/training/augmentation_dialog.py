@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 
 from ....services.backend import Backend
 from ....services.models import AugmentationProfile, TransformSetting
+from ...context import DEFAULT_CHANNEL
 from ...theme import Color
 from ...widgets.table import mark_primary
 
@@ -392,7 +393,7 @@ class AugmentationDialog(QDialog):
         self._update_order_colors()
         selected_id = self.sample.currentText()
         selected = next((item for item in self.items if item.item_id == selected_id), self.items[0])
-        source = self.backend.get_item_image("train", selected.item_id, selected.channels[0])
+        source = self.backend.get_item_image("train", selected.item_id, DEFAULT_CHANNEL)
         source_mask = self.backend.get_item_mask(
             "train", selected.item_id, selected.selected_mask_revision
         )

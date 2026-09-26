@@ -1,8 +1,9 @@
 """用途・状態タグと操作ヒント用の小さな部品。"""
 
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -191,3 +192,54 @@ class KeyHintBar(QWidget):
             used += needed
         for index, group in enumerate(self._groups):
             group.setVisible(index in visible)
+
+
+class DisplayToggle(QWidget):
+    """原画像と設定済み表示を切り替える二択ボタン。"""
+
+    alternate_selected = Signal(bool)
+
+    def __init__(self, preference, parent=None) -> None:
+        super().__init__(parent)
+        self.preference = preference
+        self.group = QButtonGroup(self)
+        self.group.setExclusive(True)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        self.buttons = {}
+        for name in ("原画像", preference.value):
+            button = QPushButton(name)
+            button.setCheckable(True)
+            set_style(button, role="segment")
+            self.group.addButton(button)
+            self.buttons[name] = button
+            layout.addWidget(button)
+        self.buttons[preference.value].setChecked(True)
+        self.group.buttonToggled.connect(self._selected)
+        preference.changed.connect(self._preference_changed)
+
+    @property
+    def is_alternate(self) -> bool:
+        """設定表示が選ばれていれば True を返す。"""
+        return self.buttons[self.preference.value].isChecked()
+
+    def set_alternate(self, alternate: bool) -> None:
+        """原画像または設定表示を選ぶ。"""
+        target = self.preference.value if alternate else "原画像"
+        self.buttons[target].setChecked(True)
+
+    def _selected(self, button, checked: bool) -> None:
+        if checked:
+            self.alternate_selected.emit(button.text() != "原画像")
+
+    def _preference_changed(self, name: str) -> None:
+        """共有設定の変更をボタン名へ反映する。"""
+        old = next((key for key in self.buttons if key != "原画像"), None)
+        alternate = self.buttons[old].isChecked() if old else False
+        if old:
+            button = self.buttons.pop(old)
+            button.setText(name)
+            self.buttons[name] = button
+        if alternate:
+            self.buttons[name].setChecked(True)
