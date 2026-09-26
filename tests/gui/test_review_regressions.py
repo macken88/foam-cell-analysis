@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pytest
 from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QDialog, QDialogButtonBox, QFileDialog, QMessageBox
+from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QFileDialog, QMessageBox
 
 from foam_cell_analysis.gui.context import AppContext
 from foam_cell_analysis.gui.jobs import JobManager
@@ -759,3 +759,129 @@ def test_multi_selection_survives_activation_and_reaches_auto_triage(shell, qapp
     assert seen["label"] == "選択中（8件）"
     usages = {item.item_id: item.usage for item in shell.ctx.backend.get_working_items()}
     assert all(usages[item_id] == "val" for item_id in selected)
+
+
+def _activate_mode_window(qapp, window):
+    """WindowManager 管理下のモード窓へ前面化イベントを送る。"""
+    QTest.qWait(550)
+    qapp.sendEvent(window, QEvent(QEvent.Type.WindowDeactivate))
+    qapp.sendEvent(window, QEvent(QEvent.Type.WindowActivate))
+    qapp.processEvents()
+
+
+def test_review_20_dataset_history_row_click_opens_thumbnails_and_survives_activation(shell, qapp):
+    shell.navigate(PageId.DATASET_HISTORY)
+    page = shell.page(PageId.DATASET_HISTORY)
+    window = shell.manager.window(ModeId.DATA_PREPARATION)
+    window.show()
+    qapp.processEvents()
+    assert page.model.rowCount() > 0
+    index = page.model.index(0, 0)
+    QTest.mouseClick(
+        page.table.viewport(),
+        Qt.MouseButton.LeftButton,
+        pos=page.table.visualRect(index).center(),
+    )
+    qapp.processEvents()
+    selected_version = page.model.versions[0].version
+    assert [row.row() for row in page.table.selectionModel().selectedRows()] == [0]
+    QTest.mouseClick(page.thumbnail_button, Qt.MouseButton.LeftButton)
+    qapp.processEvents()
+    assert selected_version in page.thumbnail_windows
+    _activate_mode_window(qapp, window)
+    assert [row.row() for row in page.table.selectionModel().selectedRows()] == [0]
+    assert page.table.currentIndex().row() == 0
+
+
+def test_review_21_triage_close_restores_multi_selection_and_current_image(shell, qapp):
+    shell.navigate(PageId.DATA_PREPARATION)
+    page = shell.page(PageId.DATA_PREPARATION)
+    window = shell.manager.window(ModeId.DATA_PREPARATION)
+    window.show()
+    qapp.processEvents()
+    page.chips["all"].click()
+    qapp.processEvents()
+    visible = page.model.visible_items()
+    chosen = [visible[row].item_id for row in (3, 5, 8)]
+    for position, item_id in enumerate(chosen):
+        _click_table_row(
+            qapp,
+            page,
+            item_id,
+            Qt.KeyboardModifier.NoModifier
+            if position == 0
+            else Qt.KeyboardModifier.ControlModifier,
+        )
+    _activate_mode_window(qapp, window)
+    assert set(page._selected_ids) == set(chosen)
+    dialog_state = {}
+
+    def close_when_open():
+        dialog = QApplication.activeModalWidget()
+        if not isinstance(dialog, ContinuousTriageDialog):
+            QTimer.singleShot(25, close_when_open)
+            return
+        dialog_state["current_id"] = dialog.current_item_id
+        QTest.keyClick(dialog, Qt.Key.Key_Return)
+
+    QTimer.singleShot(0, close_when_open)
+    page.table.setFocus()
+    QTest.keyClick(page.table, Qt.Key.Key_Return)
+    qapp.processEvents()
+    visible_after = page.model.visible_items()
+    selected_after = [index.row() for index in page.table.selectionModel().selectedRows()]
+    assert set(page._selected_ids) == set(chosen)
+    assert "current_id" in dialog_state
+    assert len(selected_after) == 3
+    assert page.table.currentIndex().row() == next(
+        row for row, item in enumerate(visible_after) if item.item_id == dialog_state["current_id"]
+    )
+
+
+def test_review_22_inference_multi_selection_survives_activation(shell, qapp):
+    shell.navigate(PageId.INFERENCE)
+    page = shell.page(PageId.INFERENCE)
+    window = shell.manager.window(ModeId.INFERENCE)
+    window.show()
+    page.inputs = [InferenceInput(f"{index}.png", "分類A", "model_007") for index in range(5)]
+    page._refresh_table()
+    qapp.processEvents()
+    for row, modifiers in (
+        (0, Qt.KeyboardModifier.NoModifier),
+        (3, Qt.KeyboardModifier.ControlModifier),
+    ):
+        index = page.table.model().index(row, 0)
+        QTest.mouseClick(
+            page.table.viewport(),
+            Qt.MouseButton.LeftButton,
+            modifiers,
+            page.table.visualRect(index).center(),
+        )
+    _activate_mode_window(qapp, window)
+    selected = {index.row() for index in page.table.selectionModel().selectedRows()}
+    assert selected == {0, 3}
+    assert page.table.currentRow() == 3
+
+
+def test_review_23_released_model_multi_selection_survives_activation(shell, qapp):
+    shell.navigate(PageId.RELEASED_MODELS)
+    page = shell.page(PageId.RELEASED_MODELS)
+    window = shell.manager.window(ModeId.COMPARISON)
+    window.show()
+    qapp.processEvents()
+    assert page.model_table.rowCount() >= 2
+    for row, modifiers in (
+        (0, Qt.KeyboardModifier.NoModifier),
+        (1, Qt.KeyboardModifier.ControlModifier),
+    ):
+        index = page.model_table.model().index(row, 0)
+        QTest.mouseClick(
+            page.model_table.viewport(),
+            Qt.MouseButton.LeftButton,
+            modifiers,
+            page.model_table.visualRect(index).center(),
+        )
+    _activate_mode_window(qapp, window)
+    selected = {index.row() for index in page.model_table.selectionModel().selectedRows()}
+    assert selected == {0, 1}
+    assert page.model_table.currentRow() == 1

@@ -31,7 +31,7 @@ from ...widgets.image_convert import DisplayMode, array_to_pixmap, render
 from ...widgets.image_view import ImageView
 from ...widgets.marks import STATUS_MARKS, DisplayToggle, TagDelegate
 from ...widgets.page_base import BasePage
-from ...widgets.table import mark_primary, setup_table
+from ...widgets.table import mark_primary, restore_row_selection, setup_table
 
 
 @dataclass
@@ -291,11 +291,14 @@ class InferencePage(BasePage):
             count_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self.table.setItem(row, 4, count_item)
         self.table.resizeColumnsToContents()
-        for row, entry in enumerate(self.inputs):
-            if entry.filename in selected_filenames:
-                self.table.selectRow(row)
-            if entry.filename == current_filename:
-                self.table.setCurrentCell(row, 0)
+        rows = {
+            row for row, entry in enumerate(self.inputs) if entry.filename in selected_filenames
+        }
+        current_row = next(
+            (row for row, entry in enumerate(self.inputs) if entry.filename == current_filename),
+            None,
+        )
+        restore_row_selection(self.table, rows, current_row)
         self.table.verticalScrollBar().setValue(scroll_value)
         self._update_run_state()
 

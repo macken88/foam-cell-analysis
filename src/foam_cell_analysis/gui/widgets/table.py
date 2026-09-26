@@ -1,5 +1,6 @@
 """Qt の表ウィジェットに共通設定を適用する。"""
 
+from PySide6.QtCore import QItemSelection, QItemSelectionModel
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHeaderView,
@@ -9,6 +10,27 @@ from PySide6.QtWidgets import (
 )
 
 from ..theme import set_style
+
+
+def restore_row_selection(
+    view: QTableView | QTableWidget,
+    rows: set[int] | list[int],
+    current_row: int | None = None,
+) -> None:
+    """表の行選択と現在行をまとめて復元する。"""
+    model = view.model()
+    if model is None or model.columnCount() == 0:
+        return
+    selection = QItemSelection()
+    valid_rows = sorted({row for row in rows if 0 <= row < model.rowCount()})
+    for row in valid_rows:
+        selection.select(model.index(row, 0), model.index(row, model.columnCount() - 1))
+    selection_model = view.selectionModel()
+    selection_model.select(selection, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+    if current_row is not None and 0 <= current_row < model.rowCount():
+        selection_model.setCurrentIndex(
+            model.index(current_row, 0), QItemSelectionModel.SelectionFlag.NoUpdate
+        )
 
 
 def setup_table(

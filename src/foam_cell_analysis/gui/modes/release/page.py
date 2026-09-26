@@ -25,7 +25,7 @@ from ...navigation import PageId
 from ...theme import Color, numeric_font, set_style
 from ...widgets.form import FormSection
 from ...widgets.page_base import BasePage
-from ...widgets.table import mark_primary, setup_table
+from ...widgets.table import mark_primary, restore_row_selection, setup_table
 
 
 class RoutingChangesDialog(QDialog):
@@ -90,7 +90,11 @@ class ReleasedModelsPage(BasePage):
             ]
         )
         self.model_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        setup_table(self.model_table, stretch_column=10)
+        setup_table(
+            self.model_table,
+            stretch_column=10,
+            selection_mode=QTableWidget.SelectionMode.ExtendedSelection,
+        )
         self.model_table.itemSelectionChanged.connect(self._show_model_detail)
         upper.addWidget(self.model_table)
 
@@ -193,9 +197,10 @@ class ReleasedModelsPage(BasePage):
 
     def refresh_on_activate(self) -> None:
         """一覧を読み直し、選択中のリリースモデルを保つ。"""
-        selected_model = self._selected_model.model_id if self._selected_model else None
         pending_changes = self._pending_changes()
-        self.on_enter({"select": selected_model})
+        self._load_models()
+        self._load_routing()
+        self._load_history()
         for classification, model_id in pending_changes.items():
             control = self._routing_controls.get(classification)
             if control:
@@ -266,12 +271,11 @@ class ReleasedModelsPage(BasePage):
             10: 170,
         }.items():
             self.model_table.setColumnWidth(column, width)
-        for row in range(self.model_table.rowCount()):
-            model_id = self.model_table.item(row, 0).text()
-            if model_id in selected_ids:
-                self.model_table.selectRow(row)
-            if model_id == current_id:
-                self.model_table.setCurrentCell(row, 0)
+        model_rows = {
+            self.model_table.item(row, 0).text(): row for row in range(self.model_table.rowCount())
+        }
+        rows = {model_rows[model_id] for model_id in selected_ids if model_id in model_rows}
+        restore_row_selection(self.model_table, rows, model_rows.get(current_id))
         self.model_table.verticalScrollBar().setValue(scroll_value)
 
     def _show_model_detail(self) -> None:

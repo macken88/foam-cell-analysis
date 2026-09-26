@@ -46,6 +46,7 @@ from ...widgets.image_convert import DisplayMode, array_to_pixmap, render
 from ...widgets.image_view import ImageView
 from ...widgets.marks import USAGE_MARKS, CountChip, DisplayToggle, TagDelegate
 from ...widgets.page_base import BasePage
+from ...widgets.table import restore_row_selection
 from .dialogs import (
     AutoTriageDialog,
     ContinuousTriageDialog,
@@ -877,6 +878,12 @@ class DataPreparationPage(BasePage):
         self.refresh()
 
     def open_triage(self) -> None:
+        visible_before = self.model.visible_items()
+        selected_ids = [
+            visible_before[index.row()].item_id
+            for index in self.table.selectionModel().selectedRows()
+            if index.row() < len(visible_before)
+        ]
         targets = self.model.visible_items()
         dialog = ContinuousTriageDialog(
             self,
@@ -889,9 +896,14 @@ class DataPreparationPage(BasePage):
         current_id = dialog.current_item_id
         self.refresh()
         visible = self.model.visible_items()
-        if current_id and any(item.item_id == current_id for item in visible):
-            row = next(index for index, item in enumerate(visible) if item.item_id == current_id)
-            self._select_only_row(row, current_id)
+        visible_rows = {item.item_id: row for row, item in enumerate(visible)}
+        self._selected_ids = [item_id for item_id in selected_ids if item_id in visible_rows]
+        self._restore_table_selection()
+        if current_id and current_id in visible_rows:
+            self.table.selectionModel().setCurrentIndex(
+                self.model.index(visible_rows[current_id], 0),
+                QItemSelectionModel.SelectionFlag.NoUpdate,
+            )
             self._show_preview()
 
     def finalize(self) -> None:
@@ -1260,6 +1272,8 @@ class DatasetHistoryPage(BasePage):
         self.content_layout.addLayout(controls)
         self.table = QTableView()
         self.table.setModel(self.model)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.verticalHeader().hide()
         self.table.setSortingEnabled(False)
         self.table.horizontalHeader().setStretchLastSection(False)
@@ -1304,8 +1318,14 @@ class DatasetHistoryPage(BasePage):
             self.model.index(index.row(), 0).data()
             for index in self.table.selectionModel().selectedRows()
         ]
+        current_version = (
+            self.model.index(self.table.currentIndex().row(), 0).data()
+            if self.table.currentIndex().isValid()
+            else None
+        )
+        scroll_value = self.table.verticalScrollBar().value()
         self.refresh()
-        if selected_versions:
-            for row, version in enumerate(self.model.versions):
-                if version.version in selected_versions:
-                    self.table.selectRow(row)
+        version_rows = {version.version: row for row, version in enumerate(self.model.versions)}
+        rows = {version_rows[version] for version in selected_versions if version in version_rows}
+        restore_row_selection(self.table, rows, version_rows.get(current_version))
+        self.table.verticalScrollBar().setValue(scroll_value)
