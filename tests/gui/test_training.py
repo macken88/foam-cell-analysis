@@ -1,5 +1,7 @@
 """モデル学習ページと拡張プロファイルの画面テスト。"""
 
+import copy
+
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QLabel, QLineEdit, QMessageBox
 
@@ -374,8 +376,10 @@ def test_legacy_draft_edit_and_copy_migrate_via_experiment_actions(shell, qapp):
     assert copied_page.config["checkpoint"]["save_fold_models"] is True
 
 
-def test_legacy_stopped_experiment_migrates_before_qtest_retry(shell, qapp):
-    """再試行時にも旧設定を移行してから CV と学習を再開する。"""
+def test_legacy_stopped_experiment_retry_is_blocked_without_mutating_record(
+    shell, qapp, monkeypatch
+):
+    """旧形式の再試行を案内し、保存済み設定を維持する。"""
     from PySide6.QtCore import Qt
 
     experiment = shell.ctx.backend.get_experiment("exp_0044")
@@ -398,17 +402,21 @@ def test_legacy_stopped_experiment_migrates_before_qtest_retry(shell, qapp):
     rect = results.table.visualItemRect(results.table.item(row, 1))
     QTest.mouseClick(results.table.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
     results.table.setCurrentCell(row, 1)
+    saved_config = copy.deepcopy(experiment.config.values)
+    notices = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, _title, message: notices.append(message),
+    )
     results.action_map["retry"].trigger()
 
-    assert "split_id" not in experiment.config.values["data"]
-    assert experiment.config.values["data"]["cv"]["n_folds"] == 5
-    assert experiment.config.values["checkpoint"]["save_fold_models"] is True
-    for _ in range(1500):
-        qapp.processEvents()
-        if experiment.status == "completed":
-            break
-        QTest.qWait(2)
-    assert experiment.status == "completed"
+    assert notices == [
+        "この実験は旧形式の設定で記録されているため再試行できません。"
+        "『設定を複製して新規実験』で、現在の形式に移した設定から始めてください。"
+    ]
+    assert experiment.config.values == saved_config
+    assert experiment.status == "stopped"
 
 
 def test_used_augmentation_profile_is_saved_as_new_version(mock_backend):

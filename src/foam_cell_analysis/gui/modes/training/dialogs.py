@@ -57,6 +57,8 @@ class ExperimentCompareDialog(QDialog):
         layout = QVBoxLayout(self)
         self.differences_only = QCheckBox("差分のみ表示")
         self.table = QTableWidget()
+        self.table.setColumnCount(len(experiments) + 1)
+        setup_table(self.table, stretch_column=0)
         self.chart = LineChart()
         layout.addWidget(self.differences_only)
         split = QSplitter(Qt.Orientation.Horizontal)
@@ -101,7 +103,6 @@ class ExperimentCompareDialog(QDialog):
                 if key in differing:
                     item.setBackground(QColor(Color.CHANGED))
                 self.table.setItem(row, col, item)
-        setup_table(self.table, stretch_column=0)
         fit_table_columns(self.table)
         colors = [QColor(color) for color in SERIES]
         series = []

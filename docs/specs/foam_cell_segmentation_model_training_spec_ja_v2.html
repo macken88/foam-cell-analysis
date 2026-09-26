@@ -854,7 +854,7 @@ checkpoint:
   save_every: 10
   validation_interval: 5
   best_metric: oof_instance_map
-    save_fold_models: true</pre>
+  save_fold_models: true</pre>
 <h3>Cellpose</h3>
 <pre>experiment:
   id: exp_0043
@@ -891,7 +891,7 @@ checkpoint:
   save_every: 10
   validation_interval: 5
   best_metric: oof_instance_map
-    save_fold_models: true</pre>
+  save_fold_models: true</pre>
 </section>
 <section class="card">
 <h2>16. 現時点の設計原則まとめ</h2>
@@ -907,7 +907,8 @@ checkpoint:
   save_every: 10
   validation_interval: 5
   best_metric: oof_instance_map
-    save_fold_models: true</pre></section>
+  save_fold_models: true</pre></section>
+<section class="card"><h2>18. 学習キュー</h2><p>複数の学習設定をキューへ保存し、先頭から1件ずつ順番に実行する。キュー項目も通常の実験として記録し、待機中は「待機」状態で実験一覧に表示する。順番は保存し、アプリを開き直しても維持する。</p><ol><li>学習設定で検証済みの設定を末尾へ追加する。実験一覧の選択済み実験を新しい識別子で複製して追加する操作も用意する。</li><li>実行前にキュー表から設定を変更できる。各変更後に設定を検証し、エラー行は設定エラーとして残し、実行時には飛ばす。</li><li>GPUは1台を前提とし、同時に実行する学習は常に1件とする。単発学習中にキュー実行を開始した場合は、単発学習の完了を待つ。</li><li>各学習は交差検証の各フォールド学習に続いて、選択エポックで学習用データ全体の最終学習を行う。成功、失敗、中断のいずれでも次の待機項目へ進む。</li><li>停止操作は現在の学習の完了後にキューを止める。即時中断は実験一覧の中断操作で行う。終了行はキュー表から片付けられるが実験一覧の履歴には残す。</li></ol><p>状態は待機・実行中・完了・失敗・中断・設定エラーで表示し、進捗にはフォールド番号または最終学習エポックを含める。</p></section>
 </div>
 </body>
 </html>

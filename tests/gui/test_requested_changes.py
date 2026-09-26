@@ -158,12 +158,13 @@ def test_work_table_first_launch_sizes_data_columns_to_contents(qapp, tmp_path):
     page.close()
 
 
-def test_work_table_ignores_extremely_narrow_saved_width(qapp, tmp_path):
-    """24px 未満を含む保存幅は初回内容幅へ戻す。"""
+def test_work_table_clamps_extremely_narrow_saved_width(qapp, tmp_path):
+    """24px 未満の列だけを補正し、ほかの保存幅は保つ。"""
     QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path))
     page = DataPreparationPage(make_context())
     page.show()
     qapp.processEvents()
+    page.table.horizontalHeader().resizeSection(0, 333)
     page.table.horizontalHeader().resizeSection(1, 10)
     page._save_column_widths()
     page.close()
@@ -171,7 +172,8 @@ def test_work_table_ignores_extremely_narrow_saved_width(qapp, tmp_path):
     restored.resize(1440, 800)
     restored.show()
     qapp.processEvents()
-    assert restored.table.columnWidth(1) >= restored.table.horizontalHeader().sectionSizeHint(1)
+    assert restored.table.columnWidth(0) == 333
+    assert restored.table.columnWidth(1) == 24
     restored.close()
 
 

@@ -193,6 +193,30 @@ class Backend(Protocol):
     def next_experiment_id(self) -> str:
         """次の実験識別子を返す。"""
 
+    def add_training_queue_item(self, config: dict[str, Any]) -> Experiment:
+        """設定を queued 状態の実験として保存し、末尾へ追加する。"""
+
+    def list_training_queue(self) -> list[Experiment]:
+        """順番付きの学習キューを返す。"""
+
+    def update_training_queue_item(self, experiment_id: str, config: dict[str, Any]) -> Experiment:
+        """キュー項目の設定を置き換える。"""
+
+    def reorder_training_queue(self, experiment_ids: list[str]) -> list[Experiment]:
+        """キュー順を指定順に更新する。"""
+
+    def duplicate_training_queue_items(self, experiment_ids: list[str]) -> list[Experiment]:
+        """指定したキュー行を新しい識別子で複製する。"""
+
+    def delete_training_queue_items(self, experiment_ids: list[str]) -> None:
+        """指定した待機中のキュー項目を削除する。"""
+
+    def clear_finished_training_queue_items(self) -> None:
+        """完了・失敗・中断したキュー項目を片付ける。"""
+
+    def take_next_training_queue_item(self) -> Experiment | None:
+        """設定検証を通った待機行の先頭を実行対象にする。"""
+
     def save_experiment_draft(
         self, config: dict[str, Any], experiment_id: str | None = None
     ) -> Experiment:

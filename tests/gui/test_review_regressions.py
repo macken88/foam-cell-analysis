@@ -487,7 +487,7 @@ def test_review_15_reopening_current_mode_from_home_keeps_active_tab(shell, qapp
     window = shell.manager.window(ModeId.TRAINING)
     QTest.mouseClick(shell.home.pipeline._stages[1], Qt.MouseButton.LeftButton)
     qapp.processEvents()
-    assert window.tabs.currentIndex() == 1
+    assert window.tabs.currentIndex() == 2
     assert shell.manager.current_page_id(ModeId.TRAINING) == PageId.EXPERIMENTS
 
 

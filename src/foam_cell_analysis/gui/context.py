@@ -66,3 +66,4 @@ class AppContext:
     shortcuts: ShortcutMap = field(default_factory=ShortcutMap)
     display: DisplayPreference = field(default_factory=DisplayPreference)
     keymap_window: QObject | None = None
+    queue_controller: QObject | None = None

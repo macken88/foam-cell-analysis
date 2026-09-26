@@ -55,6 +55,8 @@ class MockBackend:
         self.working: dict[str, WorkingDataset] = {}
         self.versions: list[DatasetVersion] = []
         self.experiments: dict[str, Experiment] = {}
+        self.training_queue_ids: list[str] = []
+        self.fail_training_ids: set[str] = set()
         self.profiles: dict[str, AugmentationProfile] = {}
         self.inference_configs: dict[str, InferenceConfig] = {}
         self.candidates: dict[str, Candidate] = {}
@@ -1074,7 +1076,9 @@ class MockBackend:
 
     def _items_for_version(self, version: str) -> list[DataItem]:
         """版に含まれる画像項目を返す。"""
-        record = next(item for item in self.versions if item.version == version)
+        record = next((item for item in self.versions if item.version == version), None)
+        if record is None:
+            raise ValueError(f"データセット版 {version} がありません")
         working = self.working[record.purpose].items
         by_id = {item.item_id: item for item in working}
         return [by_id[item_id] for item_id in record.item_ids if item_id in by_id]
@@ -1208,42 +1212,57 @@ class MockBackend:
         results = []
         data = config.get("data", {})
         training = config.get("training", {})
-        if not data.get("dataset_version"):
+        dataset_version = data.get("dataset_version")
+        if not dataset_version:
             results.append({"level": "error", "message": "データセット版を選択してください"})
+        elif not any(item.version == dataset_version for item in self.versions):
+            results.append(
+                {
+                    "level": "error",
+                    "message": f"データセット版 {dataset_version} がありません",
+                }
+            )
         if not data.get("input_channels"):
             results.append({"level": "error", "message": "入力チャンネルを選択してください"})
         cv = data.get("cv", {})
         folds = int(cv.get("n_folds", 5))
         if not 2 <= folds <= 10:
             results.append({"level": "error", "message": "分割数は 2〜10 にしてください"})
-        try:
-            total, _per_fold = self.estimate_training_items(
-                data.get("dataset_version"),
-                data.get("classification", "all"),
-                data.get("quality_filter", "all"),
-                folds,
-            )
-            if total < folds:
-                results.append(
-                    {"level": "error", "message": f"交差検証には画像が最低 {folds} 件必要です"}
+        if dataset_version and any(item.version == dataset_version for item in self.versions):
+            try:
+                total, _per_fold = self.estimate_training_items(
+                    dataset_version,
+                    data.get("classification", "all"),
+                    data.get("quality_filter", "all"),
+                    folds,
                 )
-            elif cv.get("group_by_source_folder", True):
-                groups = {item.source_folder for item in self._filtered_training_items(config)}
-                if len(groups) < folds:
+                if total < folds:
                     results.append(
-                        {
-                            "level": "error",
-                            "message": (
-                                f"フォルダ単位の分割には取込元フォルダが最低 {folds} 個必要です"
-                            ),
-                        }
+                        {"level": "error", "message": f"交差検証には画像が最低 {folds} 件必要です"}
                     )
-        except (KeyError, ValueError):
-            pass
+                elif cv.get("group_by_source_folder", True):
+                    groups = {item.source_folder for item in self._filtered_training_items(config)}
+                    if len(groups) < folds:
+                        results.append(
+                            {
+                                "level": "error",
+                                "message": (
+                                    f"フォルダ単位の分割には取込元フォルダが最低 {folds} 個必要です"
+                                ),
+                            }
+                        )
+            except (KeyError, ValueError) as error:
+                results.append({"level": "error", "message": str(error)})
         if int(training.get("batch_size", 1)) > 16:
             results.append(
                 {"level": "warning", "message": "GPU メモリ使用量が大きくなる可能性があります"}
             )
+        if int(training.get("epochs", 0)) < 1:
+            results.append({"level": "error", "message": "エポック数は 1 以上にしてください"})
+        if float(training.get("learning_rate", 0)) <= 0:
+            results.append({"level": "error", "message": "学習率は 0 より大きくしてください"})
+        if float(training.get("weight_decay", 0)) < 0:
+            results.append({"level": "error", "message": "重み減衰は 0 以上にしてください"})
         model = config.get("model", {})
         if model.get("type") == "mask_rcnn":
             expected_mean, expected_std = normalization_for_weights(
@@ -1264,6 +1283,8 @@ class MockBackend:
         comparable.get("experiment", {}).pop("id", None)
         comparable.get("experiment", {}).pop("description", None)
         for experiment in self.experiments.values():
+            if experiment.experiment_id == config.get("experiment", {}).get("id"):
+                continue
             existing = copy.deepcopy(experiment.config.values)
             existing.get("experiment", {}).pop("id", None)
             existing.get("experiment", {}).pop("description", None)
@@ -1310,6 +1331,74 @@ class MockBackend:
         numbers = [int(key[-4:]) for key in self.experiments]
         return f"exp_{max(numbers, default=0) + 1:04d}"
 
+    def add_training_queue_item(self, config: dict[str, Any]) -> Experiment:
+        saved = copy.deepcopy(config)
+        expid = saved.setdefault("experiment", {}).get("id") or self.next_experiment_id()
+        if expid in self.experiments:
+            saved["experiment"]["id"] = self.next_experiment_id()
+        item = self._save_experiment(saved, None, "queued")
+        if item.experiment_id not in self.training_queue_ids:
+            self.training_queue_ids.append(item.experiment_id)
+        return item
+
+    def list_training_queue(self) -> list[Experiment]:
+        return [self.experiments[key] for key in self.training_queue_ids if key in self.experiments]
+
+    def update_training_queue_item(self, experiment_id: str, config: dict[str, Any]) -> Experiment:
+        if experiment_id not in self.training_queue_ids:
+            raise ValueError("キュー項目がありません")
+        if self.experiments[experiment_id].status != "queued":
+            raise ValueError("待機中のキュー項目のみ編集できます")
+        saved = copy.deepcopy(config)
+        saved.setdefault("experiment", {})["id"] = experiment_id
+        return self._save_experiment(saved, experiment_id, "queued")
+
+    def reorder_training_queue(self, experiment_ids: list[str]) -> list[Experiment]:
+        rest = [key for key in self.training_queue_ids if key not in experiment_ids]
+        ordered = [key for key in experiment_ids if key in self.training_queue_ids]
+        self.training_queue_ids = ordered + rest
+        return self.list_training_queue()
+
+    def duplicate_training_queue_items(self, experiment_ids: list[str]) -> list[Experiment]:
+        result = []
+        for key in experiment_ids:
+            source = self.experiments[key]
+            config = copy.deepcopy(source.config.values)
+            config["experiment"]["id"] = self.next_experiment_id()
+            duplicate = self._save_experiment(config, None, "queued")
+            insertion = (
+                self.training_queue_ids.index(key) + 1
+                if key in self.training_queue_ids
+                else len(self.training_queue_ids)
+            )
+            self.training_queue_ids.insert(insertion, duplicate.experiment_id)
+            result.append(duplicate)
+        return result
+
+    def delete_training_queue_items(self, experiment_ids: list[str]) -> None:
+        for key in experiment_ids:
+            item = self.experiments.get(key)
+            if item is not None and item.status == "queued":
+                self.training_queue_ids.remove(key)
+                del self.experiments[key]
+
+    def clear_finished_training_queue_items(self) -> None:
+        finished = {"completed", "failed", "stopped"}
+        self.training_queue_ids = [
+            key for key in self.training_queue_ids if self.experiments[key].status not in finished
+        ]
+
+    def take_next_training_queue_item(self) -> Experiment | None:
+        for key in self.training_queue_ids:
+            experiment = self.experiments[key]
+            if experiment.status == "queued" and not any(
+                issue["level"] == "error"
+                for issue in self.validate_experiment_config(experiment.config.values)
+            ):
+                experiment.status = "running"
+                return experiment
+        return None
+
     def _save_experiment(
         self, config: dict[str, Any], experiment_id: str | None, status: str
     ) -> Experiment:
@@ -1319,11 +1408,13 @@ class MockBackend:
         expid = experiment_id or experiment_config.get("id") or self.next_experiment_id()
         experiment_config["id"] = expid
         data = saved_config.setdefault("data", {})
-        data["used_item_ids"] = (
-            [item.item_id for item in self._filtered_training_items(saved_config)]
-            if status != "draft"
-            else []
-        )
+        if status == "running":
+            used_item_ids = [item.item_id for item in self._filtered_training_items(saved_config)]
+            fold_assignments = self._assign_folds(saved_config, used_item_ids)
+        else:
+            used_item_ids = []
+            fold_assignments = {}
+        data["used_item_ids"] = used_item_ids
         model_type = saved_config["model"]["type"]
         existing = self.experiments.get(expid)
         now = self._now()
@@ -1337,9 +1428,7 @@ class MockBackend:
                 status=status,
                 total_epochs=int(saved_config["training"]["epochs"]),
                 used_item_ids=list(data["used_item_ids"]),
-                fold_assignments=self._assign_folds(saved_config, data["used_item_ids"])
-                if status != "draft"
-                else {},
+                fold_assignments=fold_assignments,
                 created_at=now,
             )
         else:
@@ -1351,7 +1440,7 @@ class MockBackend:
             experiment.status = status
             experiment.total_epochs = int(saved_config["training"]["epochs"])
             experiment.used_item_ids = list(data["used_item_ids"])
-            experiment.fold_assignments = self._assign_folds(saved_config, data["used_item_ids"])
+            experiment.fold_assignments = fold_assignments
         self.experiments[expid] = experiment
         self._sync_profile_usage()
         return experiment
@@ -1583,7 +1672,12 @@ class MockBackend:
     def retry_experiment(self, experiment_id: str) -> Experiment:
         """同一実験へ新しい試行を追加する。"""
         experiment = self.get_experiment(experiment_id)
-        migrated_config, _migrated = self.migrate_experiment_config(experiment.config.values)
+        migrated_config, migrated = self.migrate_experiment_config(experiment.config.values)
+        if migrated:
+            raise ValueError(
+                "この実験は旧形式の設定で記録されているため再試行できません。"
+                "『設定を複製して新規実験』で、現在の形式に移した設定から始めてください。"
+            )
         experiment.config = ExperimentConfig(migrated_config)
         experiment.total_epochs = int(migrated_config["training"]["epochs"])
         experiment.status = "running"

@@ -148,6 +148,9 @@ class PipelineWidget(QFrame):
             if summary.running_experiment
             else "実行中の学習はありません"
         )
+        if summary.queue_waiting or summary.queue_running:
+            queue_state = "実行中" if summary.queue_running else "停止中"
+            training_note += f"\n学習キュー 待機 {summary.queue_waiting} 件（{queue_state}）"
         comparison_value = summary.unevaluated_candidates or summary.candidate_count
         comparison_detail = "件 未評価の候補" if summary.unevaluated_candidates else "件 候補"
         if not summary.unevaluated_candidates and not summary.candidate_count:
@@ -365,7 +368,8 @@ class HomeWindow(QMainWindow):
     def refresh_summary(self) -> None:
         """ホーム表示用集計を作り、各部品へ渡す。"""
         self._summary = replace(
-            build_home_summary(self.ctx.backend, self.ctx.jobs), recent=tuple(self._recent)
+            build_home_summary(self.ctx.backend, self.ctx.jobs, self.ctx.queue_controller),
+            recent=tuple(self._recent),
         )
         self.pipeline.set_summary(self._summary)
         while self.routing_layout.count():

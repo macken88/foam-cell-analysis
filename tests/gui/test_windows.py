@@ -31,7 +31,7 @@ def test_reopening_mode_uses_single_window(shell):
     window = shell.manager.window(ModeId.TRAINING)
     shell.navigate(PageId.EXPERIMENTS)
     assert shell.manager.window(ModeId.TRAINING) is window
-    assert window.tabs.currentIndex() == 1
+    assert window.tabs.currentIndex() == 2
 
 
 def test_navigation_passes_params_once(shell):

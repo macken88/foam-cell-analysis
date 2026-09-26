@@ -373,10 +373,9 @@ class DataPreparationPage(BasePage):
         self._initial_column_widths_done = False
         if saved_widths:
             self.table.horizontalHeader().restoreState(QByteArray.fromBase64(saved_widths.encode()))
-            if any(
-                self.table.columnWidth(column) < 24 for column in range(self.model.columnCount())
-            ):
-                self._has_saved_column_widths = False
+            for column in range(self.model.columnCount()):
+                if self.table.columnWidth(column) < 24:
+                    self.table.setColumnWidth(column, 24)
         self._saving_column_widths = True
         self.table.horizontalHeader().sectionResized.connect(self._save_column_widths)
         self.refresh()

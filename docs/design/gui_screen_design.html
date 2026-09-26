@@ -287,7 +287,7 @@ table.rev{font-size:.92rem}
 <tr><td>v2.3</td><td>2026-09-25</td><td>見た目の設計（2.6）を追加: 色（色はデータの意味にだけ使う）・フォント・部品の見た目。ホームを管理者の工程の流れとして表示（2.1）。フォルダパスは本文と同じ BIZ UDPゴシックで表示（レビューで決定）。画面モックを新しい見た目に更新し、表表示（4.3）、モデル学習〜本番推論（5〜10章）のモックを追加</td><td>改良案・未実装</td></tr>
 <tr><td>v2.4</td><td>2026-09-26</td><td>タブ切り替えの不具合修正、表示形式のショートカット、サムネイル表示を確定ダイアログへ移動。レビュー指摘の修正: 共有キー設定、既定キー操作、記号キー配列差の吸収、絞り込みと整合性表示、候補メニュー、推論中の二重実行防止、Excel 入出力、連続振り分け、確定サムネイルの件数・空表示、再表示時の状態更新</td><td>今回の対象を実装済み</td></tr>
 <tr><td>v2.5</td><td>2026-09-26</td><td>原画像と設定表示の二択、キー割り当て一覧、画像移動キー、列幅の保存、選択中の自動振り分け、単一チャンネル GUI、ラベルとコンボの間隔、版履歴サムネイル、確定不可理由の表示</td><td>実装済み</td></tr>
-<tr><td>v2.6</td><td>2026-09-26</td><td>学習をK分割交差検証・OOF評価・選択エポックでの全件最終学習へ変更。比較候補をfinal.ptに限定し、検証用mAPとOOF mAPを比較・リリースに追加。Mask R-CNN の画像平均・標準偏差を重みに応じて自動決定し読み取り専用表示。表の列幅を見出し・内容に合わせ、手動調整を保持。エポック選択はOOF mAP最大に固定し、設定移行と候補選択保持を追加</td><td>今回の仕様</td></tr>
+<tr><td>v2.6</td><td>2026-09-26</td><td>学習をK分割交差検証・OOF評価・選択エポックでの全件最終学習へ変更。学習キュー（設定編集・順次実行・失敗後の継続）と待機実験の管理を追加。比較候補をfinal.ptに限定し、検証用mAPとOOF mAPを比較・リリースに追加。Mask R-CNN の画像平均・標準偏差を重みに応じて自動決定</td><td>今回の仕様</td></tr>
 </tbody></table></div>
 <nav><strong>目次</strong><ol class="toc"><li><a href="#sec1">1. ソース構成</a></li><li><a href="#sec2">2. アプリ全体の画面構成</a> <span class="badge">改良案</span><br><a href="#sec2-6">2.6 見た目の設計（色・フォント・部品）</a> <span class="badge">v2.3</span></li><li><a href="#sec3">3. 共通部品</a></li><li><a href="#sec4">4. データ準備（PageId.DATA_PREPARATION）</a> <span class="badge">改良案</span></li><li><a href="#sec5">5. モデル学習（PageId.TRAINING）</a></li><li><a href="#sec6">6. 実験一覧（PageId.EXPERIMENTS）</a></li><li><a href="#sec7">7. モデル比較・リリース（PageId.CANDIDATES）</a></li><li><a href="#sec8">8. マスク比較（PageId.MASK_COMPARISON）</a></li><li><a href="#sec9">9. リリース済みモデル・モデル振り分け（PageId.RELEASED_MODELS）</a></li><li><a href="#sec10">10. 本番推論（PageId.INFERENCE）</a></li><li><a href="#sec11">11. MockBackend</a></li><li><a href="#sec12">12. テスト（tests/gui/）</a></li></ol></nav>
 </header>
@@ -1022,7 +1022,7 @@ table.rev{font-size:.92rem}
 <h3>5.1 レイアウト</h3>
 <div class="mock"><div class="mock-title">モデル学習 — 気泡インスタンスセグメンテーション</div>
 <div class="mock-body">
-<div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span class="on">学習設定</span><span>実験一覧</span></span><span class="spacer"></span></div>
+<div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span class="on">学習設定</span><span>学習キュー</span><span>実験一覧</span></span><span class="spacer"></span></div>
 <div class="m-split" style="grid-template-columns:7fr 3fr">
 <div class="panel">
 <p class="ptitle" style="border-bottom:1px solid var(--rule);padding-bottom:2px">実験</p>
@@ -1038,7 +1038,7 @@ table.rev{font-size:.92rem}
 <div class="row"><span>早期終了</span><span>☑ 有効　待機 <span class="input num">15</span> エポック</span></div>
 <p class="small" style="margin:6px 0 0">▶ モデル（Mask R-CNN）　▶ データ拡張（aug_v003）　▶ チェックポイント / OOF評価</p>
 <div class="row"><span>画像平均・標準偏差</span><span class="small">事前学習済み重みから自動決定　<span class="num">0.485, 0.456, 0.406 / 0.229, 0.224, 0.225</span></span></div>
-<div class="btns"><span class="btn">設定を検証</span><span class="btn">下書き保存</span><span class="btn primary">学習開始</span></div>
+<div class="btns"><span class="btn">設定を検証</span><span class="btn">下書き保存</span><span class="btn">キューに追加</span><span class="btn primary">学習開始</span></div>
 </div>
 <div class="panel" style="font-family:Consolas,monospace;font-size:.78rem;line-height:1.55;white-space:pre;overflow:hidden"><span style="font-family:'BIZ UDPGothic',sans-serif" class="ptitle">設定プレビュー（YAML・読み取り専用）</span>
 experiment_id: exp_0047
@@ -1122,6 +1122,11 @@ training:
 </ul>
 <hr />
 </section>
+<section class="card" id="sec5-queue"><h3>5.3 学習キュー（<code>PageId.TRAINING_QUEUE</code>）</h3>
+<p>学習設定・学習キュー・実験一覧の順にタブを置く。学習設定の「キューに追加」は検証後に末尾へ登録し、画面遷移せず次の実験 ID を採番する。実験一覧の「複製してキューに追加」も選択した設定を新しい ID で登録する。</p>
+<div class="mock"><div class="mock-title">モデル学習 — 学習キュー</div><div class="mock-body"><div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span>学習設定</span><span class="on">学習キュー</span><span>実験一覧</span></span></div><div class="panel"><p>待機 3 件・実行中 exp_0047（分割 2/5）・完了 1 件・失敗 0 件</p><div class="btns"><span class="btn">表示する列 ▾</span></div><table><thead><tr><th>順番</th><th>状態</th><th>実験識別子</th><th>説明</th><th>実験群</th><th>データセット版</th><th>モデル種類</th><th>エポック数</th><th>学習率</th><th>プロファイル</th></tr></thead><tbody><tr><td>1</td><td>実行中</td><td>exp_0047</td><td>分類A / 基準設定</td><td>foam_study</td><td>train_v004</td><td>Mask R-CNN</td><td>100</td><td>0.0001</td><td>aug_v003</td></tr><tr><td>2</td><td>待機</td><td>exp_0048</td><td>サイズ比較</td><td>foam_study</td><td>train_v004</td><td>Cellpose</td><td>80</td><td>0.001</td><td>aug_v003</td></tr></tbody></table><div class="btns"><span class="btn primary">実行を停止</span><span class="btn">複製</span><span class="btn">削除</span><span class="btn">上へ</span><span class="btn">下へ</span><span class="btn">設定を開いて編集…</span><span class="btn">終了した行を片付ける</span></div><p class="small">停止予約後は現在の学習を完了して停止。即時中断は実験一覧から行う。失敗・中断後も次の待機行へ進む。</p></div></div></div>
+<p>1行を1実験として保存し、状態は待機・実行中・完了・失敗・中断・設定エラーで示す。設定編集列は分類ごとに表示を切り替え、選択肢は学習設定と同じ Backend オプションを使う。モデルにない設定セルは無効にする。セル編集ごとに設定を検証し、エラーは行頭の注意印とツールチップで示す。未表示の詳細設定は行のダブルクリックまたは編集ボタンから学習設定へ渡し、「キューに保存」または「キャンセル」する。</p>
+<p>実行はGPU 1台を前提に一度に1件とし、失敗・中断後も次の待機行へ進む。設定エラー行は飛ばして待機リストに残す。停止は現在の学習完了後に有効となる。複製・削除・並べ替えと終了行の片付けを提供し、Ctrl+↑ / Ctrl+↓ でも順番を変更できる。状態、選択行、スクロール、列幅と列表示を保持する。</p></section>
 <section class="card" id="sec6">
 <h2>6. 実験一覧（<code>PageId.EXPERIMENTS</code>）</h2>
 <p>仕様: モデル学習モード仕様 2章・7章・12〜13章。</p>

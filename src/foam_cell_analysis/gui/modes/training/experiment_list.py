@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import math
 
 from PySide6.QtCore import Qt, QTimer
@@ -65,7 +66,7 @@ class ExperimentListPage(BasePage):
         self.model_filter.addItems(["すべて", "Mask R-CNN", "Cellpose"])
         self.model_filter.setMaximumWidth(150)
         self.state_filter = QComboBox()
-        self.state_filter.addItems(["すべて", "下書き", "実行中", "完了", "失敗", "中断"])
+        self.state_filter.addItems(["すべて", "下書き", "待機", "実行中", "完了", "失敗", "中断"])
         self.state_filter.setMaximumWidth(120)
         filter_row = QHBoxLayout()
         filter_row.addWidget(QLabel("実験群"))
@@ -175,6 +176,7 @@ class ExperimentListPage(BasePage):
             ("stop", "学習を中断", self.stop_selected),
             ("retry", "再実行", self.retry_selected),
             ("edit", "下書きを編集", self.edit_selected),
+            ("queue_copy", "複製してキューに追加", self.copy_to_queue),
             ("result", "結果を開く", self.open_result),
         ):
             action = self.more_menu.addAction(label)
@@ -258,7 +260,7 @@ class ExperimentListPage(BasePage):
                 else Qt.CheckState.Unchecked
             )
             self.table.setItem(row, 0, select)
-            config = experiment.config.values
+            config = copy.deepcopy(experiment.config.values)
             # 保存日時が同じなら後に追加したもの（最終モデル）を最新とする
             latest = max(reversed(experiment.checkpoints), key=lambda cp: cp.saved_at, default=None)
             selected_metric = next(
@@ -547,6 +549,10 @@ class ExperimentListPage(BasePage):
             current is not None and current.status in {"failed", "stopped"}
         )
         self.action_map["edit"].setEnabled(current is not None and current.status == "draft")
+        self.action_map["queue_copy"].setEnabled(bool(selected))
+        self.action_map["queue_copy"].setToolTip(
+            "複製する実験をチェックしてください" if not selected else ""
+        )
 
     @staticmethod
     def _display_value(key: str, value: object) -> str:
@@ -622,6 +628,18 @@ class ExperimentListPage(BasePage):
         if experiment:
             self.ctx.navigator.navigate(PageId.TRAINING, copy_from=experiment.experiment_id)
 
+    def copy_to_queue(self) -> None:
+        """選択した実験設定を新しい ID でキューへ複製する。"""
+        selected = self._checked_experiments()
+        added = []
+        for experiment in selected:
+            config = copy.deepcopy(experiment.config.values)
+            config["experiment"]["id"] = self.ctx.backend.next_experiment_id()
+            added.append(self.ctx.backend.add_training_queue_item(config))
+        if added:
+            self.ctx.status.show_message(f"{len(added)} 件を学習キューに追加しました")
+            self.ctx.navigator.navigate(PageId.TRAINING_QUEUE)
+
     def edit_selected(self) -> None:
         experiment = self._current_experiment()
         if experiment and experiment.status == "draft":
@@ -649,7 +667,11 @@ class ExperimentListPage(BasePage):
         experiment = self._current_experiment()
         if not experiment or experiment.status not in {"failed", "stopped"}:
             return
-        experiment = self.ctx.backend.retry_experiment(experiment.experiment_id)
+        try:
+            experiment = self.ctx.backend.retry_experiment(experiment.experiment_id)
+        except ValueError as error:
+            QMessageBox.warning(self, "再実行できません", str(error))
+            return
         self._start_job(experiment.experiment_id)
         self.refresh()
 

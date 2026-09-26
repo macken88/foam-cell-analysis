@@ -26,6 +26,7 @@ STATUS_MARKS = {
     "評価中": (Color.GRAPHITE, Color.WHITE, False),
     "完了": (Color.OK_BG, Color.OK, False),
     "下書き": (Color.IDLE_BG, Color.SLATE, False),
+    "待機": (Color.IDLE_BG, Color.SLATE, False),
     "中断": (Color.IDLE_BG, Color.SLATE, False),
     "候補": (Color.IDLE_BG, Color.SLATE, False),
     "失敗": (Color.ERROR_BG, Color.ERROR, False),

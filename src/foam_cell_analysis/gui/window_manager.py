@@ -13,7 +13,8 @@ PAGE_TO_MODE_TAB = {
     PageId.DATA_PREPARATION: (ModeId.DATA_PREPARATION, 0),
     PageId.DATASET_HISTORY: (ModeId.DATA_PREPARATION, 1),
     PageId.TRAINING: (ModeId.TRAINING, 0),
-    PageId.EXPERIMENTS: (ModeId.TRAINING, 1),
+    PageId.TRAINING_QUEUE: (ModeId.TRAINING, 1),
+    PageId.EXPERIMENTS: (ModeId.TRAINING, 2),
     PageId.CANDIDATES: (ModeId.COMPARISON, 0),
     PageId.MASK_COMPARISON: (ModeId.COMPARISON, 1),
     PageId.RELEASED_MODELS: (ModeId.COMPARISON, 2),
@@ -21,7 +22,7 @@ PAGE_TO_MODE_TAB = {
 }
 MODE_PAGES = {
     ModeId.DATA_PREPARATION: [PageId.DATA_PREPARATION, PageId.DATASET_HISTORY],
-    ModeId.TRAINING: [PageId.TRAINING, PageId.EXPERIMENTS],
+    ModeId.TRAINING: [PageId.TRAINING, PageId.TRAINING_QUEUE, PageId.EXPERIMENTS],
     ModeId.COMPARISON: [PageId.CANDIDATES, PageId.MASK_COMPARISON, PageId.RELEASED_MODELS],
     ModeId.INFERENCE: [PageId.INFERENCE],
 }
@@ -32,6 +33,10 @@ PAGE_LABELS = {
     ),
     PageId.DATASET_HISTORY: ("データセット版履歴", "確定済みの学習用版・検証用版を確認します。"),
     PageId.TRAINING: ("学習設定", "学習設定を作成し、再現可能な実験として記録します。"),
+    PageId.TRAINING_QUEUE: (
+        "学習キュー",
+        "学習する設定を並べ、順番に実行します。実行前に表で設定を変更できます。",
+    ),
     PageId.EXPERIMENTS: ("実験一覧", "実験の状態、設定、学習結果を確認します。"),
     PageId.CANDIDATES: ("リリース候補", "検証用データセットを切り替えて候補を比較します。"),
     PageId.MASK_COMPARISON: ("マスク比較", "候補モデルの予測結果を比較します。"),
@@ -53,6 +58,10 @@ class WindowManager(QObject):
     def __init__(self, ctx: AppContext, settings: QSettings | None = None, parent=None) -> None:
         super().__init__(parent)
         self.ctx = ctx
+        if self.ctx.queue_controller is None:
+            from .modes.training.queue_controller import TrainingQueueController
+
+            self.ctx.queue_controller = TrainingQueueController(ctx, self)
         self.settings = settings or app_settings()
         self._windows: dict[ModeId, ModeWindow] = {}
         self._pages = {}
@@ -79,12 +88,14 @@ class WindowManager(QObject):
                 from .modes.release.page import ReleasedModelsPage
                 from .modes.training.experiment_list import ExperimentListPage
                 from .modes.training.page import TrainingPage
+                from .modes.training.queue_page import TrainingQueuePage
 
                 PAGE_TYPES.update(
                     {
                         PageId.DATA_PREPARATION: DataPreparationPage,
                         PageId.DATASET_HISTORY: DatasetHistoryPage,
                         PageId.TRAINING: TrainingPage,
+                        PageId.TRAINING_QUEUE: TrainingQueuePage,
                         PageId.EXPERIMENTS: ExperimentListPage,
                         PageId.CANDIDATES: CandidatesPage,
                         PageId.MASK_COMPARISON: MaskComparisonPage,

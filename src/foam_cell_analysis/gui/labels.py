@@ -12,6 +12,7 @@ _QUALITY_FILTERS = {
 }
 _EXPERIMENT_STATUSES = {
     "draft": "下書き",
+    "queued": "待機",
     "running": "実行中",
     "completed": "完了",
     "failed": "失敗",

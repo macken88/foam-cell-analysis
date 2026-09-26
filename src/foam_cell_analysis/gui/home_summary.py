@@ -27,9 +27,11 @@ class HomeSummary:
     released_count: int
     routing: dict[str, str | None]
     recent: tuple[tuple[datetime, str], ...]
+    queue_waiting: int = 0
+    queue_running: bool = False
 
 
-def build_home_summary(backend: Backend, jobs: JobManager) -> HomeSummary:
+def build_home_summary(backend: Backend, jobs: JobManager, queue_controller=None) -> HomeSummary:
     """Backend とジョブ状態からホーム画面用の値を集計する。"""
     train_changes = backend.summarize_working_changes("train")
     validation_changes = backend.summarize_working_changes("val")
@@ -66,4 +68,6 @@ def build_home_summary(backend: Backend, jobs: JobManager) -> HomeSummary:
         released_count=len(backend.list_released_models()),
         routing=backend.get_routing(),
         recent=(),
+        queue_waiting=sum(item.status == "queued" for item in backend.list_training_queue()),
+        queue_running=bool(queue_controller and queue_controller.executing),
     )

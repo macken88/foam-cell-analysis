@@ -12,6 +12,7 @@ class PageId(StrEnum):
     DATA_PREPARATION = "data_preparation"
     DATASET_HISTORY = "dataset_history"
     TRAINING = "training"
+    TRAINING_QUEUE = "training_queue"
     EXPERIMENTS = "experiments"
     CANDIDATES = "candidates"
     MASK_COMPARISON = "mask_comparison"
