@@ -98,6 +98,7 @@ class TrainingQueuePage(BasePage):
         self.table.selectionModel().selectionChanged.connect(self._update_buttons)
         self.model.modelReset.connect(self._update_empty_state)
         ctx.queue_controller.changed.connect(self.refresh)
+        ctx.queue_controller.progressed.connect(self._update_status_line)
         self.refresh(initial=True)
 
     def _build_column_menu(self) -> None:
@@ -159,12 +160,23 @@ class TrainingQueuePage(BasePage):
         entries = self.model.entries
         controller = self.ctx.queue_controller
         waiting = sum(entry.status == "queued" for entry in entries)
-        active = next((entry for entry in entries if entry.status == "running"), None)
+        active = None
+        if controller.active_id:
+            try:
+                active = self.ctx.backend.get_experiment(controller.active_id)
+            except KeyError:
+                active = None
         running = f"実行中 {controller.active_id}"
         if active:
             running += f"（{self.model._progress(active)}）"
         elif not controller.active_id:
-            running = "実行中・単発待ち" if controller.executing else "停止中"
+            running = (
+                f"{controller.waiting_for_id or '実行中の学習'}の学習終了後にキューを開始"
+                if controller.waiting_for_training
+                else "実行中・単発待ち"
+                if controller.executing
+                else "停止中"
+            )
         counts = {
             status: sum(entry.status == status for entry in entries)
             for status in ("completed", "failed", "stopped")
@@ -197,21 +209,29 @@ class TrainingQueuePage(BasePage):
             "待機中の学習がありません" if not self.run_button.isEnabled() else ""
         )
         ids = [entry.experiment_id for entry in self.model.entries]
-        movable = any(
+        can_move_up = any(
             key in ids
             and self.ctx.backend.get_experiment(key).status == "queued"
-            and any(
-                0 <= ids.index(key) + delta < len(ids)
-                and self.ctx.backend.get_experiment(ids[ids.index(key) + delta]).status == "queued"
-                for delta in (-1, 1)
-            )
+            and ids.index(key) > 0
+            and ids[ids.index(key) - 1] not in selected
+            and self.ctx.backend.get_experiment(ids[ids.index(key) - 1]).status == "queued"
             for key in queued
         )
-        self.up_button.setEnabled(movable)
-        self.down_button.setEnabled(movable)
-        self.up_button.setToolTip("移動できる待機行を選択してください" if not movable else "Ctrl+↑")
+        can_move_down = any(
+            key in ids
+            and self.ctx.backend.get_experiment(key).status == "queued"
+            and ids.index(key) + 1 < len(ids)
+            and ids[ids.index(key) + 1] not in selected
+            and self.ctx.backend.get_experiment(ids[ids.index(key) + 1]).status == "queued"
+            for key in queued
+        )
+        self.up_button.setEnabled(can_move_up)
+        self.down_button.setEnabled(can_move_down)
+        self.up_button.setToolTip(
+            "移動できる待機行を選択してください" if not can_move_up else "Ctrl+↑"
+        )
         self.down_button.setToolTip(
-            "移動できる待機行を選択してください" if not movable else "Ctrl+↓"
+            "移動できる待機行を選択してください" if not can_move_down else "Ctrl+↓"
         )
         current_id = self._current_id()
         editable = bool(
@@ -227,7 +247,11 @@ class TrainingQueuePage(BasePage):
 
     def _double_clicked(self, index) -> None:
         if index.column() < self.model.fixed_column_count:
-            self.edit_row(index.row())
+            experiment_id = self.model.entries[index.row()].experiment_id
+            if self.ctx.backend.get_experiment(experiment_id).status == "queued":
+                self.edit_row(index.row())
+            else:
+                self.ctx.navigator.navigate(PageId.EXPERIMENTS, select=experiment_id)
         else:
             self.table.edit(index)
 
@@ -244,7 +268,9 @@ class TrainingQueuePage(BasePage):
 
     def duplicate_selected(self) -> None:
         self.ctx.backend.duplicate_training_queue_items(self._selected_ids())
+        self.ctx.queue_controller.sync_training_identifier()
         self.refresh()
+        self.ctx.queue_controller.changed.emit()
 
     def delete_selected(self) -> None:
         ids = self._selected_ids()
@@ -257,6 +283,7 @@ class TrainingQueuePage(BasePage):
         ):
             self.ctx.backend.delete_training_queue_items(ids)
             self.refresh()
+            self.ctx.queue_controller.changed.emit()
 
     def move_selected(self, delta: int) -> None:
         entries = self.model.entries
@@ -279,6 +306,7 @@ class TrainingQueuePage(BasePage):
     def clear_finished(self) -> None:
         self.ctx.backend.clear_finished_training_queue_items()
         self.refresh()
+        self.ctx.queue_controller.changed.emit()
 
     def edit_selected(self) -> None:
         if self._selected_ids():

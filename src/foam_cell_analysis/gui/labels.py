@@ -3,7 +3,12 @@
 from datetime import datetime
 
 _MODEL_TYPES = {"mask_rcnn": "Mask R-CNN", "cellpose": "Cellpose"}
-_CLASSIFICATIONS = {"all": "全分類"}
+_CLASSIFICATIONS = {
+    "all": "全分類",
+    "A": "分類A",
+    "B": "分類B",
+    "C": "分類C",
+}
 _QUALITY_FILTERS = {
     "all": "すべて",
     "good": "良のみ",
@@ -167,6 +172,27 @@ def classification_label(value: str) -> str:
 def quality_filter_label(value: str) -> str:
     """品質条件キーを画面表示名へ変換する。"""
     return _QUALITY_FILTERS.get(value, value)
+
+
+def training_choice_label(path: str, value: str) -> str:
+    """学習設定とキューで共用する選択肢の表示名を返す。"""
+    if path == "model.type":
+        return model_type_label(value)
+    if path == "data.classification":
+        return classification_label(value)
+    if path == "data.quality_filter":
+        return quality_filter_label(value)
+    if path == "model.pretrained_weights":
+        return {"coco": "COCO", "imagenet": "ImageNet"}.get(value, value)
+    if path == "model.pretrained_model":
+        return {
+            "cyto3": "細胞質（cyto3）",
+            "nuclei": "核（nuclei）",
+            "cpsam": "Cellpose SAM（cpsam）",
+        }.get(value, value)
+    if path == "augmentation.profile" and value.startswith("aug_v"):
+        return f"プロファイル {value.removeprefix('aug_v')}"
+    return value
 
 
 def experiment_status_label(value: str) -> str:

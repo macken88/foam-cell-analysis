@@ -172,8 +172,10 @@ def test_seeded_selected_checkpoints_follow_training_date_order(shell):
     final = next(item for item in experiment.checkpoints if item.name == "final.pt")
     fold_saves = [item for item in experiment.checkpoints if item.name.startswith("epoch_")]
     assert selected and fold_saves
+    # 選択エポックは全フォールドの交差検証が終わってから決まるので、
+    # CV の保存より後・最終学習より前に並ぶ（日付の境目には左右されない比較にする）
     latest_cv_save = max(item.saved_at for item in fold_saves)
-    assert all(item.saved_at.date() == latest_cv_save.date() for item in selected)
+    assert all(latest_cv_save <= item.saved_at for item in selected)
     assert max(item.saved_at for item in selected) < final.saved_at
 
 

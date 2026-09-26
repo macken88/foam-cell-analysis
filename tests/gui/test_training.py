@@ -114,8 +114,14 @@ def test_qtest_training_click_finishes_cv_and_final_model(shell, qapp, monkeypat
     assert candidates.table.item(candidate_row, 7).text() != "—"
 
 
-def test_training_return_allocates_new_experiment_id(shell):
+def test_training_return_allocates_new_experiment_id(shell, monkeypatch, qapp):
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
+    )
     page = shell.page(PageId.TRAINING)
+    page.fields["training.epochs"].setValue(2)
     first_id = page.start_training(confirm=False)
 
     assert first_id
@@ -129,6 +135,16 @@ def test_training_return_allocates_new_experiment_id(shell):
 
     assert second_id == next_id
     assert shell.ctx.backend.get_experiment(first_id) is first
+    assert len([job for job in shell.ctx.jobs.training_jobs]) == 1
+    queued = shell.ctx.backend.get_experiment(second_id)
+    assert queued.status == "queued"
+    shell.ctx.jobs.find(f"training:{first_id}").cancel()
+    for _ in range(500):
+        qapp.processEvents()
+        if not shell.ctx.queue_controller.executing:
+            break
+        QTest.qWait(2)
+    assert queued.status == "completed"
 
 
 def test_existing_non_draft_experiment_id_is_rejected(shell, monkeypatch):

@@ -83,8 +83,20 @@ class JobManager(QObject):
     def running_count(self) -> int:
         return len(self._jobs)
 
+    @property
+    def training_jobs(self) -> list[FakeJob]:
+        """現在実行中の学習ジョブを返す。"""
+        return [job for job in self._jobs if job.key and job.key.startswith("training:")]
+
+    @property
+    def has_training_job(self) -> bool:
+        """学習ジョブが実行中か返す。"""
+        return bool(self.training_jobs)
+
     def start(self, job: FakeJob) -> FakeJob:
         """ジョブを保持して実行する。"""
+        if job.key and job.key.startswith("training:") and self.has_training_job:
+            raise RuntimeError("学習ジョブは同時に 1 件だけ実行できます")
         self._jobs.append(job)
         job.finished.connect(lambda _ok, _message, current=job: self._remove(current))
         self.jobs_changed.emit(self.running_count)

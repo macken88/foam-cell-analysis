@@ -12,15 +12,14 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QLineEdit,
     QSpinBox,
+    QStyle,
     QStyledItemDelegate,
 )
 
 from ...context import AppContext
 from ...labels import (
-    classification_label,
     experiment_status_label,
-    model_type_label,
-    quality_filter_label,
+    training_choice_label,
 )
 from ...theme import Color, numeric_font
 
@@ -205,8 +204,10 @@ class TrainingQueueModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.CheckStateRole and isinstance(value, bool):
             return Qt.CheckState.Checked if value else Qt.CheckState.Unchecked
         if role == Qt.ItemDataRole.DisplayRole:
-            if isinstance(value, bool) or value is None:
+            if isinstance(value, bool):
                 return ""
+            if value is None:
+                return "—"
             return self._display_value(path, value)
         return None
 
@@ -220,15 +221,7 @@ class TrainingQueueModel(QAbstractTableModel):
 
     @staticmethod
     def _display_value(path: str, value: Any) -> str:
-        if path == "model.type":
-            return model_type_label(value)
-        if path == "data.classification":
-            return classification_label(value) if value != "all" else "全分類"
-        if path == "data.quality_filter":
-            return quality_filter_label(value)
-        if path == "model.pretrained_weights":
-            return {"coco": "COCO", "imagenet": "ImageNet"}.get(value, str(value))
-        return str(value)
+        return training_choice_label(path, str(value))
 
     def setData(self, index, value, role=Qt.ItemDataRole.EditRole):
         if not index.isValid() or index.column() < self.fixed_column_count:
@@ -317,6 +310,13 @@ class TrainingQueueDelegate(QStyledItemDelegate):
     def __init__(self, model: TrainingQueueModel, parent=None):
         super().__init__(parent)
         self.queue_model = model
+
+    def paint(self, painter, option, index) -> None:
+        # スタイルシート適用中は BackgroundRole が描かれないため、選択中以外は自分で塗る
+        background = index.data(Qt.ItemDataRole.BackgroundRole)
+        if background is not None and not option.state & QStyle.StateFlag.State_Selected:
+            painter.fillRect(option.rect, background)
+        super().paint(painter, option, index)
 
     def editorEvent(self, event, model, option, index):
         if index.column() >= self.queue_model.fixed_column_count:

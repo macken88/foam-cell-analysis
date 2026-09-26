@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import math
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor
@@ -27,7 +26,6 @@ from PySide6.QtWidgets import (
 
 from ....services.models import Experiment
 from ...context import AppContext
-from ...jobs import FakeJob
 from ...labels import (
     classification_label,
     config_key_label,
@@ -637,6 +635,7 @@ class ExperimentListPage(BasePage):
             config["experiment"]["id"] = self.ctx.backend.next_experiment_id()
             added.append(self.ctx.backend.add_training_queue_item(config))
         if added:
+            self.ctx.queue_controller.sync_training_identifier()
             self.ctx.status.show_message(f"{len(added)} 件を学習キューに追加しました")
             self.ctx.navigator.navigate(PageId.TRAINING_QUEUE)
 
@@ -667,6 +666,34 @@ class ExperimentListPage(BasePage):
         experiment = self._current_experiment()
         if not experiment or experiment.status not in {"failed", "stopped"}:
             return
+        controller = self.ctx.queue_controller
+        active_jobs = self.ctx.jobs.training_jobs
+        if active_jobs or controller.executing:
+            if active_jobs:
+                active_id = active_jobs[0].key.removeprefix("training:")
+                prompt = f"学習を実行中です（{active_id}）。この学習をキューの末尾に追加しますか？"
+            else:
+                prompt = "キューを実行中です。再実行をキューの末尾に追加しますか？"
+            if QMessageBox.question(self, "学習中", prompt) != QMessageBox.StandardButton.Yes:
+                return
+            config, migrated = self.ctx.backend.migrate_experiment_config(experiment.config.values)
+            if migrated:
+                QMessageBox.warning(
+                    self,
+                    "再実行できません",
+                    "この実験は旧形式の設定で記録されているため再試行できません。"
+                    "『設定を複製して新規実験』で、現在の形式に移した設定から始めてください。",
+                )
+                return
+            config = copy.deepcopy(config)
+            config["experiment"]["id"] = self.ctx.backend.next_experiment_id()
+            queued = self.ctx.backend.add_training_queue_item(config)
+            controller.sync_training_identifier()
+            if not controller.executing:
+                controller.start()
+            self.ctx.status.show_message(f"{queued.experiment_id} の再実行をキューに追加しました")
+            self.refresh()
+            return
         try:
             experiment = self.ctx.backend.retry_experiment(experiment.experiment_id)
         except ValueError as error:
@@ -677,37 +704,18 @@ class ExperimentListPage(BasePage):
 
     def _start_job(self, experiment_id: str) -> None:
         experiment = self.ctx.backend.get_experiment(experiment_id)
-        epochs = max(1, experiment.total_epochs)
-        folds = int(experiment.config.values["data"]["cv"]["n_folds"])
-        total = epochs * (folds + 1)
-        interval = max(1, int(experiment.config.values["checkpoint"]["validation_interval"]))
 
-        def record(step: int) -> None:
-            phase_step = (step - 1) % epochs + 1
-            phase_index = (step - 1) // epochs
-            progress = phase_step / epochs
-            loss = max(0.01, 1.2 * math.exp(-3 * progress) + 0.01 * (phase_step % 3))
-            if phase_index < folds:
-                map_value = (
-                    min(0.99, 0.35 + 0.6 * progress)
-                    if phase_step % interval == 0 or phase_step == epochs
-                    else None
-                )
-                self.ctx.backend.record_epoch(
-                    experiment_id, phase_step, loss, map_value, phase_index + 1
-                )
-                if phase_index == folds - 1 and phase_step == epochs:
-                    job.total_steps = step + max(1, experiment.selected_epoch or epochs)
-            else:
-                self.ctx.backend.record_epoch(experiment_id, phase_step, loss)
-
-        job = FakeJob(f"学習 {experiment_id}", total, 30, record, key=f"training:{experiment_id}")
-        job.finished.connect(
-            lambda ok, _message: self.ctx.backend.finish_training(
-                experiment_id, "completed" if ok else "stopped"
+        def finished(ok, _message):
+            status = (
+                "failed"
+                if experiment_id in getattr(self.ctx.backend, "fail_training_ids", set())
+                else "completed"
+                if ok
+                else "stopped"
             )
-        )
-        self.ctx.jobs.start(job)
+            self.ctx.backend.finish_training(experiment_id, status)
+
+        self.ctx.queue_controller.launch_training(experiment, finished)
 
     def send_selected(self) -> SendToCandidatesDialog | None:
         experiment = self._current_experiment()

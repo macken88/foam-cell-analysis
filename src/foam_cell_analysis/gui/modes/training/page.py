@@ -31,7 +31,11 @@ from PySide6.QtWidgets import (
 from ....services.backend import normalization_for_weights
 from ...context import DEFAULT_CHANNEL, AppContext
 from ...jobs import FakeJob
-from ...labels import classification_label, config_key_label, model_type_label, quality_filter_label
+from ...labels import (
+    config_key_label,
+    model_type_label,
+    training_choice_label,
+)
 from ...navigation import PageId
 from ...theme import Color, mono_font, numeric_font, set_style
 from ...widgets.form import CollapsibleSection, FormSection
@@ -130,6 +134,8 @@ class TrainingPage(BasePage):
         self._model_fields: dict[str, QWidget] = {}
         self._edit_id: str | None = None
         self._queue_edit_id: str | None = None
+        self._queue_edit_unavailable = False
+        self._pre_queue_edit: tuple[dict[str, Any], str | None] | None = None
         splitter = QSplitter(Qt.Orientation.Horizontal)
         self.content_layout.addWidget(splitter, 1)
         scroll = QScrollArea()
@@ -172,6 +178,8 @@ class TrainingPage(BasePage):
         buttons.addWidget(self.start_button)
         self.content_layout.addLayout(buttons)
         self._refresh_yaml()
+        if ctx.queue_controller is not None:
+            ctx.queue_controller.changed.connect(self._sync_queue_edit_state)
 
     def _build_form(self) -> None:
         """共通フォームとモデル別スタックを組み立てる。"""
@@ -360,15 +368,7 @@ class TrainingPage(BasePage):
                 display = (
                     model_type_label(item)
                     if path == "model.type"
-                    else classification_label(item)
-                    if path == "data.classification"
-                    else quality_filter_label(item)
-                    if path == "data.quality_filter"
-                    else "良のみ"
-                    if item == "good_only"
-                    else "良・可"
-                    if item == "good_and_acceptable"
-                    else str(item)
+                    else training_choice_label(path, str(item))
                 )
                 combo.addItem(display, item)
             wanted = "all" if path == "data.classification" and value == "all" else value
@@ -621,13 +621,7 @@ class TrainingPage(BasePage):
             widget.blockSignals(True)
             widget.clear()
             for item in items:
-                display = (
-                    classification_label(item)
-                    if path == "data.classification"
-                    else quality_filter_label(item)
-                    if path == "data.quality_filter"
-                    else str(item)
-                )
+                display = training_choice_label(path, str(item))
                 widget.addItem(display, item)
             index = widget.findData(selected)
             if index < 0:
@@ -662,10 +656,19 @@ class TrainingPage(BasePage):
 
     def _save_button_clicked(self) -> None:
         if self._queue_edit_id:
+            self._sync_queue_edit_state()
+            if self._queue_edit_unavailable:
+                return
             self.config = self._collect_config()
-            self.ctx.backend.update_training_queue_item(self._queue_edit_id, self.config)
             expid = self._queue_edit_id
+            try:
+                self.ctx.backend.update_training_queue_item(expid, self.config)
+            except (KeyError, ValueError) as error:
+                QMessageBox.warning(self, "キューに保存できません", str(error))
+                self._sync_queue_edit_state()
+                return
             self._queue_edit_id = None
+            self._queue_edit_unavailable = False
             self.ctx.status.show_message(f"キューの {expid} を保存しました")
             self.ctx.navigator.navigate(PageId.TRAINING_QUEUE, select=expid)
         else:
@@ -673,8 +676,63 @@ class TrainingPage(BasePage):
 
     def _cancel_queue_edit(self) -> None:
         if self._queue_edit_id:
+            if self._queue_edit_unavailable:
+                self._restore_before_queue_edit()
+                self.ctx.navigator.navigate(PageId.TRAINING)
+                return
             self._queue_edit_id = None
+            self._queue_edit_unavailable = False
             self.ctx.navigator.navigate(PageId.TRAINING_QUEUE)
+
+    def _sync_queue_edit_state(self, *_args) -> None:
+        """編集中のキュー行が待機中でなくなったら保存を無効にする。"""
+        if not self._queue_edit_id:
+            return
+        try:
+            experiment = self.ctx.backend.get_experiment(self._queue_edit_id)
+        except (KeyError, ValueError):
+            experiment = None
+        if experiment is not None and experiment.status == "queued":
+            return
+        self._queue_edit_unavailable = True
+        if experiment is None:
+            message = f"{self._queue_edit_id} は削除されたため、編集を保存できません"
+        else:
+            message = f"{self._queue_edit_id} は実行を開始したため、編集を保存できません"
+        self.queue_edit_banner.setText(message)
+        self.save_button.setEnabled(False)
+        self.cancel_queue_edit_button.setText("閉じる")
+
+    def _restore_before_queue_edit(self) -> None:
+        """詳細編集前の学習設定を表示へ戻す。"""
+        self._queue_edit_id = None
+        self._queue_edit_unavailable = False
+        self.save_button.setEnabled(True)
+        self.save_button.setText("下書き保存")
+        self.cancel_queue_edit_button.setText("キャンセル")
+        if self._pre_queue_edit is not None:
+            self.config, self._edit_id = copy.deepcopy(self._pre_queue_edit)
+            self._pre_queue_edit = None
+            self._configs_by_model.clear()
+            self._build_form()
+            self.experiment_id.setText(self.config["experiment"].get("id") or "")
+            self._refresh_yaml()
+        self.queue_edit_banner.hide()
+        self.validate_button.setVisible(True)
+        self.queue_button.setVisible(True)
+        self.start_button.setVisible(True)
+        self.cancel_queue_edit_button.hide()
+        self.refresh_next_identifier()
+
+    def refresh_next_identifier(self) -> None:
+        """既存実験やキュー追加と衝突しない次の識別子を表示する。"""
+        if self._edit_id or self._queue_edit_id:
+            return
+        next_id = self.ctx.backend.next_experiment_id()
+        if self.experiment_id.text() != next_id:
+            self.experiment_id.setText(next_id)
+            self.config.setdefault("experiment", {})["id"] = next_id
+            self._refresh_yaml()
 
     def _has_non_draft_id(self, experiment_id: str) -> bool:
         """指定 ID が下書き以外の既存実験か調べる。"""
@@ -692,6 +750,20 @@ class TrainingPage(BasePage):
             QMessageBox.warning(self, "設定エラー", "\n".join(item["message"] for item in errors))
             return None
         controller = self.ctx.queue_controller
+        training_jobs = self.ctx.jobs.training_jobs
+        if training_jobs:
+            active_id = training_jobs[0].key.removeprefix("training:")
+            answer = QMessageBox.question(
+                self,
+                "学習中",
+                f"学習を実行中です（{active_id}）。この学習をキューの末尾に追加しますか？",
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                queued_id = self.enqueue_config()
+                if queued_id and controller is not None and not controller.executing:
+                    controller.start()
+                return queued_id
+            return None
         if controller is not None and controller.executing:
             answer = QMessageBox.question(
                 self, "学習キュー", "キューを実行中です。この設定をキューの末尾に追加しますか？"
@@ -711,13 +783,28 @@ class TrainingPage(BasePage):
             return None
         experiment = self.ctx.backend.start_training(self.config, self._edit_id)
         experiment_id = experiment.experiment_id
-        job = self.create_training_job(experiment)
-        job.finished.connect(
-            lambda ok, _message: self.ctx.backend.finish_training(
-                experiment_id, "completed" if ok else "stopped"
+
+        def finished(ok, _message):
+            status = (
+                "failed"
+                if experiment_id in getattr(self.ctx.backend, "fail_training_ids", set())
+                else "completed"
+                if ok
+                else "stopped"
             )
-        )
-        self.ctx.jobs.start(job)
+            self.ctx.backend.finish_training(experiment_id, status)
+
+        try:
+            if controller is not None:
+                controller.launch_training(experiment, finished)
+            else:
+                job = self.create_training_job(experiment)
+                job.finished.connect(finished)
+                self.ctx.jobs.start(job)
+        except RuntimeError as error:
+            self.ctx.backend.finish_training(experiment_id, "failed")
+            QMessageBox.warning(self, "学習を開始できません", str(error))
+            return None
         self.ctx.status.show_message(f"{experiment_id} の学習を開始しました")
         self._edit_id = None
         self.config["experiment"]["id"] = self.ctx.backend.next_experiment_id()
@@ -776,13 +863,11 @@ class TrainingPage(BasePage):
             QMessageBox.warning(self, "設定エラー", "\n".join(issue["message"] for issue in errors))
             return None
         item = self.ctx.backend.add_training_queue_item(config)
+        self.refresh_next_identifier()
         waiting = sum(entry.status == "queued" for entry in self.ctx.backend.list_training_queue())
         self.ctx.status.show_message(
             f"{item.experiment_id} をキューに追加しました（待機 {waiting} 件）"
         )
-        self.config["experiment"]["id"] = self.ctx.backend.next_experiment_id()
-        self.experiment_id.setText(self.config["experiment"]["id"])
-        self._refresh_yaml()
         return item.experiment_id
 
     def on_enter(self, params: dict[str, Any]) -> None:
@@ -793,8 +878,15 @@ class TrainingPage(BasePage):
         copy_from = params.get("copy_from")
         edit = params.get("edit")
         queue_edit = params.get("edit_queue")
+        if queue_edit:
+            self._pre_queue_edit = (copy.deepcopy(self._collect_config()), self._edit_id)
+            self._queue_edit_unavailable = False
+        elif self._queue_edit_id:
+            self._restore_before_queue_edit()
         self._queue_edit_id = queue_edit
+        self.save_button.setEnabled(True)
         self.save_button.setText("キューに保存" if queue_edit else "下書き保存")
+        self.cancel_queue_edit_button.setText("キャンセル")
         self.validate_button.setVisible(not bool(queue_edit))
         self.cancel_queue_edit_button.setVisible(bool(queue_edit))
         self.queue_button.setVisible(not bool(queue_edit))
@@ -816,6 +908,7 @@ class TrainingPage(BasePage):
             banner.setText(f"キューの {queue_edit} を編集中")
             banner.show()
             self._refresh_yaml()
+            self._sync_queue_edit_state()
             return
         if hasattr(self, "queue_edit_banner"):
             self.queue_edit_banner.hide()
