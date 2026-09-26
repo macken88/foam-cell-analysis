@@ -289,7 +289,9 @@ class ReleasedModelsPage(BasePage):
             for classification, (score, _count) in evaluation.per_class.items()
         )
         summary = {
-            "実験・途中保存モデル": f"{model.experiment_id} ・ {model.checkpoint}",
+            "実験・途中保存モデル": (
+                f"{model.experiment_id} ・ 試行 {model.source_attempt_number}/{model.checkpoint}"
+            ),
             "評価 mAP": f"全体 {format_score(evaluation.overall_map)}"
             + (f"\n{per_class}" if per_class else ""),
             "OOF mAP": format_score(model.oof_evaluation.overall_map)
@@ -318,14 +320,18 @@ class ReleasedModelsPage(BasePage):
             ("モデルID", model.model_id),
             ("候補ID", candidate.candidate_id),
             ("実験識別子", model.experiment_id),
-            ("途中保存モデル", model.checkpoint),
+            ("途中保存モデル", f"試行 {model.source_attempt_number}/{model.checkpoint}"),
             ("推論設定ID", candidate.inference_config_id),
             ("検証用データセット", model.validation_dataset),
             (
                 "OOF mAP",
                 format_score(model.oof_evaluation.overall_map) if model.oof_evaluation else "—",
             ),
-            ("OOF 実験・選択エポック", f"{candidate.oof_experiment_id} ・ {candidate.oof_epoch}"),
+            (
+                "OOF 実験・試行・選択エポック",
+                f"{candidate.oof_experiment_id} ・ 試行 {model.source_attempt_number} ・ "
+                f"{candidate.oof_epoch}",
+            ),
             ("リリース日時", format_datetime(model.released_at)),
             ("コメント", model.comment or "なし"),
         ]

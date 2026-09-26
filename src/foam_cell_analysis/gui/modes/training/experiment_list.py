@@ -144,8 +144,12 @@ class ExperimentListPage(BasePage):
             ["フォールド（1〜K / 最終）", "ファイル名", "エポック", "mAP", "保存日時"]
         )
         setup_table(self.checkpoint_table, stretch_column=0)
-        self.run_table = QTableWidget(0, 5)
-        self.run_table.setHorizontalHeaderLabels(["試行", "開始", "終了", "結果", "実行環境"])
+        self.run_table = QTableWidget(0, 7)
+        self.run_table.setHorizontalHeaderLabels(
+            ["試行", "開始", "終了", "結果", "OOF mAP", "選択エポック", "実行環境"]
+        )
+        self.run_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.run_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         setup_table(self.run_table, stretch_column=4)
         self.used_data = QTextEdit()
         self.used_data.setReadOnly(True)
@@ -505,11 +509,13 @@ class ExperimentListPage(BasePage):
                 format_datetime(run.started_at),
                 format_datetime(run.finished_at) if run.finished_at else "実行中",
                 experiment_status_label(run.result),
+                format_score(run.oof_evaluation.overall_map) if run.oof_evaluation else "—",
+                str(run.selected_epoch) if run.selected_epoch is not None else "—",
                 self._format_environment(run.environment),
             ]
             for col, value in enumerate(values):
                 item = QTableWidgetItem(value)
-                if col in (0, 1, 2):
+                if col in (0, 1, 2, 4, 5):
                     item.setFont(numeric_font())
                     item.setTextAlignment(
                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
@@ -676,22 +682,18 @@ class ExperimentListPage(BasePage):
                 prompt = "キューを実行中です。再実行をキューの末尾に追加しますか？"
             if QMessageBox.question(self, "学習中", prompt) != QMessageBox.StandardButton.Yes:
                 return
-            config, migrated = self.ctx.backend.migrate_experiment_config(experiment.config.values)
-            if migrated:
-                QMessageBox.warning(
-                    self,
-                    "再実行できません",
-                    "この実験は旧形式の設定で記録されているため再試行できません。"
-                    "『設定を複製して新規実験』で、現在の形式に移した設定から始めてください。",
-                )
+            try:
+                queued = self.ctx.backend.add_training_retry_reservation(experiment.experiment_id)
+            except ValueError as error:
+                QMessageBox.warning(self, "再実行できません", str(error))
                 return
-            config = copy.deepcopy(config)
-            config["experiment"]["id"] = self.ctx.backend.next_experiment_id()
-            queued = self.ctx.backend.add_training_queue_item(config)
             controller.sync_training_identifier()
             if not controller.executing:
                 controller.start()
-            self.ctx.status.show_message(f"{queued.experiment_id} の再実行をキューに追加しました")
+            self.ctx.status.show_message(
+                f"{queued.experiment_id}（再試行 {queued.queue_retry_attempt}）を"
+                "キューに予約しました"
+            )
             self.refresh()
             return
         try:

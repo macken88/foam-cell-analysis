@@ -304,7 +304,10 @@ class EvaluationDialog(QDialog):
         layout.addWidget(
             QLabel(
                 f"OOF 実験: {candidate.oof_experiment_id or candidate.experiment_id} ・ "
-                f"選択エポック: {candidate.oof_epoch if candidate.oof_epoch is not None else '—'}"
+                f"試行 {candidate.source_attempt_number} ・ "
+                f"選択エポック: "
+                f"{candidate.oof_epoch if candidate.oof_epoch is not None else '—'} ・ "
+                f"モデル: {candidate.checkpoint_reference or candidate.checkpoint}"
             )
         )
         layout.addWidget(QLabel("外部解析結果は手入力です。"))

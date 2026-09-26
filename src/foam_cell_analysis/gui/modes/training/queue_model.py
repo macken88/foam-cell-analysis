@@ -116,7 +116,11 @@ class TrainingQueueModel(QAbstractTableModel):
 
     def row_for_id(self, experiment_id: str) -> int:
         return next(
-            (row for row, entry in enumerate(self.entries) if entry.experiment_id == experiment_id),
+            (
+                row
+                for row, entry in enumerate(self.entries)
+                if entry.experiment_id == experiment_id or entry.queue_id == experiment_id
+            ),
             -1,
         )
 
@@ -143,7 +147,11 @@ class TrainingQueueModel(QAbstractTableModel):
             return Qt.ItemFlag.NoItemFlags
         entry = self.entries[index.row()]
         flags = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
-        if index.column() >= self.fixed_column_count and entry.status == "queued":
+        if (
+            index.column() >= self.fixed_column_count
+            and entry.status == "queued"
+            and not entry.queue_is_retry
+        ):
             path = FIELDS[index.column() - self.fixed_column_count][0]
             if _get_path(entry.config.values, path) is not None:
                 flags |= Qt.ItemFlag.ItemIsEditable
@@ -155,7 +163,8 @@ class TrainingQueueModel(QAbstractTableModel):
         if not index.isValid() or not 0 <= index.row() < len(self.entries):
             return None
         entry = self.entries[index.row()]
-        errors, warnings = self._issues.get(entry.experiment_id, ([], []))
+        entry_id = entry.queue_id or entry.experiment_id
+        errors, warnings = self._issues.get(entry_id, ([], []))
         if role == Qt.ItemDataRole.ToolTipRole:
             return "\n".join(errors or warnings) or None
         if role == Qt.ItemDataRole.BackgroundRole:
@@ -198,7 +207,13 @@ class TrainingQueueModel(QAbstractTableModel):
                 state += f"（{self._progress(entry)}）"
             return state
         if index.column() == 2:
-            return entry.experiment_id if role == Qt.ItemDataRole.DisplayRole else None
+            if role == Qt.ItemDataRole.DisplayRole:
+                return (
+                    f"{entry.experiment_id}（再試行 {entry.queue_retry_attempt}）"
+                    if entry.queue_is_retry
+                    else entry.experiment_id
+                )
+            return None
         path = FIELDS[index.column() - self.fixed_column_count][0]
         value = _get_path(entry.config.values, path)
         if role == Qt.ItemDataRole.CheckStateRole and isinstance(value, bool):
@@ -227,7 +242,7 @@ class TrainingQueueModel(QAbstractTableModel):
         if not index.isValid() or index.column() < self.fixed_column_count:
             return False
         entry = self.entries[index.row()]
-        if entry.status != "queued":
+        if entry.status != "queued" or entry.queue_is_retry:
             return False
         path = FIELDS[index.column() - self.fixed_column_count][0]
         config = deepcopy(entry.config.values)
@@ -245,7 +260,9 @@ class TrainingQueueModel(QAbstractTableModel):
                 config["model"] = new_model
             else:
                 _set_path(config, path, value)
-            self.ctx.backend.update_training_queue_item(entry.experiment_id, config)
+            self.ctx.backend.update_training_queue_item(
+                entry.queue_id or entry.experiment_id, config
+            )
         except (KeyError, TypeError, ValueError, OverflowError) as error:
             self.edit_failed.emit(str(error))
             return False
@@ -259,8 +276,8 @@ class TrainingQueueModel(QAbstractTableModel):
     def refresh(self) -> bool:
         """行構成が変わったときだけ reset し、進捗は状態セルだけ更新する。"""
         entries = self.ctx.backend.list_training_queue()
-        ids = [entry.experiment_id for entry in entries]
-        old_ids = [entry.experiment_id for entry in self.entries]
+        ids = [entry.queue_id or entry.experiment_id for entry in entries]
+        old_ids = [entry.queue_id or entry.experiment_id for entry in self.entries]
         old_issues = self._issues
         changed_structure = ids != old_ids
         if changed_structure:
@@ -275,7 +292,8 @@ class TrainingQueueModel(QAbstractTableModel):
                 validation = self.ctx.backend.validate_experiment_config(entry.config.values)
             except Exception as error:
                 validation = [{"level": "error", "message": str(error)}]
-            issues[entry.experiment_id] = (
+            entry_id = entry.queue_id or entry.experiment_id
+            issues[entry_id] = (
                 [item["message"] for item in validation if item["level"] == "error"],
                 [item["message"] for item in validation if item["level"] == "warning"],
             )
@@ -291,7 +309,8 @@ class TrainingQueueModel(QAbstractTableModel):
                 ],
             )
             for row, entry in enumerate(entries):
-                if old_issues.get(entry.experiment_id) != issues[entry.experiment_id]:
+                entry_id = entry.queue_id or entry.experiment_id
+                if old_issues.get(entry_id) != issues[entry_id]:
                     self.dataChanged.emit(
                         self.index(row, 0),
                         self.index(row, self.columnCount() - 1),

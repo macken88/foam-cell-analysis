@@ -13,6 +13,7 @@ class TrainingQueueController(QObject):
         self.executing = False
         self.stop_requested = False
         self.active_id = None
+        self.active_queue_id = None
         self.waiting_for_training = False
         self.waiting_for_id = None
         self._job = None
@@ -130,15 +131,26 @@ class TrainingQueueController(QObject):
             self.changed.emit()
             return
         self.active_id = item.experiment_id
+        self.active_queue_id = item.queue_id or item.experiment_id
         try:
-            experiment = self.ctx.backend.start_training(item.config.values, item.experiment_id)
+            experiment = (
+                item
+                if item.queue_is_retry
+                else self.ctx.backend.start_training(item.config.values, item.experiment_id)
+            )
         except Exception as error:
             self.ctx.backend.finish_training(item.experiment_id, "failed")
+            self.ctx.backend.finish_training_queue_item(self.active_queue_id, "failed")
             self.ctx.status.show_message(f"{item.experiment_id} の開始に失敗しました: {error}")
             self._next()
             return
 
-        def finished(ok, _message, expid=item.experiment_id):
+        def finished(
+            ok,
+            _message,
+            expid=item.experiment_id,
+            queue_id=self.active_queue_id,
+        ):
             status = (
                 "failed"
                 if expid in getattr(self.ctx.backend, "fail_training_ids", set())
@@ -147,7 +159,9 @@ class TrainingQueueController(QObject):
                 else "stopped"
             )
             self.ctx.backend.finish_training(expid, status)
+            self.ctx.backend.finish_training_queue_item(queue_id, status)
             self.active_id = None
+            self.active_queue_id = None
             self._job = None
             self.changed.emit()
             QTimer.singleShot(0, self._next)
@@ -156,7 +170,9 @@ class TrainingQueueController(QObject):
             self._job = self.launch_training(experiment, finished)
         except Exception as error:
             self.ctx.backend.finish_training(item.experiment_id, "failed")
+            self.ctx.backend.finish_training_queue_item(self.active_queue_id, "failed")
             self.active_id = None
+            self.active_queue_id = None
             self.ctx.status.show_message(
                 f"{item.experiment_id} の学習ジョブ開始に失敗しました: {error}"
             )

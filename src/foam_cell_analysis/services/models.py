@@ -182,6 +182,21 @@ class RunAttempt:
     finished_at: datetime | None = None
     result: str = "実行中"
     environment: dict[str, Any] = field(default_factory=dict)
+    history: list[EpochMetrics] = field(default_factory=list)
+    fold_histories: dict[int, list[EpochMetrics]] = field(default_factory=dict)
+    oof_history: list[EpochMetrics] = field(default_factory=list)
+    final_history: list[EpochMetrics] = field(default_factory=list)
+    checkpoints: list[Checkpoint] = field(default_factory=list)
+    used_item_ids: list[str] = field(default_factory=list)
+    fold_assignments: dict[str, int] = field(default_factory=dict)
+    selected_epoch: int | None = None
+    oof_evaluation: Evaluation | None = None
+    oof_predictions: dict[str, float] = field(default_factory=dict)
+    total_epochs: int = 0
+
+    @property
+    def checkpoint_reference(self) -> str:
+        return f"試行 {self.attempt}/final.pt"
 
 
 @dataclass
@@ -222,6 +237,9 @@ class Experiment:
     phase: str = "cross_validation"
     oof_evaluation: Evaluation | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now().astimezone())
+    queue_id: str | None = field(default=None, repr=False, compare=False)
+    queue_retry_attempt: int | None = field(default=None, repr=False, compare=False)
+    queue_is_retry: bool = field(default=False, repr=False, compare=False)
 
 
 @dataclass
@@ -267,6 +285,8 @@ class Candidate:
     external_software: str = ""
     external_date: str = ""
     comment: str = ""
+    source_attempt_number: int = 1
+    checkpoint_reference: str = ""
 
 
 @dataclass
@@ -284,6 +304,7 @@ class ReleasedModel:
     released_at: datetime
     oof_evaluation: Evaluation | None = None
     comment: str = ""
+    source_attempt_number: int = 1
 
 
 @dataclass

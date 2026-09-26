@@ -196,6 +196,9 @@ class Backend(Protocol):
     def add_training_queue_item(self, config: dict[str, Any]) -> Experiment:
         """設定を queued 状態の実験として保存し、末尾へ追加する。"""
 
+    def add_training_retry_reservation(self, experiment_id: str) -> Experiment:
+        """既存実験の次の試行を、記録を変えずにキューへ予約する。"""
+
     def list_training_queue(self) -> list[Experiment]:
         """順番付きの学習キューを返す。"""
 
@@ -216,6 +219,9 @@ class Backend(Protocol):
 
     def take_next_training_queue_item(self) -> Experiment | None:
         """設定検証を通った待機行の先頭を実行対象にする。"""
+
+    def finish_training_queue_item(self, queue_id: str | None, status: str) -> None:
+        """試行予約のキュー表示状態を更新する。"""
 
     def save_experiment_draft(
         self, config: dict[str, Any], experiment_id: str | None = None

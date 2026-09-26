@@ -56,6 +56,7 @@ class MockBackend:
         self.versions: list[DatasetVersion] = []
         self.experiments: dict[str, Experiment] = {}
         self.training_queue_ids: list[str] = []
+        self.training_retry_reservations: dict[str, dict[str, Any]] = {}
         self.fail_training_ids: set[str] = set()
         self.profiles: dict[str, AugmentationProfile] = {}
         self.inference_configs: dict[str, InferenceConfig] = {}
@@ -185,6 +186,7 @@ class MockBackend:
                 2, now - timedelta(days=2), now - timedelta(days=2), "中断", {"GPU": "Mock GPU"}
             ),
         ]
+        self._capture_current_attempt(exp44)
         self._seed_experiment("exp_0045", "mask_rcnn", "draft", 0)
         self._seed_inference_configs()
         self._seed_candidates_and_releases(exp42, exp43)
@@ -325,6 +327,7 @@ class MockBackend:
             ]
             exp.oof_evaluation = self._oof_evaluation(exp, best_map)
             exp.oof_predictions = {item_id: float(best_map) for item_id in exp.used_item_ids}
+        self._capture_current_attempt(exp)
         self.experiments[expid] = exp
         return exp
 
@@ -421,6 +424,12 @@ class MockBackend:
             oof_experiment_id=exp42.experiment_id,
             oof_epoch=exp42.selected_epoch,
         )
+        for candidate in self.candidates.values():
+            source = self.experiments[candidate.experiment_id]
+            candidate.source_attempt_number = len(source.runs)
+            candidate.checkpoint_reference = (
+                f"試行 {candidate.source_attempt_number}/{candidate.checkpoint}"
+            )
         now = self._now()
         for model_id, candidate_id in (("model_007", "RC-001"), ("model_012", "RC-002")):
             candidate = self.candidates[candidate_id]
@@ -438,6 +447,7 @@ class MockBackend:
                 evaluation_result=evaluation,
                 oof_evaluation=copy.deepcopy(candidate.oof_evaluation),
                 released_at=now - timedelta(days=30 if model_id == "model_007" else 8),
+                source_attempt_number=candidate.source_attempt_number,
             )
         self.routing.update({"分類A": "model_007", "分類B": "model_012", "分類C": "model_007"})
 
@@ -1341,10 +1351,49 @@ class MockBackend:
             self.training_queue_ids.append(item.experiment_id)
         return item
 
+    def add_training_retry_reservation(self, experiment_id: str) -> Experiment:
+        """既存実験の次の試行を、記録を変えずにキューへ予約する。"""
+        experiment = self.get_experiment(experiment_id)
+        migrated_config, migrated = self.migrate_experiment_config(experiment.config.values)
+        if migrated:
+            raise ValueError(
+                "この実験は旧形式の設定で記録されているため再試行できません。"
+                "『設定を複製して新規実験』で、現在の形式に移した設定から始めてください。"
+            )
+        pending = sum(
+            reservation["experiment_id"] == experiment_id and reservation["status"] == "queued"
+            for reservation in self.training_retry_reservations.values()
+        )
+        attempt = len(experiment.runs) + pending + 1
+        queue_id = f"retry:{experiment_id}:{attempt}"
+        self.training_retry_reservations[queue_id] = {
+            "experiment_id": experiment_id,
+            "attempt": attempt,
+            "status": "queued",
+        }
+        self.training_queue_ids.append(queue_id)
+        return self.list_training_queue()[-1]
+
     def list_training_queue(self) -> list[Experiment]:
-        return [self.experiments[key] for key in self.training_queue_ids if key in self.experiments]
+        entries = []
+        for key in self.training_queue_ids:
+            if key in self.training_retry_reservations:
+                reservation = self.training_retry_reservations[key]
+                entry = copy.deepcopy(self.experiments[reservation["experiment_id"]])
+                entry.status = reservation["status"]
+                entry.queue_id = key
+                entry.queue_is_retry = True
+                entry.queue_retry_attempt = reservation["attempt"]
+                entries.append(entry)
+            elif key in self.experiments:
+                entry = self.experiments[key]
+                entry.queue_id = key
+                entries.append(entry)
+        return entries
 
     def update_training_queue_item(self, experiment_id: str, config: dict[str, Any]) -> Experiment:
+        if experiment_id in self.training_retry_reservations:
+            raise ValueError("再試行の予約は編集できません")
         if experiment_id not in self.training_queue_ids:
             raise ValueError("キュー項目がありません")
         if self.experiments[experiment_id].status != "queued":
@@ -1362,7 +1411,8 @@ class MockBackend:
     def duplicate_training_queue_items(self, experiment_ids: list[str]) -> list[Experiment]:
         result = []
         for key in experiment_ids:
-            source = self.experiments[key]
+            source_id = self.training_retry_reservations.get(key, {}).get("experiment_id", key)
+            source = self.experiments[source_id]
             config = copy.deepcopy(source.config.values)
             config["experiment"]["id"] = self.next_experiment_id()
             duplicate = self._save_experiment(config, None, "queued")
@@ -1377,6 +1427,12 @@ class MockBackend:
 
     def delete_training_queue_items(self, experiment_ids: list[str]) -> None:
         for key in experiment_ids:
+            if key in self.training_retry_reservations:
+                reservation = self.training_retry_reservations[key]
+                if reservation["status"] == "queued":
+                    self.training_queue_ids.remove(key)
+                    del self.training_retry_reservations[key]
+                continue
             item = self.experiments.get(key)
             if item is not None and item.status == "queued":
                 self.training_queue_ids.remove(key)
@@ -1384,12 +1440,30 @@ class MockBackend:
 
     def clear_finished_training_queue_items(self) -> None:
         finished = {"completed", "failed", "stopped"}
-        self.training_queue_ids = [
-            key for key in self.training_queue_ids if self.experiments[key].status not in finished
-        ]
+        retained = []
+        for key in self.training_queue_ids:
+            if key in self.training_retry_reservations:
+                if self.training_retry_reservations[key]["status"] in finished:
+                    del self.training_retry_reservations[key]
+                else:
+                    retained.append(key)
+            elif key in self.experiments and self.experiments[key].status not in finished:
+                retained.append(key)
+        self.training_queue_ids = retained
 
     def take_next_training_queue_item(self) -> Experiment | None:
         for key in self.training_queue_ids:
+            if key in self.training_retry_reservations:
+                reservation = self.training_retry_reservations[key]
+                if reservation["status"] != "queued":
+                    continue
+                experiment = self.retry_experiment(reservation["experiment_id"])
+                reservation["status"] = "running"
+                queue_item = copy.deepcopy(experiment)
+                queue_item.queue_id = key
+                queue_item.queue_is_retry = True
+                queue_item.queue_retry_attempt = reservation["attempt"]
+                return queue_item
             experiment = self.experiments[key]
             if experiment.status == "queued" and not any(
                 issue["level"] == "error"
@@ -1398,6 +1472,12 @@ class MockBackend:
                 experiment.status = "running"
                 return experiment
         return None
+
+    def finish_training_queue_item(self, queue_id: str | None, status: str) -> None:
+        """予約行の表示状態を実行結果へ進める。"""
+        reservation = self.training_retry_reservations.get(queue_id or "")
+        if reservation is not None:
+            reservation["status"] = status
 
     def _save_experiment(
         self, config: dict[str, Any], experiment_id: str | None, status: str
@@ -1427,7 +1507,7 @@ class MockBackend:
                 config=ExperimentConfig(saved_config),
                 status=status,
                 total_epochs=int(saved_config["training"]["epochs"]),
-                used_item_ids=list(data["used_item_ids"]),
+                used_item_ids=list(used_item_ids),
                 fold_assignments=fold_assignments,
                 created_at=now,
             )
@@ -1439,7 +1519,7 @@ class MockBackend:
             experiment.config = ExperimentConfig(saved_config)
             experiment.status = status
             experiment.total_epochs = int(saved_config["training"]["epochs"])
-            experiment.used_item_ids = list(data["used_item_ids"])
+            experiment.used_item_ids = list(used_item_ids)
             experiment.fold_assignments = fold_assignments
         self.experiments[expid] = experiment
         self._sync_profile_usage()
@@ -1458,6 +1538,33 @@ class MockBackend:
         experiment = self._save_experiment(config, experiment_id, "running")
         experiment.runs.append(RunAttempt(len(experiment.runs) + 1, self._now()))
         return experiment
+
+    def _capture_current_attempt(self, experiment: Experiment, *, detach: bool = True) -> None:
+        """実験の現在結果を最新の実行試行へスナップショットする。"""
+        if not experiment.runs:
+            return
+        run = experiment.runs[-1]
+        snapshot = copy.deepcopy if detach else lambda value: value
+        run.history = snapshot(experiment.history)
+        run.fold_histories = snapshot(experiment.fold_histories)
+        run.oof_history = snapshot(experiment.oof_history)
+        run.final_history = snapshot(experiment.final_history)
+        run.checkpoints = snapshot(experiment.checkpoints)
+        run.used_item_ids = list(experiment.used_item_ids)
+        run.fold_assignments = dict(experiment.fold_assignments)
+        run.selected_epoch = experiment.selected_epoch
+        run.oof_evaluation = snapshot(experiment.oof_evaluation)
+        run.oof_predictions = dict(experiment.oof_predictions)
+        run.total_epochs = experiment.total_epochs
+        if run.selected_epoch is None and run.oof_history:
+            selected = max(run.oof_history, key=lambda point: point.map or 0.0)
+            run.selected_epoch = selected.epoch
+        if run.oof_evaluation is None and run.selected_epoch is not None:
+            selected = next(
+                (point for point in run.oof_history if point.epoch == run.selected_epoch), None
+            )
+            if selected is not None and selected.map is not None:
+                run.oof_evaluation = self._oof_evaluation(experiment, selected.map)
 
     def _assign_folds(self, config: dict[str, Any], item_ids: list[str]) -> dict[str, int]:
         """分類別件数を均しながら、同じ取込元フォルダを同じ fold に置く。"""
@@ -1556,6 +1663,7 @@ class MockBackend:
         if fold is None:
             experiment.phase = "final_training"
             experiment.final_history.append(EpochMetrics(epoch, loss, None))
+            self._capture_current_attempt(experiment, detach=False)
             return experiment
         experiment.phase = "cross_validation"
         points = experiment.fold_histories.setdefault(fold, [])
@@ -1596,6 +1704,7 @@ class MockBackend:
                 experiment.checkpoints.append(
                     Checkpoint(name, epoch, map_value, self._now(), fold=fold)
                 )
+        self._capture_current_attempt(experiment, detach=False)
         return experiment
 
     def finish_training(self, experiment_id: str, status: str = "completed") -> Experiment:
@@ -1647,6 +1756,7 @@ class MockBackend:
         if experiment.runs:
             experiment.runs[-1].finished_at = self._now()
             experiment.runs[-1].result = status
+            self._capture_current_attempt(experiment)
         return experiment
 
     def _oof_evaluation(self, experiment: Experiment, score: float) -> Evaluation:
@@ -1678,7 +1788,11 @@ class MockBackend:
                 "この実験は旧形式の設定で記録されているため再試行できません。"
                 "『設定を複製して新規実験』で、現在の形式に移した設定から始めてください。"
             )
-        experiment.config = ExperimentConfig(migrated_config)
+        self._capture_current_attempt(experiment)
+        used_item_ids = [item.item_id for item in self._filtered_training_items(migrated_config)]
+        fold_assignments = self._assign_folds(migrated_config, used_item_ids)
+        experiment.used_item_ids = used_item_ids
+        experiment.fold_assignments = fold_assignments
         experiment.total_epochs = int(migrated_config["training"]["epochs"])
         experiment.status = "running"
         experiment.phase = "cross_validation"
@@ -1758,9 +1872,10 @@ class MockBackend:
             if (
                 candidate.experiment_id == experiment_id
                 and candidate.checkpoint == checkpoint
+                and candidate.source_attempt_number == len(experiment.runs)
                 and candidate.inference_config_id == inference_config_id
             ):
-                raise ValueError(f"同じ設定は {candidate.candidate_id} として登録済みです")
+                raise ValueError(f"同じ試行の設定は {candidate.candidate_id} として登録済みです")
         number = max((int(key[-3:]) for key in self.candidates), default=0) + 1
         oof = self._candidate_oof_evaluation(experiment, inference_config_id)
         candidate = Candidate(
@@ -1772,6 +1887,8 @@ class MockBackend:
             oof_experiment_id=experiment_id,
             oof_epoch=experiment.selected_epoch,
             comment=comment,
+            source_attempt_number=len(experiment.runs),
+            checkpoint_reference=f"試行 {len(experiment.runs)}/final.pt",
         )
         self.candidates[candidate.candidate_id] = candidate
         return candidate
@@ -1869,6 +1986,7 @@ class MockBackend:
             oof_evaluation=copy.deepcopy(candidate.oof_evaluation),
             released_at=self._now(),
             comment=comment or candidate.comment,
+            source_attempt_number=candidate.source_attempt_number,
         )
         self.released[model.model_id] = model
         candidate.status = "released"

@@ -95,7 +95,9 @@ def test_retry_during_queue_execution_is_reserved_without_rewriting_history(
     queued = backend.list_training_queue()
     assert len(training_jobs(shell)) == 1
     assert len(queued) == 2
-    assert queued[-1].experiment_id != retry.experiment_id
+    assert queued[-1].experiment_id == retry.experiment_id
+    assert queued[-1].queue_is_retry
+    assert queued[-1].queue_retry_attempt == len(retry.runs) + 1
     assert queued[-1].status == "queued"
     assert retry.status == "stopped"
     assert retry.config.to_yaml() == original_config
