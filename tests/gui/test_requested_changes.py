@@ -361,3 +361,28 @@ def test_finalize_reason_button_filters_error_rows(qapp):
     assert not dialog.error_summary_button.isHidden()
     dialog.close()
     page.close()
+
+
+def test_display_toggle_ignores_arrow_keys_in_continuous_triage(qapp):
+    """連続振り分けで ← → は画像移動だけに効き、表示切り替えは変わらない。"""
+    page = DataPreparationPage(make_context())
+    dialog = ContinuousTriageDialog(
+        page,
+        page.model.visible_items(),
+        lambda *_args, **_kwargs: None,
+        page.ctx.backend,
+        page.ctx.shortcuts,
+    )
+    dialog.show()
+    qapp.processEvents()
+    toggle = dialog.display_toggle
+    before = toggle.is_alternate
+    QTest.mouseClick(toggle.raw_button, Qt.MouseButton.LeftButton)
+    assert not toggle.raw_button.hasFocus()
+    QTest.keyClick(dialog, Qt.Key.Key_Right)
+    QTest.keyClick(dialog, Qt.Key.Key_Left)
+    assert toggle.is_alternate is False
+    assert toggle.raw_button.focusPolicy() == Qt.FocusPolicy.NoFocus
+    assert before is True
+    dialog.close()
+    page.close()

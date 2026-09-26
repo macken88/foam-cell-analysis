@@ -216,6 +216,9 @@ class DisplayToggle(QWidget):
         for button in (self.raw_button, self.alternate_button):
             button.setCheckable(True)
             set_style(button, role="segment")
+            # フォーカスを持つと Qt 標準の矢印キー操作で切り替わり、
+            # 画像移動（← →）のショートカットと競合するため持たせない
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             self.group.addButton(button)
             layout.addWidget(button)
         self.alternate_button.setChecked(True)
