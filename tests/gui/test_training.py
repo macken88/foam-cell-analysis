@@ -7,7 +7,7 @@ from foam_cell_analysis.gui.modes.training.augmentation_dialog import Augmentati
 from foam_cell_analysis.gui.navigation import PageId
 
 
-def test_training_start_navigates_and_records_best_checkpoint(shell, qapp):
+def test_training_start_navigates_and_records_final_model(shell, qapp):
     page = shell.page(PageId.TRAINING)
     assert f"id: {page.experiment_id.text()}" in page.yaml_preview.toPlainText()
     assert "used_item_ids: 学習開始時に確定" in page.yaml_preview.toPlainText()
@@ -28,8 +28,87 @@ def test_training_start_navigates_and_records_best_checkpoint(shell, qapp):
             break
         QTest.qWait(2)
     assert experiment.status == "completed"
-    assert any(checkpoint.name == "best.pt" for checkpoint in experiment.checkpoints)
+    assert any(checkpoint.name == "final.pt" for checkpoint in experiment.checkpoints)
+    assert experiment.oof_evaluation is not None
+    assert experiment.selected_epoch is not None
     assert page.experiment_id.text() != experiment_id
+
+
+def test_cv_fold_spin_updates_yaml_and_estimate_through_keyboard(shell, qapp):
+    from PySide6.QtCore import Qt
+
+    page = shell.page(PageId.TRAINING)
+    folds = page.fields["data.cv.n_folds"]
+    folds.setFocus()
+    QTest.keyClick(folds, Qt.Key.Key_Up)
+    qapp.processEvents()
+    assert "n_folds: 6" in page.yaml_preview.toPlainText()
+    assert "6 分割" in page.estimate_label.text()
+
+
+def test_qtest_training_click_finishes_cv_and_final_model(shell, qapp, monkeypatch):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QDialog
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.StandardButton.Yes)
+    page = shell.page(PageId.TRAINING)
+    page.fields["training.epochs"].setValue(2)
+    page.fields["checkpoint.validation_interval"].setValue(1)
+    QTest.mouseClick(page.start_button, Qt.MouseButton.LeftButton)
+
+    assert shell.current_page() is shell.page(PageId.EXPERIMENTS)
+    experiment = next(
+        item
+        for item in shell.ctx.backend.list_experiments()
+        if item.status == "running" and item.experiment_id.startswith("exp_00")
+    )
+    for _ in range(100):
+        qapp.processEvents()
+        experiment = shell.ctx.backend.get_experiment(experiment.experiment_id)
+        if experiment.status == "completed":
+            break
+        QTest.qWait(2)
+    assert experiment.status == "completed"
+    assert experiment.oof_evaluation is not None
+    assert experiment.selected_epoch is not None
+    assert any(checkpoint.name == "final.pt" for checkpoint in experiment.checkpoints)
+
+    results = shell.page(PageId.EXPERIMENTS)
+    row = next(
+        row
+        for row in range(results.table.rowCount())
+        if results.table.item(row, 1).text() == experiment.experiment_id
+    )
+    results.table.setCurrentCell(row, 1)
+    results.refresh()
+    assert results.details.tabText(0) == "概要"
+    assert results.oof_table.item(0, 1).text() != "—"
+
+    monkeypatch.setattr(
+        "foam_cell_analysis.gui.modes.training.experiment_list.SendToCandidatesDialog.exec",
+        lambda _dialog: QDialog.DialogCode.Accepted,
+    )
+    monkeypatch.setattr(
+        "foam_cell_analysis.gui.modes.comparison.candidates_page.CandidateDialog.exec",
+        lambda _dialog: QDialog.DialogCode.Accepted,
+    )
+    QTest.mouseClick(results.button_map["send"], Qt.MouseButton.LeftButton)
+    qapp.processEvents()
+    candidates = shell.page(PageId.CANDIDATES)
+    qapp.processEvents()
+    candidate = next(
+        item
+        for item in shell.ctx.backend.list_candidates()
+        if item.experiment_id == experiment.experiment_id
+    )
+    candidate_row = next(
+        row
+        for row in range(candidates.table.rowCount())
+        if candidates.table.item(row, 1).text() == candidate.candidate_id
+    )
+    assert candidates.table.horizontalHeaderItem(6).text() == "検証 mAP"
+    assert candidates.table.horizontalHeaderItem(7).text() == "OOF mAP"
+    assert candidates.table.item(candidate_row, 7).text() != "—"
 
 
 def test_training_return_allocates_new_experiment_id(shell):

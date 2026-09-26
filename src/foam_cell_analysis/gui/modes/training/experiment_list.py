@@ -86,7 +86,7 @@ class ExperimentListPage(BasePage):
                 "データ拡張",
                 "状態",
                 "進捗",
-                "最良 mAP",
+                "OOF mAP",
                 "途中保存モデル",
             ]
         )
@@ -117,15 +117,32 @@ class ExperimentListPage(BasePage):
         self.chart = QWidget()
         chart_layout = QVBoxLayout(self.chart)
         chart_layout.setContentsMargins(0, 0, 0, 0)
-        chart_layout.addWidget(QLabel("学習内検証 mAP"))
+        chart_layout.addWidget(QLabel("交差検証（OOF）mAP"))
         self.chart_map = LineChart()
         chart_layout.addWidget(self.chart_map, 1)
         chart_layout.addWidget(QLabel("学習 loss"))
         self.chart_loss = LineChart()
         chart_layout.addWidget(self.chart_loss, 1)
-        self.checkpoint_table = QTableWidget(0, 4)
+        self.cv_table = QTableWidget(0, 4)
+        self.cv_table.setHorizontalHeaderLabels(
+            ["フォールド", "学習件数", "検証件数", "選択エポック mAP"]
+        )
+        setup_table(self.cv_table, stretch_column=0)
+        self.cv_page = QWidget()
+        cv_layout = QVBoxLayout(self.cv_page)
+        self.selected_epoch_label = QLabel("選択エポック: —")
+        self.selected_epoch_label.setFont(numeric_font())
+        cv_layout.addWidget(self.selected_epoch_label)
+        cv_layout.addWidget(QLabel("フォールド別評価"))
+        cv_layout.addWidget(self.cv_table)
+        self.oof_table = QTableWidget(2, 5)
+        self.oof_table.setHorizontalHeaderLabels(["OOF評価", "全体", "分類A", "分類B", "分類C"])
+        setup_table(self.oof_table, stretch_column=0)
+        cv_layout.addWidget(QLabel("OOF評価"))
+        cv_layout.addWidget(self.oof_table)
+        self.checkpoint_table = QTableWidget(0, 5)
         self.checkpoint_table.setHorizontalHeaderLabels(
-            ["ファイル名", "エポック", "mAP", "保存日時"]
+            ["フォールド（1〜K / 最終）", "ファイル名", "エポック", "mAP", "保存日時"]
         )
         setup_table(self.checkpoint_table, stretch_column=0)
         self.run_table = QTableWidget(0, 5)
@@ -135,6 +152,7 @@ class ExperimentListPage(BasePage):
         self.used_data.setReadOnly(True)
         self.details.addTab(overview_page, "概要")
         self.details.addTab(self.chart, "学習曲線")
+        self.details.addTab(self.cv_page, "交差検証")
         self.details.addTab(self.checkpoint_table, "途中保存モデル")
         self.details.addTab(self.run_table, "実行試行")
         self.details.addTab(self.used_data, "実使用データ")
@@ -241,12 +259,25 @@ class ExperimentListPage(BasePage):
             )
             self.table.setItem(row, 0, select)
             config = experiment.config.values
-            latest = max(experiment.checkpoints, key=lambda cp: cp.epoch, default=None)
-            best = next(
-                (cp for cp in experiment.checkpoints if cp.name in {"best", "best.pt"}), None
+            # 保存日時が同じなら後に追加したもの（最終モデル）を最新とする
+            latest = max(reversed(experiment.checkpoints), key=lambda cp: cp.saved_at, default=None)
+            selected_metric = next(
+                (
+                    point
+                    for point in experiment.oof_history
+                    if point.epoch == experiment.selected_epoch
+                ),
+                None,
             )
+            cv_folds = config.get("data", {}).get("cv", {}).get("n_folds", 5)
             progress = (
-                f"エポック {experiment.current_epoch}/{experiment.total_epochs}"
+                "最終学習・epoch "
+                f"{experiment.current_epoch}/{experiment.selected_epoch or experiment.total_epochs}"
+                if experiment.phase == "final_training"
+                else (
+                    f"分割 {max(experiment.fold_histories, default=1)}/{cv_folds}・epoch "
+                    f"{experiment.current_epoch}/{experiment.total_epochs}"
+                )
                 if experiment.status == "running"
                 else "—"
             )
@@ -258,8 +289,8 @@ class ExperimentListPage(BasePage):
                 str(config.get("augmentation", {}).get("profile", "—")),
                 experiment_status_label(experiment.status),
                 progress,
-                format_score(best.map) if best else "—",
-                (best or latest).name if best or latest else "—",
+                format_score(selected_metric.map) if selected_metric else "—",
+                latest.name if latest else "—",
             ]
             for col, value in enumerate(values, start=1):
                 cell = QTableWidgetItem(value)
@@ -268,7 +299,7 @@ class ExperimentListPage(BasePage):
                     cell.setTextAlignment(
                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
                     )
-                if col == 8 and best:
+                if col == 8 and selected_metric:
                     font = cell.font()
                     font.setBold(True)
                     cell.setFont(font)
@@ -338,35 +369,115 @@ class ExperimentListPage(BasePage):
             value_item = QTableWidgetItem(value)
             value_item.setFont(numeric_font())
             self.overview_table.setItem(row, 1, value_item)
-        points_loss = experiment.history
-        self.chart_map.set_series(
-            [
+        map_series = [
+            (
+                "OOF mAP",
+                QColor(Color.GRAPHITE),
+                [float(p.epoch) for p in experiment.oof_history if p.map is not None],
+                [float(p.map) for p in experiment.oof_history if p.map is not None],
+            )
+        ]
+        for fold, points in sorted(experiment.fold_histories.items()):
+            map_series.append(
                 (
-                    "mAP",
-                    QColor(Color.GRAPHITE),
-                    [float(p.epoch) for p in points_loss if p.map is not None],
-                    [float(p.map) for p in points_loss if p.map is not None],
-                )
-            ]
-        )
-        self.chart_loss.set_series(
-            [
-                (
-                    "loss",
+                    f"分割 {fold}",
                     QColor(Color.SLATE),
-                    [float(p.epoch) for p in points_loss],
-                    [float(p.loss) for p in points_loss],
+                    [float(p.epoch) for p in points if p.map is not None],
+                    [float(p.map) for p in points if p.map is not None],
                 )
-            ]
-        )
+            )
+        self.chart_map.set_series(map_series)
+        loss_series = [
+            (
+                "交差検証 loss",
+                QColor(Color.SLATE),
+                [float(p.epoch) for p in experiment.oof_history],
+                [float(p.loss) for p in experiment.oof_history],
+            )
+        ]
+        if experiment.final_history:
+            loss_series.append(
+                (
+                    "最終学習 loss",
+                    QColor(Color.TRAIN),
+                    [float(p.epoch) for p in experiment.final_history],
+                    [float(p.loss) for p in experiment.final_history],
+                )
+            )
+        self.chart_loss.set_series(loss_series)
         self.chart_map.set_best(None, None)
         self.chart_loss.set_best(None, None)
-        best = next((cp for cp in experiment.checkpoints if cp.name in {"best", "best.pt"}), None)
+        best = next(
+            (p for p in experiment.oof_history if p.epoch == experiment.selected_epoch), None
+        )
         if best and best.map is not None:
             self.chart_map.set_best(float(best.epoch), float(best.map))
+        item_folds = experiment.fold_assignments
+        n_folds = int(config.get("data", {}).get("cv", {}).get("n_folds", 5))
+        self.cv_table.setRowCount(n_folds)
+        for fold in range(1, n_folds + 1):
+            validation_count = sum(value == fold for value in item_folds.values())
+            train_count = len(item_folds) - validation_count
+            fold_metric = next(
+                (
+                    p.map
+                    for p in experiment.fold_histories.get(fold, [])
+                    if p.epoch == experiment.selected_epoch
+                ),
+                None,
+            )
+            for col, value in enumerate(
+                (str(fold), str(train_count), str(validation_count), format_score(fold_metric))
+            ):
+                item = QTableWidgetItem(value)
+                item.setFont(numeric_font())
+                if col:
+                    item.setTextAlignment(
+                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                    )
+                self.cv_table.setItem(fold - 1, col, item)
+        self.selected_epoch_label.setText(
+            f"選択エポック: {experiment.selected_epoch if experiment.selected_epoch else '—'}"
+        )
+        oof_eval = experiment.oof_evaluation
+        self.oof_table.setItem(0, 0, QTableWidgetItem("OOF mAP"))
+        self.oof_table.setItem(1, 0, QTableWidgetItem("対象件数"))
+        self.oof_table.setItem(
+            0, 1, QTableWidgetItem(format_score(oof_eval.overall_map) if oof_eval else "—")
+        )
+        self.oof_table.setItem(
+            1,
+            1,
+            QTableWidgetItem(
+                str(sum(count for _score, count in oof_eval.per_class.values()))
+                if oof_eval
+                else "—"
+            ),
+        )
+        for column, classification in enumerate(("分類A", "分類B", "分類C"), start=2):
+            score, count = (
+                oof_eval.per_class.get(classification, (None, 0)) if oof_eval else (None, 0)
+            )
+            self.oof_table.setItem(0, column, QTableWidgetItem(format_score(score)))
+            self.oof_table.setItem(1, column, QTableWidgetItem(str(count) if oof_eval else "—"))
+        for row in range(self.oof_table.rowCount()):
+            for column in range(1, self.oof_table.columnCount()):
+                item = self.oof_table.item(row, column)
+                item.setFont(numeric_font())
+                item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.checkpoint_table.setRowCount(len(experiment.checkpoints))
-        for row, checkpoint in enumerate(experiment.checkpoints):
+        checkpoints = sorted(
+            experiment.checkpoints,
+            key=lambda item: (
+                item.fold is None,
+                item.fold or 99,
+                item.epoch,
+            ),
+        )
+        for row, checkpoint in enumerate(checkpoints):
+            fold_text = "最終" if checkpoint.name == "final.pt" else str(checkpoint.fold or "—")
             values = [
+                fold_text,
                 checkpoint.name,
                 str(checkpoint.epoch),
                 format_score(checkpoint.map, 4),
@@ -374,7 +485,7 @@ class ExperimentListPage(BasePage):
             ]
             for col, value in enumerate(values):
                 item = QTableWidgetItem(value)
-                if col in (1, 2, 3):
+                if col in (0, 2, 3, 4):
                     item.setFont(numeric_font())
                     item.setTextAlignment(
                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
@@ -399,7 +510,10 @@ class ExperimentListPage(BasePage):
                 self.run_table.setItem(row, col, item)
         self.used_data.setPlainText(
             f"実使用データ数: {len(experiment.used_item_ids)} 件\n"
-            + "\n".join(experiment.used_item_ids)
+            + "\n".join(
+                f"{item_id}\t分割 {experiment.fold_assignments.get(item_id, '—')}"
+                for item_id in experiment.used_item_ids
+            )
         )
         self._update_buttons()
 
@@ -527,20 +641,29 @@ class ExperimentListPage(BasePage):
 
     def _start_job(self, experiment_id: str) -> None:
         experiment = self.ctx.backend.get_experiment(experiment_id)
-        total = max(1, experiment.total_epochs)
+        epochs = max(1, experiment.total_epochs)
+        folds = int(experiment.config.values["data"]["cv"]["n_folds"])
+        total = epochs * (folds + 1)
         interval = max(1, int(experiment.config.values["checkpoint"]["validation_interval"]))
 
-        def record(epoch: int) -> None:
-            progress = epoch / total
-            loss = max(0.01, 1.2 * math.exp(-3 * progress) + 0.01 * (epoch % 3))
-            map_value = (
-                min(0.99, 0.35 + 0.6 * progress)
-                if epoch % interval == 0 or epoch == total
-                else None
-            )
-            self.ctx.backend.record_epoch(experiment_id, epoch, loss, map_value)
+        def record(step: int) -> None:
+            phase_step = (step - 1) % epochs + 1
+            phase_index = (step - 1) // epochs
+            progress = phase_step / epochs
+            loss = max(0.01, 1.2 * math.exp(-3 * progress) + 0.01 * (phase_step % 3))
+            if phase_index < folds:
+                map_value = (
+                    min(0.99, 0.35 + 0.6 * progress)
+                    if phase_step % interval == 0 or phase_step == epochs
+                    else None
+                )
+                self.ctx.backend.record_epoch(
+                    experiment_id, phase_step, loss, map_value, phase_index + 1
+                )
+            else:
+                self.ctx.backend.record_epoch(experiment_id, phase_step, loss)
 
-        job = FakeJob(f"学習 {experiment_id}", total, 200, record, key=f"training:{experiment_id}")
+        job = FakeJob(f"学習 {experiment_id}", total, 30, record, key=f"training:{experiment_id}")
         job.finished.connect(
             lambda ok, _message: self.ctx.backend.finish_training(
                 experiment_id, "completed" if ok else "stopped"

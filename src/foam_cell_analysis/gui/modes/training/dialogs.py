@@ -63,7 +63,7 @@ class ExperimentCompareDialog(QDialog):
         plot_panel = QWidget()
         plot_layout = QVBoxLayout(plot_panel)
         plot_layout.setContentsMargins(0, 0, 0, 0)
-        plot_layout.addWidget(QLabel("mAP の推移"))
+        plot_layout.addWidget(QLabel("OOF mAP の推移"))
         plot_layout.addWidget(self.chart)
         split.addWidget(self.table)
         split.addWidget(plot_panel)
@@ -161,7 +161,7 @@ class ExperimentCompareDialog(QDialog):
 
 
 class SendToCandidatesDialog(QDialog):
-    """比較モードへ渡す途中保存モデルを選ぶ。"""
+    """最終学習モデルを比較候補へ渡す。"""
 
     def __init__(self, experiment: Experiment, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -172,14 +172,12 @@ class SendToCandidatesDialog(QDialog):
         layout = QVBoxLayout(self)
         form = QFormLayout()
         self.checkpoint = QComboBox()
-        self.checkpoint.addItems([entry.name for entry in experiment.checkpoints])
-        if self.checkpoint.findText("best.pt") >= 0:
-            self.checkpoint.setCurrentText("best.pt")
-        elif self.checkpoint.findText("best") >= 0:
-            self.checkpoint.setCurrentText("best")
+        final_model = "final.pt"
+        if any(entry.name == final_model for entry in experiment.checkpoints):
+            self.checkpoint.addItem(final_model)
         self.comment = QLineEdit()
         form.addRow("実験", QLabel(experiment.experiment_id))
-        form.addRow("途中保存モデル", self.checkpoint)
+        form.addRow("最終学習モデル", self.checkpoint)
         form.addRow("説明", self.comment)
         layout.addLayout(form)
         layout.addWidget(QLabel("推論設定や正式リリースはモデル比較・リリースで行います。"))

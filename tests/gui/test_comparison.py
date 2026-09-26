@@ -13,7 +13,7 @@ from foam_cell_analysis.gui.modes.comparison.dialogs import (
     MaskExportDialog,
 )
 from foam_cell_analysis.gui.modes.comparison.mask_compare import MaskComparisonPage
-from foam_cell_analysis.gui.navigation import Navigator
+from foam_cell_analysis.gui.navigation import Navigator, PageId
 from foam_cell_analysis.services.mock.backend import MockBackend
 
 
@@ -24,7 +24,7 @@ def make_context() -> AppContext:
 def test_candidate_add_evaluate_release_and_route(qtbot):
     ctx = make_context()
     experiment = ctx.backend.get_experiment("exp_0042")
-    config = ctx.backend.list_inference_configs("mask_rcnn")[0]
+    config = ctx.backend.create_inference_config("mask_rcnn", {"box_score_thresh": 0.3})
     candidate = ctx.backend.add_candidate(
         "exp_0042", experiment.checkpoints[-1].name, config.config_id
     )
@@ -39,7 +39,7 @@ def test_candidate_add_evaluate_release_and_route(qtbot):
 def test_duplicate_candidate_raises():
     ctx = make_context()
     experiment = ctx.backend.get_experiment("exp_0042")
-    config = ctx.backend.list_inference_configs("mask_rcnn")[0]
+    config = ctx.backend.create_inference_config("mask_rcnn", {"box_score_thresh": 0.3})
     checkpoint = experiment.checkpoints[-1].name
     ctx.backend.add_candidate("exp_0042", checkpoint, config.config_id)
     try:
@@ -85,7 +85,7 @@ def test_candidate_table_defaults_to_latest_and_uses_checkboxes(qtbot):
     page = CandidatesPage(ctx)
     qtbot.addWidget(page)
     assert page.validation.currentText() == "val_v003"
-    assert page.table.columnCount() == 10
+    assert page.table.columnCount() == 11
     assert page.table.horizontalHeaderItem(0).text() == "選択"
     page.resize(1200, 700)
     page.show()
@@ -94,6 +94,27 @@ def test_candidate_table_defaults_to_latest_and_uses_checkboxes(qtbot):
     position = rect.topLeft() + QPoint(12, rect.height() // 2)
     QTest.mouseClick(page.table.viewport(), Qt.MouseButton.LeftButton, pos=position)
     assert len(page._selected()) == 1
+
+
+def test_seeded_candidates_show_inference_specific_oof_in_gui(shell):
+    page = shell.page(PageId.CANDIDATES)
+    page.resize(1400, 800)
+    page.show()
+    rows = {}
+    for row in range(page.table.rowCount()):
+        candidate_id = page.table.item(row, 1).text()
+        if candidate_id in {"RC-001", "RC-003"}:
+            rows[candidate_id] = row
+    assert set(rows) == {"RC-001", "RC-003"}
+    for _candidate_id, row in rows.items():
+        cell = page.table.visualItemRect(page.table.item(row, 7))
+        QTest.mouseClick(
+            page.table.viewport(),
+            Qt.MouseButton.LeftButton,
+            pos=cell.center(),
+        )
+        assert page.table.item(row, 7).text()
+    assert page.table.item(rows["RC-001"], 7).text() != page.table.item(rows["RC-003"], 7).text()
 
 
 def test_release_button_explains_missing_evaluation(qtbot):
@@ -133,10 +154,10 @@ def test_detail_evaluation_and_mask_export_dialogs(qtbot):
     evaluation = EvaluationDialog(ctx, ctx.backend.get_candidate("RC-001"), "val_v003")
     qtbot.addWidget(evaluation)
     assert (evaluation.minimumWidth(), evaluation.minimumHeight()) == (800, 640)
-    assert evaluation.metrics.rowCount() == 2
+    assert evaluation.metrics.rowCount() == 4
     assert evaluation.metrics.columnCount() == 5
     assert evaluation.metrics.item(0, 1).text() == "0.910"
-    assert evaluation.metrics.height() <= 100
+    assert evaluation.metrics.height() <= 160
     assert all(
         evaluation.metrics.horizontalHeader().sectionResizeMode(column)
         == QHeaderView.ResizeMode.Interactive

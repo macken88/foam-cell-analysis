@@ -34,7 +34,7 @@ from ...widgets.table import mark_primary, setup_table
 
 
 class CandidateDialog(QDialog):
-    """実験チェックポイントと推論設定を候補に登録する。"""
+    """final.ptと推論設定を候補に登録する。"""
 
     def __init__(self, ctx: AppContext, parent=None, preset: dict | None = None) -> None:
         super().__init__(parent)
@@ -59,7 +59,7 @@ class CandidateDialog(QDialog):
         form = QFormLayout()
         for label, widget in (
             ("完了した実験", self.experiment),
-            ("途中保存モデル", self.checkpoint),
+            ("最終学習モデル", self.checkpoint),
             ("モデル種類", self.model_type),
             ("前処理設定", self.preprocessing),
             ("コメント", self.comment),
@@ -107,7 +107,8 @@ class CandidateDialog(QDialog):
         self.checkpoint.clear()
         if not experiment:
             return
-        self.checkpoint.addItems([c.name for c in experiment.checkpoints])
+        if any(checkpoint.name == "final.pt" for checkpoint in experiment.checkpoints):
+            self.checkpoint.addItem("final.pt")
         self.model_type.setText(model_type_label(experiment.model_type))
         self.model_type_value = experiment.model_type
         self.preprocessing.setPlainText(
@@ -223,30 +224,36 @@ class EvaluationDialog(QDialog):
         self.setWindowTitle(f"詳細評価 - {candidate.candidate_id}")
         self.setMinimumSize(800, 640)
         self.resize(800, 640)
-        self.metrics = QTableWidget(2, 5)
+        self.metrics = QTableWidget(4, 5)
         self.metrics.setHorizontalHeaderLabels(["評価項目", "全体", "分類A", "分類B", "分類C"])
         setup_table(self.metrics, stretch_column=4)
         evaluation = candidate.evaluations[validation]
+        oof = candidate.oof_evaluation
         classes = ["分類A", "分類B", "分類C"]
         all_count = sum(value[1] for value in evaluation.per_class.values())
-        metric_values = ["平均適合率 (mAP)", format_score(evaluation.overall_map)]
-        count_values = ["対象件数", str(all_count)]
-        for classification in classes:
-            score, count = evaluation.per_class.get(classification, (None, 0))
-            metric_values.append(format_score(score))
-            count_values.append(str(count))
-        for column, value in enumerate(metric_values):
-            item = QTableWidgetItem(value)
-            if column:
-                item.setFont(numeric_font())
-                item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            self.metrics.setItem(0, column, item)
-        for column, value in enumerate(count_values):
-            item = QTableWidgetItem(value)
-            if column:
-                item.setFont(numeric_font())
-                item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            self.metrics.setItem(1, column, item)
+        oof_count = sum(value[1] for value in oof.per_class.values()) if oof else 0
+        rows = [
+            ("検証用データセット mAP", evaluation.overall_map, evaluation.per_class, False),
+            ("対象件数", all_count, evaluation.per_class, True),
+            ("OOF mAP", oof.overall_map if oof else None, oof.per_class if oof else {}, False),
+            ("対象件数", oof_count, oof.per_class if oof else {}, True),
+        ]
+        for row, (label, overall, per_class, is_count) in enumerate(rows):
+            values = [label, str(overall) if is_count else format_score(overall)]
+            values.extend(
+                str(per_class.get(name, (None, 0))[1])
+                if is_count
+                else format_score(per_class.get(name, (None, 0))[0])
+                for name in classes
+            )
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if column:
+                    item.setFont(numeric_font())
+                    item.setTextAlignment(
+                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                    )
+                self.metrics.setItem(row, column, item)
         self.metrics.setFixedHeight(
             self.metrics.horizontalHeader().height()
             + sum(self.metrics.rowHeight(row) for row in range(self.metrics.rowCount()))
@@ -289,7 +296,14 @@ class EvaluationDialog(QDialog):
         controls.button(QDialogButtonBox.StandardButton.Save).clicked.connect(self._save)
         controls.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("アプリ内では自動算出しない補助評価です。"))
+        layout.addWidget(QLabel(f"検証用データセット: {validation}"))
+        layout.addWidget(
+            QLabel(
+                f"OOF 実験: {candidate.oof_experiment_id or candidate.experiment_id} ・ "
+                f"選択エポック: {candidate.oof_epoch if candidate.oof_epoch is not None else '—'}"
+            )
+        )
+        layout.addWidget(QLabel("外部解析結果は手入力です。"))
         layout.addWidget(self.metrics)
         layout.addWidget(QLabel("外部粒子解析結果"))
         result_actions = QHBoxLayout()

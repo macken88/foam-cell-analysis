@@ -3,10 +3,10 @@
 from itertools import pairwise
 
 from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QFontMetricsF, QPainter, QPen
 from PySide6.QtWidgets import QToolTip, QWidget
 
-from ..theme import Color, numeric_font
+from ..theme import Color, body_font, numeric_font
 
 Series = tuple[str, QColor, list[float], list[float]]
 
@@ -48,9 +48,22 @@ class LineChart(QWidget):
         self.update()
 
     def _plot_rect(self):
-        return self.rect().adjusted(
-            52, 24 if self.y_axis_note else 12, -108 if len(self.series) > 1 else -14, -40
+        return self.rect().adjusted(52, 24 if self.y_axis_note else 12, -self._label_margin(), -40)
+
+    def _label_margin(self) -> int:
+        """右端の系列名が収まる余白を返す（系列が 1 本なら名前を出さない）。"""
+        if len(self.series) <= 1:
+            return 14
+        metrics = QFontMetricsF(body_font())
+        widest = max(
+            metrics.horizontalAdvance(self._end_label(name)) for name, *_rest in self.series
         )
+        return max(108, int(widest) + 16)
+
+    @staticmethod
+    def _end_label(name: str) -> str:
+        """右端に書く名前。フォールドの細線はまとめて 1 つの名前にする。"""
+        return "各フォールド（細線）" if name.startswith("分割 ") else name
 
     def mouseMoveEvent(self, event) -> None:
         """ポインター位置に最も近いデータ点の値をツールチップで示す。"""
@@ -89,10 +102,17 @@ class LineChart(QWidget):
 
         if self.y_axis_note:
             painter.setPen(QColor(Color.SLATE))
+            painter.setFont(body_font())
+            prefix = "縦軸は "
+            suffix = " から"
+            prefix_width = QFontMetricsF(painter.font()).horizontalAdvance(prefix)
+            number = self.y_axis_note.removeprefix(prefix).removesuffix(suffix)
+            painter.drawText(rect.left(), 15, prefix)
             painter.setFont(numeric_font())
-            painter.drawText(
-                rect.left(), 15, rect.width(), 16, Qt.AlignmentFlag.AlignLeft, self.y_axis_note
-            )
+            number_width = QFontMetricsF(painter.font()).horizontalAdvance(number)
+            painter.drawText(int(rect.left() + prefix_width), 15, number)
+            painter.setFont(body_font())
+            painter.drawText(int(rect.left() + prefix_width + number_width), 15, suffix)
         for fraction in (0.0, 0.5, 1.0):
             y = rect.bottom() - fraction * rect.height()
             value = ymin + fraction * (ymax - ymin)
@@ -102,15 +122,16 @@ class LineChart(QWidget):
             painter.setPen(QPen(QColor(Color.RULE_SOFT), 1))
             painter.drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y))
         painter.setPen(QColor(Color.SLATE))
-        painter.setFont(numeric_font())
+        painter.setFont(body_font())
         painter.drawText(
             rect.left(),
-            rect.bottom() + 28,
+            rect.bottom() + 20,
             rect.width(),
             18,
             Qt.AlignmentFlag.AlignCenter,
             "エポック",
         )
+        painter.setFont(numeric_font())
         painter.drawText(rect.left(), rect.bottom() + 16, f"{xmin:g}")
         painter.drawText(rect.right() - 32, rect.bottom() + 16, f"{xmax:g}")
 
@@ -122,14 +143,23 @@ class LineChart(QWidget):
         end_labels: list[tuple[str, QColor, float]] = []
         painter.save()
         painter.setClipRect(rect)
+        fold_label_added = False
         for name, series_color, xs, ys in self.series:
             color = QColor(series_color)
+            if name.startswith("分割 "):
+                color = QColor(Color.SLATE).lighter(165)
             coords = [map_point(x, y) for x, y in zip(xs, ys, strict=False)]
-            painter.setPen(QPen(color, 2))
+            width = 3 if name == "OOF mAP" else 1 if name.startswith("分割 ") else 2
+            painter.setPen(QPen(color, width))
             for left, right in pairwise(coords):
                 painter.drawLine(left, right)
             if len(self.series) > 1 and coords:
-                end_labels.append((name, color, coords[-1].y()))
+                if name.startswith("分割 "):
+                    if not fold_label_added:
+                        end_labels.append((self._end_label(name), color, coords[-1].y()))
+                        fold_label_added = True
+                else:
+                    end_labels.append((name, color, coords[-1].y()))
         if self.highlight:
             name, x, y = self.highlight
             entry = next((item for item in self.series if item[0] == name), None)
@@ -148,6 +178,7 @@ class LineChart(QWidget):
         painter.restore()
 
         if end_labels:
+            painter.setFont(body_font())
             end_labels.sort(key=lambda entry: entry[2])
             label_positions = [max(entry[2], rect.top() + 8) for entry in end_labels]
             for index in range(1, len(label_positions)):
@@ -160,13 +191,25 @@ class LineChart(QWidget):
             for (name, color, _), label_y in zip(end_labels, label_positions, strict=True):
                 painter.setPen(color)
                 painter.drawText(
-                    rect.right() + 6, int(label_y + 4), 100, 16, Qt.AlignmentFlag.AlignLeft, name
+                    rect.right() + 6,
+                    int(label_y + 4),
+                    self.width() - rect.right() - 6,
+                    16,
+                    Qt.AlignmentFlag.AlignLeft,
+                    name,
                 )
         if self.best:
             epoch, value = self.best
             point = map_point(epoch, value)
             painter.setPen(QColor(Color.GRAPHITE))
+            painter.setFont(body_font())
+            label_y = point.y() - 7
+            if label_y < rect.top() + 14:
+                label_y = point.y() + 20
+            prefix = "選択 epoch"
+            painter.drawText(int(point.x() + 7), int(label_y), prefix)
             painter.setFont(numeric_font())
+            prefix_width = QFontMetricsF(body_font()).horizontalAdvance(prefix)
             painter.drawText(
-                int(point.x() + 7), int(point.y() - 7), f"最良 epoch {epoch:g}　{value:.3f}"
+                int(point.x() + 7 + prefix_width), int(label_y), f" {epoch:g}　{value:.3f}"
             )

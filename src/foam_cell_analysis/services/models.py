@@ -170,6 +170,7 @@ class Checkpoint:
     epoch: int
     map: float | None
     saved_at: datetime = field(default_factory=lambda: datetime.now().astimezone())
+    fold: int | None = None
 
 
 @dataclass
@@ -212,6 +213,14 @@ class Experiment:
     checkpoints: list[Checkpoint] = field(default_factory=list)
     runs: list[RunAttempt] = field(default_factory=list)
     used_item_ids: list[str] = field(default_factory=list)
+    fold_assignments: dict[str, int] = field(default_factory=dict)
+    fold_histories: dict[int, list[EpochMetrics]] = field(default_factory=dict)
+    oof_history: list[EpochMetrics] = field(default_factory=list)
+    oof_predictions: dict[str, float] = field(default_factory=dict)
+    final_history: list[EpochMetrics] = field(default_factory=list)
+    selected_epoch: int | None = None
+    phase: str = "cross_validation"
+    oof_evaluation: Evaluation | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now().astimezone())
 
 
@@ -251,6 +260,9 @@ class Candidate:
     inference_config_id: str
     status: str = "candidate"
     evaluations: dict[str, Evaluation] = field(default_factory=dict)
+    oof_evaluation: Evaluation | None = None
+    oof_experiment_id: str = ""
+    oof_epoch: int | None = None
     external_results: list[ExternalResult] = field(default_factory=list)
     external_software: str = ""
     external_date: str = ""
@@ -270,6 +282,7 @@ class ReleasedModel:
     validation_dataset: str
     evaluation_result: Evaluation
     released_at: datetime
+    oof_evaluation: Evaluation | None = None
     comment: str = ""
 
 

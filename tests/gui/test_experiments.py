@@ -1,6 +1,8 @@
 """実験一覧の選択条件とモデル比較への遷移テスト。"""
 
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QColor
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QDialog
 
 from foam_cell_analysis.gui.modes.training.dialogs import (
@@ -30,7 +32,7 @@ def test_send_completed_experiment_transitions_with_candidate_parameters(shell, 
     assert received[-1][0] == PageId.CANDIDATES
     assert received[-1][1]["action"] == "add_candidate"
     assert received[-1][1]["experiment_id"] == "exp_0042"
-    assert received[-1][1]["checkpoint"] in {"best.pt", "best"}
+    assert received[-1][1]["checkpoint"] == "final.pt"
 
 
 def test_compare_dialog_has_one_value_column_per_experiment(mock_backend):
@@ -49,21 +51,62 @@ def test_compare_dialog_has_one_value_column_per_experiment(mock_backend):
         for index in range(dialog.table.rowCount())
         if dialog.table.item(index, 0).toolTip() == "data.used_item_ids"
     )
-    assert dialog.table.item(row, 1).text() == "40 件"
-    assert dialog.table.item(row, 2).text() == "40 件"
+    assert dialog.table.item(row, 1).text() == "59 件"
+    assert dialog.table.item(row, 2).text() == "59 件"
 
 
 def test_learning_curves_use_separate_map_and_loss_charts(shell):
     page = shell.page(PageId.EXPERIMENTS)
+    page.resize(1400, 900)
+    page.show()
     row = next(
         row for row in range(page.table.rowCount()) if page.table.item(row, 1).text() == "exp_0042"
     )
+    cell = page.table.visualItemRect(page.table.item(row, 1))
+    QTest.mouseClick(
+        page.table.viewport(),
+        Qt.MouseButton.LeftButton,
+        pos=cell.topLeft() + QPoint(15, cell.height() // 2),
+    )
 
-    page.table.setCurrentCell(row, 1)
-
-    assert [series[0] for series in page.chart_map.series] == ["mAP"]
-    assert [series[0] for series in page.chart_loss.series] == ["loss"]
+    assert [series[0] for series in page.chart_map.series][0] == "OOF mAP"
+    assert len(page.chart_map.series) == 6
+    oof_values = page.chart_map.series[0][3]
+    assert any(series[3][-1] != oof_values[-1] for series in page.chart_map.series[1:])
+    assert page.chart_loss.series[0][0] == "交差検証 loss"
+    assert page.chart_loss.series[1][0] == "最終学習 loss"
     assert page.chart_map.best is not None
+    assert [page.details.tabText(i) for i in range(page.details.count())] == [
+        "概要",
+        "学習曲線",
+        "交差検証",
+        "途中保存モデル",
+        "実行試行",
+        "実使用データ",
+    ]
+    assert page.details.currentIndex() == 0
+    assert page.cv_table.item(0, 3).text() != page.cv_table.item(1, 3).text()
+    folds = {
+        page.checkpoint_table.item(i, 0).text()
+        for i in range(page.checkpoint_table.rowCount())
+        if page.checkpoint_table.item(i, 0).text() != "最終"
+    }
+    assert folds == {"1", "2", "3", "4", "5"}
+    assert all(
+        not page.checkpoint_table.item(i, 1).text().startswith("fold_")
+        for i in range(page.checkpoint_table.rowCount())
+    )
+    assert (
+        sum(
+            page.checkpoint_table.item(i, 0).text() != "最終"
+            for i in range(page.checkpoint_table.rowCount())
+        )
+        == 55
+    )
+    assert any(
+        page.checkpoint_table.item(i, 1).text() == "final.pt"
+        for i in range(page.checkpoint_table.rowCount())
+    )
 
 
 def test_overview_has_empty_hint_and_two_column_selected_details(shell):

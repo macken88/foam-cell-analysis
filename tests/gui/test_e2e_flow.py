@@ -54,7 +54,9 @@ def test_training_candidate_release_and_routing_flow(shell, qtbot, monkeypatch):
     assert shell.ctx.jobs.jobs()
     _wait_for(qtbot, lambda: shell.ctx.backend.get_experiment(experiment_id).status == "completed")
     experiment = shell.ctx.backend.get_experiment(experiment_id)
-    assert any(checkpoint.name == "best.pt" for checkpoint in experiment.checkpoints)
+    assert any(checkpoint.name == "final.pt" for checkpoint in experiment.checkpoints)
+    assert experiment.oof_evaluation is not None
+    assert experiment.selected_epoch is not None
 
     experiments = shell.page(PageId.EXPERIMENTS)
     row = next(
@@ -78,7 +80,8 @@ def test_training_candidate_release_and_routing_flow(shell, qtbot, monkeypatch):
     candidate = next(
         item for item in shell.ctx.backend.list_candidates() if item.experiment_id == experiment_id
     )
-    assert candidate.checkpoint == "best.pt"
+    assert candidate.checkpoint == "final.pt"
+    assert candidate.oof_evaluation is not None
     candidates.refresh()
     row = next(
         index
@@ -100,7 +103,15 @@ def test_training_candidate_release_and_routing_flow(shell, qtbot, monkeypatch):
     )
     candidates._release()
     released = shell.ctx.backend.list_released_models()[-1]
+    assert released.oof_evaluation is not None
     assert shell.current_page() is shell.page(PageId.RELEASED_MODELS)
+    assert (
+        shell.page(PageId.RELEASED_MODELS).model_table.horizontalHeaderItem(7).text()
+        == "検証用 mAP"
+    )
+    assert (
+        shell.page(PageId.RELEASED_MODELS).model_table.horizontalHeaderItem(8).text() == "OOF mAP"
+    )
     assert shell.page(PageId.RELEASED_MODELS).select_model(released.model_id)
     routing = shell.page(PageId.RELEASED_MODELS)
     control = routing._routing_controls["分類A"]

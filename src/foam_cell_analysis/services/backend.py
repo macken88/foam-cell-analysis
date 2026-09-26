@@ -175,9 +175,10 @@ class Backend(Protocol):
         dataset_version: str | None = None,
         classification: str = "all",
         quality_filter: str = "all",
+        n_folds: int = 5,
         **filters: Any,
     ) -> tuple[int, int]:
-        """学習条件を適用した80/20分割件数を返す。"""
+        """条件適用後の学習総数と各フォールドの概算検証件数を返す。"""
 
     def next_experiment_id(self) -> str:
         """次の実験識別子を返す。"""
@@ -193,9 +194,14 @@ class Backend(Protocol):
         """学習実行試行を追加して実験を開始状態にする。"""
 
     def record_epoch(
-        self, experiment_id: str, epoch: int, loss: float, map_value: float | None = None
+        self,
+        experiment_id: str,
+        epoch: int,
+        loss: float,
+        map_value: float | None = None,
+        fold: int | None = None,
     ) -> Experiment:
-        """エポック値と設定に従った途中保存モデルを記録する。"""
+        """フォールドまたは最終学習のエポック値を記録する。"""
 
     def finish_training(self, experiment_id: str, status: str = "completed") -> Experiment:
         """実験を完了・失敗・中断状態にする。"""

@@ -42,11 +42,14 @@ LABELS = {
     "data": "データセット",
     "model": "モデル固有設定",
     "training": "共通学習設定",
-    "checkpoint": "途中保存モデル / 評価",
+    "checkpoint": "チェックポイント / OOF評価",
     "augmentation": "データ拡張",
     "dataset_version": "データセット版",
-    "split_id": "交差検証分割",
-    "seed": "乱数シード",
+    "cv": "交差検証",
+    "n_folds": "分割数",
+    "stratify_by_classification": "画像分類で層別",
+    "group_by_source_folder": "取り込み元フォルダ単位で分割",
+    "seed": "乱数シード（分割・学習）",
     "classification": "画像分類",
     "quality_filter": "品質条件",
     "epochs": "エポック数",
@@ -58,11 +61,10 @@ LABELS = {
     "patience": "待機エポック数",
     "profile": "プロファイル",
     "save_every": "保存間隔（エポック）",
-    "save_last": "最終モデルを保存",
-    "save_best": "最良モデルを保存",
-    "best_metric": "最良モデル判定指標",
+    "save_fold_models": "各フォールドのモデルを保存",
+    "best_metric": "エポック選択の指標",
     "best_mode": "判定方向",
-    "validation_interval": "検証間隔",
+    "validation_interval": "各フォールドの検証間隔",
     "type": "モデル種類",
     "input": "入力画像 / 前処理",
     "anchors": "アンカー設定",
@@ -98,7 +100,6 @@ LABELS = {
 
 CHOICES = {
     "data.dataset_version": ("datasets", "確定済み学習版"),
-    "data.split_id": ("splits", ""),
     "data.classification": ("classifications", "全分類"),
     "data.quality_filter": (["all", "good_only", "good_and_acceptable"], ""),
     "model.pretrained_weights": ("pretrained", ""),
@@ -198,7 +199,10 @@ class TrainingPage(BasePage):
         section, widgets = self._make_section("data", self.config["data"], "data")
         self.fields.update(widgets)
         self.form_layout.addWidget(section)
-        self.dataset_note = QLabel("交差検証分割は正式評価用の検証用データセットとは別です。")
+        self.dataset_note = QLabel(
+            "交差検証は学習用データセットの中だけで分割します。"
+            "検証用データセット（val 版）は学習にも交差検証にも使いません。"
+        )
         set_style(self.dataset_note, role="note")
         self.form_layout.addWidget(self.dataset_note)
         self.estimate_label = QLabel()
@@ -260,6 +264,8 @@ class TrainingPage(BasePage):
                 profile_buttons.addWidget(self.profile_edit_button)
                 section.form.addRow(profile_buttons)
         self._bind_signals()
+        if isinstance(self.fields.get("data.cv.n_folds"), QSpinBox):
+            self.fields["data.cv.n_folds"].setRange(2, 10)
         self._update_model_stack()
         self._update_estimate()
 
@@ -324,7 +330,7 @@ class TrainingPage(BasePage):
                     if path == "model.type"
                     else classification_label(item)
                     if path == "data.classification"
-                    else "インスタンス平均適合率（mAP）"
+                    else "OOF 平均適合率（mAP）"
                     if path == "checkpoint.best_metric" and item == "instance_map"
                     else "最大化"
                     if path == "checkpoint.best_mode" and item == "max"
@@ -524,13 +530,15 @@ class TrainingPage(BasePage):
                 config["data"].get("dataset_version"),
                 config["data"].get("classification", "all"),
                 config["data"].get("quality_filter", "all"),
+                config["data"].get("cv", {}).get("n_folds", 5),
             )
             numeric_family = numeric_font().family()
             self.estimate_label.setText(
-                "見込み使用データ数：学習 "
+                "見込み使用データ数：学習用 "
                 f"<span style='font-family:{numeric_family};font-weight:bold'>{train}</span> 件 / "
-                "学習内検証 "
+                f"{config['data'].get('cv', {}).get('n_folds', 5)} 分割・各分割の検証 約 "
                 f"<span style='font-family:{numeric_family};font-weight:bold'>{valid}</span> 件"
+                f"。交差検証の後、{train} 件すべてで最終学習します。"
             )
         except (KeyError, ValueError, TypeError):
             self.estimate_label.setText("見込み使用データ数：条件を確認してください")
@@ -628,28 +636,39 @@ class TrainingPage(BasePage):
             return None
         experiment = self.ctx.backend.start_training(self.config, self._edit_id)
         experiment_id = experiment.experiment_id
-        total = max(1, experiment.total_epochs)
+        epochs = max(1, experiment.total_epochs)
+        folds = int(experiment.config.values["data"]["cv"]["n_folds"])
+        total = epochs * (folds + 1)
         interval = max(1, int(experiment.config.values["checkpoint"]["validation_interval"]))
 
-        def record(epoch: int) -> None:
-            progress = epoch / total
-            loss = max(0.01, 1.2 * math.exp(-3 * progress) + 0.01 * (epoch % 3))
-            map_value = (
-                min(0.99, 0.35 + 0.6 * progress)
-                if epoch % interval == 0 or epoch == total
-                else None
-            )
-            self.ctx.backend.record_epoch(experiment_id, epoch, loss, map_value)
+        def record(step: int) -> None:
+            phase_step = (step - 1) % epochs + 1
+            phase_index = (step - 1) // epochs
+            progress = phase_step / epochs
+            loss = max(0.01, 1.2 * math.exp(-3 * progress) + 0.01 * (phase_step % 3))
+            if phase_index < folds:
+                map_value = (
+                    min(0.99, 0.35 + 0.6 * progress)
+                    if phase_step % interval == 0 or phase_step == epochs
+                    else None
+                )
+                self.ctx.backend.record_epoch(
+                    experiment_id, phase_step, loss, map_value, phase_index + 1
+                )
+            else:
+                self.ctx.backend.record_epoch(experiment_id, phase_step, loss)
 
         job = FakeJob(
             f"学習 {experiment_id}",
             total_steps=total,
-            interval_ms=200,
+            interval_ms=30,
             on_step=record,
             key=f"training:{experiment_id}",
         )
         job.finished.connect(
-            lambda _ok, _message: self.ctx.backend.finish_training(experiment_id, "completed")
+            lambda ok, _message: self.ctx.backend.finish_training(
+                experiment_id, "completed" if ok else "stopped"
+            )
         )
         self.ctx.jobs.start(job)
         self.ctx.status.show_message(f"{experiment_id} の学習を開始しました")

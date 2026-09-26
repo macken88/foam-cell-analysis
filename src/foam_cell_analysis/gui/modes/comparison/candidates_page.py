@@ -51,29 +51,30 @@ class CandidatesPage(BasePage):
         self.state_filter.setMaximumWidth(150)
         row.addWidget(self.state_filter)
         row.addStretch(1)
-        self.table = QTableWidget(0, 10)
+        self.table = QTableWidget(0, 11)
         self.table.setHorizontalHeaderLabels(
             [
                 "選択",
                 "候補ID",
                 "モデル",
                 "実験",
-                "途中保存モデル",
+                "最終学習モデル",
                 "推論設定",
-                "mAP",
+                "検証 mAP",
+                "OOF mAP",
                 "状態",
                 "外部解析",
                 "コメント",
             ]
         )
         setup_table(
-            self.table, stretch_column=9, selection_mode=QTableWidget.SelectionMode.SingleSelection
+            self.table, stretch_column=10, selection_mode=QTableWidget.SelectionMode.SingleSelection
         )
         self.table.setItemDelegateForColumn(
-            7,
+            8,
             TagDelegate({label: colors for label, colors in STATUS_MARKS.items()}, self.table),
         )
-        for column, width in enumerate((58, 72, 105, 82, 115, 92, 66, 78, 78)):
+        for column, width in enumerate((58, 72, 105, 82, 115, 92, 66, 66, 78, 78)):
             self.table.horizontalHeader().setSectionResizeMode(
                 column, QHeaderView.ResizeMode.Interactive
             )
@@ -191,6 +192,8 @@ class CandidatesPage(BasePage):
             if version in candidate.evaluations
         ]
         best_score = max(scores, default=None)
+        oof_scores = [c.oof_evaluation.overall_map for c in candidates if c.oof_evaluation]
+        best_oof = max(oof_scores, default=None)
         for candidate in candidates:
             if (
                 state != "すべて"
@@ -212,6 +215,9 @@ class CandidatesPage(BasePage):
                 candidate.checkpoint,
                 candidate.inference_config_id,
                 format_score(evaluation.overall_map) if evaluation else "未評価",
+                format_score(candidate.oof_evaluation.overall_map)
+                if candidate.oof_evaluation
+                else "—",
                 candidate_status_label(candidate.status),
                 "あり" if candidate.external_results else "—",
                 candidate.comment,
@@ -229,7 +235,7 @@ class CandidatesPage(BasePage):
                 check.setCheckState(Qt.CheckState.Checked)
             for col, value in enumerate(values, 1):
                 item = QTableWidgetItem(str(value))
-                if col in (1, 3, 4, 5, 6):
+                if col in (1, 3, 4, 5, 6, 7):
                     item.setFont(numeric_font())
                     item.setTextAlignment(
                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
@@ -237,6 +243,14 @@ class CandidatesPage(BasePage):
                 if col == 6 and value == "未評価":
                     item.setForeground(QColor(Color.SLATE))
                 if col == 6 and evaluation and evaluation.overall_map == best_score:
+                    font = item.font()
+                    font.setBold(True)
+                    item.setFont(font)
+                if (
+                    col == 7
+                    and candidate.oof_evaluation
+                    and candidate.oof_evaluation.overall_map == best_oof
+                ):
                     font = item.font()
                     font.setBold(True)
                     item.setFont(font)

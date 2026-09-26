@@ -91,7 +91,9 @@ class MockBackend:
                 DataItem(
                     item_id=f"item_{number:06d}",
                     source_filename=f"foam_{number:04d}.tif",
-                    source_relpath=f"{purpose}/images/foam_{number:04d}.tif",
+                    source_relpath=(
+                        f"{purpose}/images/source_{number % 20:02d}/foam_{number:04d}.tif"
+                    ),
                     channels=["A", "B", "C"],
                     classification=self.classifications[index % 3],
                     quality=["良", "可", "不良"][index % 3],
@@ -229,34 +231,47 @@ class MockBackend:
             "aug_v003" if expid in {"exp_0042", "exp_0045"} else "aug_v002"
         )
         config["data"]["used_item_ids"] = (
-            [item.item_id for item in self.working["train"].items[:40]] if status != "draft" else []
+            [
+                item.item_id
+                for item in self._items_for_version(config["data"]["dataset_version"])
+                if item.usage == "train"
+            ]
+            if status != "draft"
+            else []
         )
         history = self._make_history(expid, epochs, status)
+        fold_histories = (
+            {
+                fold: self._fold_history(history, config["data"]["seed"], fold)
+                for fold in range(1, int(config["data"]["cv"]["n_folds"]) + 1)
+            }
+            if status != "draft"
+            else {}
+        )
         checkpoints: list[Checkpoint] = []
         if status == "completed":
-            checkpoints.extend(
-                Checkpoint(
-                    name=f"epoch_{epoch:03d}{'.pt' if model_type == 'mask_rcnn' else ''}",
-                    epoch=epoch,
-                    map=self._map_at(history, epoch),
-                    saved_at=self._now() - timedelta(days=1, minutes=100 - epoch),
+            for fold, points in fold_histories.items():
+                checkpoints.extend(
+                    Checkpoint(
+                        name=f"epoch_{epoch:03d}.pt",
+                        epoch=epoch,
+                        map=self._map_at(points, epoch),
+                        saved_at=self._now() - timedelta(days=1, minutes=100 - epoch),
+                        fold=fold,
+                    )
+                    for epoch in range(10, 101, 10)
                 )
-                for epoch in range(10, 101, 10)
-            )
             best_epoch, best_map = max(
                 ((metric.epoch, metric.map) for metric in history if metric.map is not None),
                 key=lambda pair: pair[1],
             )
-            checkpoints.extend(
-                [
+            for fold, points in fold_histories.items():
+                checkpoints.append(
                     Checkpoint(
-                        "best.pt" if model_type == "mask_rcnn" else "best", best_epoch, best_map
-                    ),
-                    Checkpoint(
-                        "last.pt" if model_type == "mask_rcnn" else "last", 100, history[-1].map
-                    ),
-                ]
-            )
+                        "selected.pt", best_epoch, self._map_at(points, best_epoch), fold=fold
+                    )
+                )
+            checkpoints.append(Checkpoint("final.pt", best_epoch, None))
         runs = []
         if status != "draft":
             now = self._now()
@@ -279,10 +294,40 @@ class MockBackend:
             checkpoints=checkpoints,
             runs=runs,
             used_item_ids=used,
+            fold_assignments=self._assign_folds(config, used) if used else {},
+            fold_histories=fold_histories,
+            oof_history=copy.deepcopy(history),
+            selected_epoch=best_epoch if status == "completed" else None,
+            oof_evaluation=None,
+            phase="cross_validation" if status != "completed" else "completed",
             created_at=self._now() - timedelta(days=int(expid[-2:])),
         )
+        if status == "completed":
+            exp.final_history = [
+                EpochMetrics(point.epoch, point.loss * 0.78, None)
+                for point in history
+                if point.epoch <= best_epoch
+            ]
+            exp.oof_evaluation = self._oof_evaluation(exp, best_map)
+            exp.oof_predictions = {item_id: float(best_map) for item_id in exp.used_item_ids}
         self.experiments[expid] = exp
         return exp
+
+    @staticmethod
+    def _fold_history(history: list[EpochMetrics], seed: int, fold: int) -> list[EpochMetrics]:
+        """OOF 曲線の周囲に、フォールド固有の決定的な評価差を作る。"""
+        rng = np.random.default_rng(seed + fold * 104729)
+        direction = -1.0 if fold % 2 else 1.0
+        return [
+            EpochMetrics(
+                point.epoch,
+                point.loss,
+                max(0.0, min(1.0, point.map + direction * float(rng.uniform(0.01, 0.03))))
+                if point.map is not None
+                else None,
+            )
+            for point in history
+        ]
 
     @staticmethod
     def _make_history(expid: str, epochs: int, status: str) -> list[EpochMetrics]:
@@ -320,28 +365,42 @@ class MockBackend:
             "cellpose",
             {"cellprob_threshold": 0.0, "flow_threshold": 0.4},
         )
+        self.inference_configs["infer_v007"] = InferenceConfig(
+            "infer_v007",
+            "mask_rcnn",
+            {"box_score_thresh": 0.35, "box_nms_thresh": 0.55, "box_detections_per_img": 100},
+        )
 
     def _seed_candidates_and_releases(self, exp42: Experiment, exp43: Experiment) -> None:
         """候補・リリース・振り分けの参照関係を作る。"""
         self.candidates["RC-001"] = Candidate(
             "RC-001",
             exp42.experiment_id,
-            "best.pt",
+            "final.pt",
             "infer_v005",
             evaluations={"val_v003": self._evaluation(0.91)},
+            oof_evaluation=self._candidate_oof_evaluation(exp42, "infer_v005"),
+            oof_experiment_id=exp42.experiment_id,
+            oof_epoch=exp42.selected_epoch,
         )
         self.candidates["RC-002"] = Candidate(
             "RC-002",
             exp43.experiment_id,
-            "best",
+            "final.pt",
             "infer_v006",
+            oof_evaluation=self._candidate_oof_evaluation(exp43, "infer_v006"),
+            oof_experiment_id=exp43.experiment_id,
+            oof_epoch=exp43.selected_epoch,
             evaluations={"val_v003": self._evaluation(0.89)},
         )
         self.candidates["RC-003"] = Candidate(
             "RC-003",
             exp42.experiment_id,
-            "epoch_080.pt",
-            "infer_v005",
+            "final.pt",
+            "infer_v007",
+            oof_evaluation=self._candidate_oof_evaluation(exp42, "infer_v007"),
+            oof_experiment_id=exp42.experiment_id,
+            oof_epoch=exp42.selected_epoch,
         )
         now = self._now()
         for model_id, candidate_id in (("model_007", "RC-001"), ("model_012", "RC-002")):
@@ -358,6 +417,7 @@ class MockBackend:
                 inference_config=copy.deepcopy(inference.params),
                 validation_dataset="val_v003",
                 evaluation_result=evaluation,
+                oof_evaluation=copy.deepcopy(candidate.oof_evaluation),
                 released_at=now - timedelta(days=30 if model_id == "model_007" else 8),
             )
         self.routing.update({"分類A": "model_007", "分類B": "model_012", "分類C": "model_007"})
@@ -992,7 +1052,6 @@ class MockBackend:
             "datasets": [
                 version.version for version in self.versions if version.purpose == "train"
             ],
-            "splits": ["split_001", "split_002"],
             "classifications": self.classifications.copy(),
             "qualities": ["良", "可", "不良"],
             "channels": ["A", "B", "C"],
@@ -1009,7 +1068,11 @@ class MockBackend:
             "experiment": {"id": None, "study_id": "foam_study", "description": ""},
             "data": {
                 "dataset_version": "train_v003",
-                "split_id": "split_001",
+                "cv": {
+                    "n_folds": 5,
+                    "stratify_by_classification": True,
+                    "group_by_source_folder": True,
+                },
                 "seed": 42,
                 "classification": "all",
                 "quality_filter": "all",
@@ -1026,11 +1089,10 @@ class MockBackend:
             "augmentation": {"profile": "aug_v003"},
             "checkpoint": {
                 "save_every": 10,
-                "save_last": True,
-                "save_best": True,
                 "best_metric": "instance_map",
                 "best_mode": "max",
                 "validation_interval": 5,
+                "save_fold_models": True,
             },
         }
         if model_type == "mask_rcnn":
@@ -1090,6 +1152,34 @@ class MockBackend:
             results.append({"level": "error", "message": "データセット版を選択してください"})
         if not data.get("input_channels"):
             results.append({"level": "error", "message": "入力チャンネルを選択してください"})
+        cv = data.get("cv", {})
+        folds = int(cv.get("n_folds", 5))
+        if not 2 <= folds <= 10:
+            results.append({"level": "error", "message": "分割数は 2〜10 にしてください"})
+        try:
+            total, _per_fold = self.estimate_training_items(
+                data.get("dataset_version"),
+                data.get("classification", "all"),
+                data.get("quality_filter", "all"),
+                folds,
+            )
+            if total < folds:
+                results.append(
+                    {"level": "error", "message": f"交差検証には画像が最低 {folds} 件必要です"}
+                )
+            elif cv.get("group_by_source_folder", True):
+                groups = {item.source_folder for item in self._filtered_training_items(config)}
+                if len(groups) < folds:
+                    results.append(
+                        {
+                            "level": "error",
+                            "message": (
+                                f"フォルダ単位の分割には取込元フォルダが最低 {folds} 個必要です"
+                            ),
+                        }
+                    )
+        except (KeyError, ValueError):
+            pass
         if int(training.get("batch_size", 1)) > 16:
             results.append(
                 {"level": "warning", "message": "GPU メモリ使用量が大きくなる可能性があります"}
@@ -1116,9 +1206,10 @@ class MockBackend:
         dataset_version: str | None = None,
         classification: str = "all",
         quality_filter: str = "all",
+        n_folds: int = 5,
         **filters: Any,
     ) -> tuple[int, int]:
-        """指定条件を適用した件数を80/20で分割して返す。"""
+        """指定条件を適用した学習総数と各フォールドの概算件数を返す。"""
         if dataset_version is None:
             items = self.working["train"].items
         else:
@@ -1126,7 +1217,7 @@ class MockBackend:
         filtered = (
             [item for item in items if item.usage == "train"]
             if dataset_version is None
-            else [item for item in items if item.included]
+            else [item for item in items if item.usage == "train"]
         )
         if classification != "all":
             filtered = [item for item in filtered if item.classification == classification]
@@ -1135,8 +1226,8 @@ class MockBackend:
         elif quality_filter == "good_and_acceptable":
             filtered = [item for item in filtered if item.quality in {"良", "可"}]
         total = len(filtered)
-        train_count = int(total * 0.8)
-        return train_count, total - train_count
+        folds = max(2, min(10, int(n_folds)))
+        return total, (total + folds - 1) // folds
 
     def next_experiment_id(self) -> str:
         """次の実験識別子を返す。"""
@@ -1152,9 +1243,11 @@ class MockBackend:
         expid = experiment_id or experiment_config.get("id") or self.next_experiment_id()
         experiment_config["id"] = expid
         data = saved_config.setdefault("data", {})
-        data["used_item_ids"] = data.get("used_item_ids") or [
-            item.item_id for item in self.working["train"].items[:40]
-        ]
+        data["used_item_ids"] = (
+            [item.item_id for item in self._filtered_training_items(saved_config)]
+            if status != "draft"
+            else []
+        )
         model_type = saved_config["model"]["type"]
         existing = self.experiments.get(expid)
         now = self._now()
@@ -1168,6 +1261,9 @@ class MockBackend:
                 status=status,
                 total_epochs=int(saved_config["training"]["epochs"]),
                 used_item_ids=list(data["used_item_ids"]),
+                fold_assignments=self._assign_folds(saved_config, data["used_item_ids"])
+                if status != "draft"
+                else {},
                 created_at=now,
             )
         else:
@@ -1179,6 +1275,7 @@ class MockBackend:
             experiment.status = status
             experiment.total_epochs = int(saved_config["training"]["epochs"])
             experiment.used_item_ids = list(data["used_item_ids"])
+            experiment.fold_assignments = self._assign_folds(saved_config, data["used_item_ids"])
         self.experiments[expid] = experiment
         self._sync_profile_usage()
         return experiment
@@ -1197,58 +1294,227 @@ class MockBackend:
         experiment.runs.append(RunAttempt(len(experiment.runs) + 1, self._now()))
         return experiment
 
+    def _assign_folds(self, config: dict[str, Any], item_ids: list[str]) -> dict[str, int]:
+        """分類別件数を均しながら、同じ取込元フォルダを同じ fold に置く。"""
+        cv = config.get("data", {}).get("cv", {})
+        count = int(cv.get("n_folds", 5))
+        if len(item_ids) < count:
+            raise ValueError(f"交差検証には画像が最低 {count} 件必要です")
+        by_id = {
+            item.item_id: item
+            for item in self._items_for_version(config["data"]["dataset_version"])
+        }
+        groups: dict[str, list[DataItem]] = {}
+        for item_id in item_ids:
+            item = by_id.get(item_id)
+            if item is not None:
+                key = item.source_folder if cv.get("group_by_source_folder", True) else item_id
+                groups.setdefault(key, []).append(item)
+        if len(groups) < count:
+            raise ValueError(f"交差検証には異なる取込元フォルダが最低 {count} 個必要です")
+        rng = np.random.default_rng(int(config.get("data", {}).get("seed", 42)))
+        keys = list(groups)
+        rng.shuffle(keys)
+        keys.sort(key=lambda key: len(groups[key]), reverse=True)
+        fold_counts = [0] * count
+        class_counts: list[dict[str, int]] = [dict() for _ in range(count)]
+        target_count = len(item_ids) / count
+        class_totals: dict[str, int] = {}
+        for group in groups.values():
+            for item in group:
+                label = item.classification or "未分類"
+                class_totals[label] = class_totals.get(label, 0) + 1
+        assignments: dict[str, int] = {}
+        for key in keys:
+            group = groups[key]
+            classes: dict[str, int] = {}
+            for item in group:
+                label = item.classification or "未分類"
+                classes[label] = classes.get(label, 0) + 1
+
+            def placement_cost(
+                fold_index: int,
+                group_size: int = len(group),
+                group_classes: dict[str, int] = classes,
+            ) -> float:
+                previous_total = (fold_counts[fold_index] - target_count) ** 2
+                next_total = (fold_counts[fold_index] + group_size - target_count) ** 2
+                cost = next_total - previous_total
+                if cv.get("stratify_by_classification", True):
+                    for label, class_total in class_totals.items():
+                        target_class = class_total / count
+                        before = (class_counts[fold_index].get(label, 0) - target_class) ** 2
+                        after = (
+                            class_counts[fold_index].get(label, 0)
+                            + group_classes.get(label, 0)
+                            - target_class
+                        ) ** 2
+                        cost += after - before
+                return cost
+
+            fold = min(range(count), key=placement_cost)
+            for item in group:
+                assignments[item.item_id] = fold + 1
+                label = item.classification or "未分類"
+                class_counts[fold][label] = class_counts[fold].get(label, 0) + 1
+                fold_counts[fold] += 1
+        return assignments
+
+    def _filtered_training_items(self, config: dict[str, Any]) -> list[DataItem]:
+        """学習版、分類、品質条件を適用した画像を返す。"""
+        data = config.get("data", {})
+        items = [
+            item
+            for item in self._items_for_version(data["dataset_version"])
+            if item.usage == "train"
+        ]
+        if data.get("classification", "all") != "all":
+            items = [item for item in items if item.classification == data["classification"]]
+        quality = data.get("quality_filter", "all")
+        if quality == "good_only":
+            items = [item for item in items if item.quality == "良"]
+        elif quality == "good_and_acceptable":
+            items = [item for item in items if item.quality in {"良", "可"}]
+        return items
+
     def record_epoch(
-        self, experiment_id: str, epoch: int, loss: float, map_value: float | None = None
+        self,
+        experiment_id: str,
+        epoch: int,
+        loss: float,
+        map_value: float | None = None,
+        fold: int | None = None,
     ) -> Experiment:
-        """学習履歴と設定間隔に基づくチェックポイントを記録する。"""
+        """指定 fold の CV 履歴または最終学習 loss を記録する。"""
         experiment = self.get_experiment(experiment_id)
         experiment.current_epoch = epoch
-        experiment.history.append(EpochMetrics(epoch, loss, map_value))
+        if fold is None:
+            experiment.phase = "final_training"
+            experiment.final_history.append(EpochMetrics(epoch, loss, None))
+            return experiment
+        experiment.phase = "cross_validation"
+        points = experiment.fold_histories.setdefault(fold, [])
+        if map_value is not None:
+            seed = int(experiment.config.values["data"].get("seed", 42))
+            rng = np.random.default_rng(seed + fold * 104729 + epoch * 1009)
+            direction = -1.0 if fold % 2 else 1.0
+            map_value = max(0.0, min(1.0, map_value + direction * float(rng.uniform(0.01, 0.03))))
+        points.append(EpochMetrics(epoch, loss, map_value))
+        if map_value is not None:
+            n_folds = int(experiment.config.values["data"]["cv"]["n_folds"])
+            values = []
+            fold_losses = []
+            for fold_points in experiment.fold_histories.values():
+                match = next((p for p in reversed(fold_points) if p.epoch == epoch), None)
+                if match is not None:
+                    if match.map is not None:
+                        values.append(match.map)
+                    fold_losses.append(match.loss)
+            if len(values) == n_folds:
+                oof = EpochMetrics(
+                    epoch, sum(fold_losses) / len(fold_losses), sum(values) / n_folds
+                )
+                experiment.oof_history.append(oof)
+                experiment.history = experiment.oof_history
+                experiment.selected_epoch = max(
+                    experiment.oof_history, key=lambda p: p.map or 0
+                ).epoch
         checkpoint_config = experiment.config.values["checkpoint"]
         interval = max(1, int(checkpoint_config["save_every"]))
-        suffix = ".pt" if experiment.model_type == "mask_rcnn" else ""
-        if epoch % interval == 0:
-            name = f"epoch_{epoch:03d}{suffix}"
-            experiment.checkpoints = [item for item in experiment.checkpoints if item.name != name]
-            experiment.checkpoints.append(Checkpoint(name, epoch, map_value, self._now()))
-        best_mode = checkpoint_config["best_mode"]
-        best_metrics = [item.map for item in experiment.history if item.map is not None]
-        improved = map_value is not None and (
-            not best_metrics[:-1]
-            or (
-                map_value >= max(best_metrics[:-1])
-                if best_mode == "max"
-                else map_value <= min(best_metrics[:-1])
-            )
-        )
-        if checkpoint_config["save_best"] and improved:
-            best_name = "best.pt" if experiment.model_type == "mask_rcnn" else "best"
-            experiment.checkpoints = [
-                item for item in experiment.checkpoints if item.name != best_name
-            ]
-            experiment.checkpoints.append(Checkpoint(best_name, epoch, map_value, self._now()))
+        if (
+            fold is not None
+            and checkpoint_config.get("save_fold_models", True)
+            and epoch % interval == 0
+        ):
+            name = f"epoch_{epoch:03d}.pt"
+            if not any(item.name == name and item.fold == fold for item in experiment.checkpoints):
+                experiment.checkpoints.append(
+                    Checkpoint(name, epoch, map_value, self._now(), fold=fold)
+                )
         return experiment
 
     def finish_training(self, experiment_id: str, status: str = "completed") -> Experiment:
         """学習を完了・失敗・中断状態にする。"""
         experiment = self.get_experiment(experiment_id)
         experiment.status = status
-        config = experiment.config.values["checkpoint"]
-        if status == "completed" and config["save_last"]:
-            name = "last.pt" if experiment.model_type == "mask_rcnn" else "last"
-            value = experiment.history[-1].map if experiment.history else None
+        if status == "completed":
+            if experiment.oof_history:
+                selected = next(
+                    (
+                        point
+                        for point in experiment.oof_history
+                        if point.epoch == experiment.selected_epoch
+                    ),
+                    max(experiment.oof_history, key=lambda point: point.map or 0),
+                )
+                experiment.oof_evaluation = self._oof_evaluation(experiment, selected.map or 0.0)
+                rng = np.random.default_rng(int(experiment.config.values["data"].get("seed", 42)))
+                experiment.oof_predictions = {
+                    item_id: max(
+                        0.0,
+                        min(1.0, (selected.map or 0.0) + float(rng.normal(0.0, 0.015))),
+                    )
+                    for item_id in experiment.used_item_ids
+                }
+                if experiment.config.values["checkpoint"].get("save_fold_models", True):
+                    for fold, points in experiment.fold_histories.items():
+                        metric = next(
+                            (point.map for point in points if point.epoch == selected.epoch), None
+                        )
+                        if metric is not None:
+                            experiment.checkpoints.append(
+                                Checkpoint(
+                                    "selected.pt",
+                                    selected.epoch,
+                                    metric,
+                                    self._now(),
+                                    fold=fold,
+                                )
+                            )
+            name = "final.pt"
+            value = None
             experiment.checkpoints.append(
-                Checkpoint(name, experiment.current_epoch, value, self._now())
+                Checkpoint(
+                    name, experiment.selected_epoch or experiment.current_epoch, value, self._now()
+                )
             )
+            experiment.phase = "completed"
         if experiment.runs:
             experiment.runs[-1].finished_at = self._now()
             experiment.runs[-1].result = status
         return experiment
 
+    def _oof_evaluation(self, experiment: Experiment, score: float) -> Evaluation:
+        """実使用画像の分類別件数を持つ OOF 評価を返す。"""
+        data_version = experiment.config.values["data"]["dataset_version"]
+        items = {item.item_id: item for item in self._items_for_version(data_version)}
+        counts = {label: 0 for label in self.classifications}
+        for item_id in experiment.used_item_ids:
+            item = items.get(item_id)
+            if item and item.classification in counts:
+                counts[item.classification] += 1
+        return Evaluation(
+            score,
+            {
+                label: (max(0.0, score - index * 0.03), count)
+                for index, (label, count) in enumerate(counts.items())
+            },
+        )
+
     def retry_experiment(self, experiment_id: str) -> Experiment:
         """同一実験へ新しい試行を追加する。"""
         experiment = self.get_experiment(experiment_id)
         experiment.status = "running"
+        experiment.phase = "cross_validation"
+        experiment.current_epoch = 0
+        experiment.fold_histories.clear()
+        experiment.oof_history.clear()
+        experiment.final_history.clear()
+        experiment.history.clear()
+        experiment.checkpoints.clear()
+        experiment.selected_epoch = None
+        experiment.oof_evaluation = None
+        experiment.oof_predictions.clear()
         experiment.runs.append(RunAttempt(len(experiment.runs) + 1, self._now()))
         return experiment
 
@@ -1308,8 +1574,10 @@ class MockBackend:
         experiment = self.get_experiment(experiment_id)
         if experiment.status != "completed":
             raise ValueError("完了した実験のみ候補に追加できます")
+        if checkpoint != "final.pt":
+            raise ValueError("比較候補には最終学習モデルのみ指定できます")
         if not any(item.name == checkpoint for item in experiment.checkpoints):
-            raise ValueError("実験に存在しないチェックポイントです")
+            raise ValueError("最終学習モデルが実験にありません")
         for candidate in self.candidates.values():
             if (
                 candidate.experiment_id == experiment_id
@@ -1318,11 +1586,39 @@ class MockBackend:
             ):
                 raise ValueError(f"同じ設定は {candidate.candidate_id} として登録済みです")
         number = max((int(key[-3:]) for key in self.candidates), default=0) + 1
+        oof = self._candidate_oof_evaluation(experiment, inference_config_id)
         candidate = Candidate(
-            f"RC-{number:03d}", experiment_id, checkpoint, inference_config_id, comment=comment
+            f"RC-{number:03d}",
+            experiment_id,
+            checkpoint,
+            inference_config_id,
+            oof_evaluation=oof,
+            oof_experiment_id=experiment_id,
+            oof_epoch=experiment.selected_epoch,
+            comment=comment,
         )
         self.candidates[candidate.candidate_id] = candidate
         return candidate
+
+    def _candidate_oof_evaluation(
+        self, experiment: Experiment, inference_config_id: str
+    ) -> Evaluation:
+        """保存済み OOF 結果を推論設定に応じて決定的に再評価する。"""
+        base = experiment.oof_evaluation or self._evaluation(
+            max((point.map or 0 for point in experiment.oof_history), default=0.0)
+        )
+        params = self.inference_configs[inference_config_id].params
+        param_bytes = repr(sorted(params.items())).encode("utf-8")
+        stable_jitter = (
+            (sum((index + 1) * value for index, value in enumerate(param_bytes)) % 17) - 8
+        ) * 0.003
+        return Evaluation(
+            max(0.0, min(1.0, base.overall_map + stable_jitter)),
+            {
+                label: (max(0.0, min(1.0, score + stable_jitter)), count)
+                for label, (score, count) in base.per_class.items()
+            },
+        )
 
     def start_evaluation(
         self, candidate_ids: list[str], validation_version: str
@@ -1390,6 +1686,7 @@ class MockBackend:
             inference_config=copy.deepcopy(inference.params),
             validation_dataset=validation_version,
             evaluation_result=candidate.evaluations[validation_version],
+            oof_evaluation=copy.deepcopy(candidate.oof_evaluation),
             released_at=self._now(),
             comment=comment or candidate.comment,
         )

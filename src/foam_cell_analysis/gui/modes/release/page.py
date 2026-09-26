@@ -73,7 +73,7 @@ class ReleasedModelsPage(BasePage):
         )
         splitter = QSplitter(Qt.Orientation.Vertical)
         upper = QSplitter(Qt.Orientation.Horizontal)
-        self.model_table = QTableWidget(0, 11)
+        self.model_table = QTableWidget(0, 12)
         self.model_table.setHorizontalHeaderLabels(
             [
                 "モデルID",
@@ -83,7 +83,8 @@ class ReleasedModelsPage(BasePage):
                 "途中保存モデル",
                 "推論設定",
                 "検証用データセット",
-                "mAP",
+                "検証用 mAP",
+                "OOF mAP",
                 "リリース日時",
                 "割り当て中の分類",
                 "コメント",
@@ -109,6 +110,7 @@ class ReleasedModelsPage(BasePage):
         for label in (
             "実験・途中保存モデル",
             "評価 mAP",
+            "OOF mAP",
             "推論設定",
             "検証用データセット",
             "リリース日時",
@@ -245,13 +247,14 @@ class ReleasedModelsPage(BasePage):
                 candidate.inference_config_id,
                 model.validation_dataset,
                 format_score(model.evaluation_result.overall_map),
+                format_score(model.oof_evaluation.overall_map) if model.oof_evaluation else "—",
                 format_datetime(model.released_at),
                 ", ".join(assignments[model.model_id]) or "なし",
                 model.comment,
             )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
-                if column in (0, 2, 3, 4, 5, 6, 7, 8):
+                if column in (0, 2, 3, 4, 5, 6, 7, 8, 9):
                     item.setFont(numeric_font())
                     item.setTextAlignment(
                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
@@ -267,8 +270,9 @@ class ReleasedModelsPage(BasePage):
             5: 110,
             6: 140,
             7: 70,
-            8: 140,
-            10: 170,
+            8: 70,
+            9: 140,
+            11: 170,
         }.items():
             self.model_table.setColumnWidth(column, width)
         model_rows = {
@@ -301,6 +305,9 @@ class ReleasedModelsPage(BasePage):
             "実験・途中保存モデル": f"{model.experiment_id} ・ {model.checkpoint}",
             "評価 mAP": f"全体 {format_score(evaluation.overall_map)}"
             + (f"\n{per_class}" if per_class else ""),
+            "OOF mAP": format_score(model.oof_evaluation.overall_map)
+            if model.oof_evaluation
+            else "—",
             "推論設定": candidate.inference_config_id,
             "検証用データセット": model.validation_dataset,
             "リリース日時": format_datetime(model.released_at),
@@ -327,6 +334,11 @@ class ReleasedModelsPage(BasePage):
             ("途中保存モデル", model.checkpoint),
             ("推論設定ID", candidate.inference_config_id),
             ("検証用データセット", model.validation_dataset),
+            (
+                "OOF mAP",
+                format_score(model.oof_evaluation.overall_map) if model.oof_evaluation else "—",
+            ),
+            ("OOF 実験・選択エポック", f"{candidate.oof_experiment_id} ・ {candidate.oof_epoch}"),
             ("リリース日時", format_datetime(model.released_at)),
             ("コメント", model.comment or "なし"),
         ]
@@ -342,6 +354,16 @@ class ReleasedModelsPage(BasePage):
             (f"評価結果 / {classification} 件数", str(count))
             for classification, (_score, count) in evaluation.per_class.items()
         )
+        if model.oof_evaluation:
+            rows.append(("OOF / 全体 mAP", format_score(model.oof_evaluation.overall_map)))
+            rows.extend(
+                (f"OOF / {classification} mAP", format_score(score))
+                for classification, (score, _count) in model.oof_evaluation.per_class.items()
+            )
+            rows.extend(
+                (f"OOF / {classification} 件数", str(count))
+                for classification, (_score, count) in model.oof_evaluation.per_class.items()
+            )
         dialog = QDialog(self)
         dialog.setWindowTitle(f"{model.model_id} の詳細")
         dialog.resize(680, 560)

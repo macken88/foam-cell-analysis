@@ -224,7 +224,7 @@
 <div class="container">
 <section class="hero">
 <h1>気泡 インスタンスセグメンテーションアプリ<br/>モデル学習モード仕様・画面モック</h1>
-<p>本仕様は、気泡検出用インスタンスセグメンテーションモデルの学習、学習内評価、保存を行う管理者向け「モデル学習モード」を対象とする。正式なモデル比較とリリースは別モードで行う。</p>
+<p>本仕様は、気泡検出用インスタンスセグメンテーションモデルの学習、交差検証（OOF）評価、保存を行う管理者向け「モデル学習モード」を対象とする。正式なモデル比較とリリースは別モードで行う。</p>
 <p class="small">
       初期対応モデル：Cellpose / マスク R-CNN<br/>
       初期前提：推論時のアンサンブルは行わず、リリース済みモデルを1つ選択して推論する。
@@ -253,7 +253,7 @@
 <tr><td>実験群</td><td>比較したい複数実験のまとまり</td><td>入力画像サイズ比較、Optunaによる実験群</td></tr>
 <tr><td>実験</td><td>1つの固定された学習設定</td><td>学習率=1e-4、バッチサイズ=4、データセット=v004</td></tr>
 <tr><td>実行試行</td><td>同一実験の実行試行</td><td>1回目メモリ不足、2回目完走</td></tr>
-<tr><td>途中保存モデル</td><td>1回の学習途中のモデル状態</td><td>epoch_20.pt, best.pt, last.pt</td></tr>
+<tr><td>途中保存モデル</td><td>1回の学習途中のモデル状態</td><td>fold_1/epoch_020.pt, fold_1/selected.pt, final.pt</td></tr>
 </tbody>
 </table>
 <div class="flow">実験群
@@ -262,7 +262,8 @@
 │   ├─ 実行試行 001
 │   │   ├─ epoch_010
 │   │   ├─ epoch_020
-│   │   └─ best
+│   │   ├─ fold_1/epoch_020.pt
+│   │   └─ final.pt
 │   └─ 実行試行 002
 │
 ├─ 実験 B
@@ -277,20 +278,20 @@
 </section>
 <section class="card">
 <h2>3. 実験共通設定</h2>
-<h3>3.1 データセット / 交差検証分割</h3>
+<h3>3.1 データセット / 交差検証</h3>
 <table>
 <thead>
 <tr><th>設定</th><th>概要</th><th>備考</th></tr>
 </thead>
 <tbody>
 <tr><td>データセット版</td><td>確定済みデータセットを選択</td><td>例：v004</td></tr>
-<tr><td>交差検証分割識別子</td><td>学習用と学習内検証用の分割定義</td><td>正式評価用の検証用データセットとは別</td></tr>
+<tr><td>分割数</td><td>K=5（2〜10で設定）</td><td>学習設定で変更</td></tr><tr><td>層別</td><td>画像分類で層別する</td><td>同一フォールドで分類比を保つ</td></tr><tr><td>グループ</td><td>取り込み元フォルダ単位で分割</td><td>同じフォルダを複数フォールドへ分けない</td></tr><tr><td>実使用データ一覧</td><td>各画像の識別子とフォールド番号</td><td>学習開始時に確定して保存</td></tr>
 <tr><td>乱数シード</td><td>分割・学習乱数管理</td><td>再現性のため保存</td></tr>
 <tr><td>画像分類</td><td>特定画像分類のみで学習する場合に指定</td><td>画像データの共通メタデータ属性を使用</td></tr>
 <tr><td>品質条件</td><td>品質条件による採否</td><td>良のみ等</td></tr>
 <tr><td>入力画像チャンネル</td><td>使用する照明・画像チャンネル</td><td>将来の複数チャンネル対応</td></tr>
 <tr><td>実使用データ一覧</td><td>絞り込みと分割後に実際に使用したデータ識別ID一覧</td><td>実験のメタデータとして固定保存</td></tr></tbody>
-</table><div class="note">データセット版、画像分類、品質条件、交差検証分割などを適用した結果の実使用データ一覧は、画像側ではなく実験側のメタデータとして保存する。</div>
+</table><div class="note">データセット版、画像分類、品質条件、交差検証などを適用した結果の実使用データ一覧は、画像側ではなく実験側のメタデータとして保存する。</div>
 <h3>3.2 共通学習設定</h3>
 <table>
 <thead>
@@ -448,31 +449,11 @@ Range       : -180 ～ +180 deg</pre>
     </p>
 </section>
 <section class="card">
-<h2>7. 途中保存モデル / 評価</h2>
-<h3>7.1 途中保存モデル</h3>
-<ul>
-<li>save_last</li>
-<li>save_best</li>
-<li>save_every_n_epochs</li>
-<li>best_metric</li>
-<li>best_mode = maximize / minimize</li>
-</ul>
-<p>同一実験内に複数途中保存モデルを保持する。</p>
-<pre>exp_0042/
-├─ config.yaml
-├─ metadata.json
-├─ metrics.csv
-├─ logs/
-├─ checkpoints/
-│  ├─ epoch_010.pt
-│  ├─ epoch_020.pt
-│  ├─ best.pt
-│  └─ last.pt
-└─ predictions/</pre>
-<h3>7.2 共通評価指標</h3>
-<ul><li>平均適合率（mAP）</li></ul>
-<p>学習中の主要な自動評価指標は平均適合率（mAP）に統一し、最良の途中保存モデルの選択にも原則としてこの指標を用いる。必要な診断値は内部ログへ追加してよいが、主要な比較項目とはしない。</p>
-</section>
+<h2>7. 交差検証（OOF）・チェックポイント</h2><h3>7.1 フォールドごとの学習</h3><p>各フォールドを順に検証側として学習し、検証間隔ごとにフォールド別mAPを記録する。各エポックのOOF mAPは全フォールドの検証予測を集約して求める。早期終了はフォールドごとに適用し、OOF曲線は全フォールドが到達した最後のエポックまでとする。</p><h3>7.2 共通エポックの選択と最終学習</h3><p>OOF mAPが最大となる1つのエポックを選択し、全フォールド共通で使う。選択エポック時点のOOF予測を保存する。その後、学習用データ全体を選択エポック数まで再学習してfinal.ptを必ず保存する。最終学習には検証部分がないためlossのみ記録する。</p><ul><li>save_every: フォールドごとの定期保存間隔。</li><li>validation_interval: 各フォールドの検証間隔。</li><li>best_metric / best_mode: OOF mAPによるエポック選択の指標と方向。</li><li>save_fold_models: フォールドごとのモデル保存を有効にする設定。</li></ul><pre>checkpoints/
+├─ fold_1/epoch_010.pt
+├─ fold_1/selected.pt
+├─ ...
+└─ final.pt</pre><p>評価値はOOF mAPを全体・画像分類別に保持し、対象件数も保存する。検証用データセットの評価はモデル比較段階で別に行う。</p></section>
 <section class="card"><h2>8. モデル比較・リリース段階への引き渡し</h2><p>管理者は途中保存モデルを直接本番推論へ割り当てない。本モードでは実験と途中保存モデルまでを確定し、推論設定の比較、検証用データセットでの正式評価、リリース済みモデルの登録、画像分類ごとのモデル振り分けは「モデル比較・リリース」モードで行う。</p><div class="flow">実験
   ↓
 途中保存モデル
@@ -506,7 +487,7 @@ Range       : -180 ～ +180 deg</pre>
 <div class="form-section">
 <h4>データセット</h4>
 <div class="row"><div>データセット版</div><div class="input select">v004</div></div>
-<div class="row"><div>学習 / 検証分割</div><div class="input select">split_001</div></div>
+<div class="row"><div>交差検証</div><div class="input select">K=5</div></div>
 <div class="row"><div>画像分類</div><div class="input select">分類A</div></div>
 <div class="row"><div>乱数シード</div><div class="input">42</div></div>
 </div>
@@ -535,7 +516,7 @@ Range       : -180 ～ +180 deg</pre>
 <div class="form-section">
 <h4>途中保存モデル / 評価</h4>
 <div class="row"><div>保存間隔</div><div class="input">10エポック</div></div>
-<div class="row"><div>最良モデル判定指標</div><div class="input select">インスタンス平均適合率（mAP）</div></div>
+<div class="row"><div>エポック選択の指標（OOF mAP）</div><div class="input select">インスタンス平均適合率（mAP）</div></div>
 <div class="row"><div>検証間隔</div><div class="input">1エポック</div></div>
 </div>
 <div class="btnbar">
@@ -645,7 +626,7 @@ Range       : -180 ～ +180 deg</pre>
 <th>データセット</th>
 <th>データ拡張</th>
 <th>状態</th>
-<th>最良 mAP</th>
+<th>OOF mAP</th>
 <th>途中保存モデル</th>
 </tr>
 </thead>
@@ -657,7 +638,7 @@ Range       : -180 ～ +180 deg</pre>
 <td>aug_v003</td>
 <td>完了</td>
 <td>0.412</td>
-<td>best.pt</td>
+<td>final.pt</td>
 </tr>
 <tr>
 <td>exp_0043</td>
@@ -666,7 +647,7 @@ Range       : -180 ～ +180 deg</pre>
 <td>aug_v003</td>
 <td>完了</td>
 <td>0.398</td>
-<td>best</td>
+<td>final.pt</td>
 </tr>
 <tr>
 <td>exp_0044</td>
@@ -687,7 +668,7 @@ Range       : -180 ～ +180 deg</pre>
 </div>
 </div>
 </section>
-<section class="card"><h2>13. 画面モック：モデル比較への引き渡し</h2><div class="mock-window"><div class="mock-titlebar">モデル比較へ送る</div><div class="mainpane"><div class="form-section"><div class="row"><div>実験</div><div class="input select">exp_0042</div></div><div class="row"><div>途中保存モデル</div><div class="input select">best.pt</div></div><div class="row"><div>説明</div><div class="input">分類A / 入力画像サイズ比較</div></div></div><div class="note">前処理設定・推論設定を含む比較候補の作成と正式リリースは、モデル比較・リリースモードで行う。</div><div class="btnbar"><span class="btn">キャンセル</span><span class="btn primary">モデル比較へ送る</span></div></div></div></section>
+<section class="card"><h2>13. 画面モック：モデル比較への引き渡し</h2><div class="mock-window"><div class="mock-titlebar">モデル比較へ送る</div><div class="mainpane"><div class="form-section"><div class="row"><div>実験</div><div class="input select">exp_0042</div></div><div class="row"><div>途中保存モデル</div><div class="input select">final.pt</div></div><div class="row"><div>説明</div><div class="input">分類A / 入力画像サイズ比較</div></div></div><div class="note">前処理設定・推論設定を含む比較候補の作成と正式リリースは、モデル比較・リリースモードで行う。</div><div class="btnbar"><span class="btn">キャンセル</span><span class="btn primary">モデル比較へ送る</span></div></div></div></section>
 <section class="card">
 <h2>14. 設定項目一覧と説明</h2>
 <p>
@@ -706,7 +687,7 @@ Range       : -180 ～ +180 deg</pre>
 </thead>
 <tbody>
 <tr><td>データセット版</td><td>dataset_version</td><td>学習に使用する確定済みデータセットの版。例：v004。</td><td>共通</td></tr>
-<tr><td>交差検証分割</td><td>split_id</td><td>学習用・検証用にどの画像を割り当てるかを定義した分割ID。</td><td>共通</td></tr>
+<tr><td>交差検証</td><td>cv</td><td>学習用・検証用にどの画像を割り当てるかを定義した分割ID。</td><td>共通</td></tr>
 <tr><td>乱数シード</td><td>seed</td><td>データ分割や学習中の乱数を固定し、再現性を高めるための値。</td><td>共通</td></tr>
 <tr><td>画像分類</td><td>classification</td><td>特定分類のみで学習する場合の対象分類。全分類を対象とする設定も可能。</td><td>共通</td></tr>
 <tr><td>品質条件</td><td>quality_filter</td><td>学習対象に含めるデータ品質の条件。例：Goodのみ。</td><td>共通</td></tr>
@@ -718,8 +699,8 @@ Range       : -180 ～ +180 deg</pre>
 <tr><td>データ拡張プロファイル</td><td>augmentation.profile</td><td>学習時に使用する回転、反転、明るさ変化等の組合せを定義したプロファイル。</td><td>共通</td></tr>
 <tr><td>検証間隔</td><td>validation_interval</td><td>何エポックごとに検証データで性能評価するかを指定する。</td><td>共通</td></tr>
 <tr><td>途中保存モデル保存間隔</td><td>save_every</td><td>何エポックごとに途中モデルを保存するかを指定する。</td><td>共通</td></tr>
-<tr><td>最良モデル判定指標</td><td>best_metric</td><td>best途中保存モデルを決定するために用いる評価指標。例：インスタンス平均適合率（mAP）。</td><td>共通</td></tr>
-<tr><td>実使用データ一覧</td><td>used_item_ids</td><td>絞り込み・分割後に実際に学習または学習内検証へ使用したデータ識別ID一覧。実験開始時に固定保存する。</td><td>共通</td></tr></tbody>
+<tr><td>エポック選択の指標（OOF mAP）</td><td>best_metric</td><td>OOF mAPに基づき全フォールド共通の選択エポックを決める指標。</td><td>共通</td></tr>
+<tr><td>実使用データ一覧</td><td>used_item_ids</td><td>絞り込み・分割後に実際に学習または交差検証（OOF）へ使用したデータ識別ID一覧。実験開始時に固定保存する。</td><td>共通</td></tr></tbody>
 </table>
 <h3>14.2 Mask R-CNN 固有設定</h3>
 <table>
@@ -827,7 +808,10 @@ Range       : -180 ～ +180 deg</pre>
 
 data:
   dataset_version: v004
-  split_id: split_001
+  cv:
+    n_folds: 5
+    stratify_by_classification: true
+    group_by_source_folder: true
   used_item_ids: used_items_exp.csv
   seed: 42
   classification: type_A
@@ -863,8 +847,10 @@ model:
 
 checkpoint:
   save_every: 10
-  save_best: true
-  best_metric: instance_map</pre>
+  validation_interval: 5
+  best_metric: instance_map
+  best_mode: max
+  save_fold_models: true</pre>
 <h3>Cellpose</h3>
 <pre>experiment:
   id: exp_0043
@@ -872,7 +858,10 @@ checkpoint:
 
 data:
   dataset_version: v004
-  split_id: split_001
+  cv:
+    n_folds: 5
+    stratify_by_classification: true
+    group_by_source_folder: true
   used_item_ids: used_items_exp.csv
   seed: 42
   classification: type_A
@@ -896,13 +885,27 @@ model:
 
 checkpoint:
   save_every: 10
-  save_best: true
-  best_metric: instance_map</pre>
+  validation_interval: 5
+  best_metric: instance_map
+  best_mode: max
+  save_fold_models: true</pre>
 </section>
 <section class="card">
 <h2>16. 現時点の設計原則まとめ</h2>
-<ol><li>初期対応モデルはCellposeとMask R-CNN。</li><li>共通の学習流れとモデル固有設定を分離する。</li><li>一つの論理設定を一つの実験とする。</li><li>同一設定の再試行は実行試行として管理する。</li><li>Optunaの各試行も通常実験と同じ保存形式を使用する。</li><li>学習内の性能確認には交差検証分割を使用し、正式評価用の検証用データセットとは分離する。</li><li>実際に使用したデータ識別ID一覧を実験のメタデータとして保存する。</li><li>データ拡張設定は使用後に上書きせず新しい版を作る。</li><li>学習設定と推論設定を分離する。</li><li>学習中の主要自動評価指標は平均適合率（mAP）とする。</li><li>正式な比較候補作成・リリース・モデル振り分けはモデル比較・リリースモードで行う。</li></ol>
+<ol><li>初期対応モデルはCellposeとMask R-CNN。</li><li>共通の学習流れとモデル固有設定を分離する。</li><li>一つの論理設定を一つの実験とする。</li><li>同一設定の再試行は実行試行として管理する。</li><li>Optunaの各試行も通常実験と同じ保存形式を使用する。</li><li>学習用データによる交差検証（OOF）で評価し、正式評価用の検証用データセットとは分離する。</li><li>実際に使用したデータ識別ID一覧を実験のメタデータとして保存する。</li><li>データ拡張設定は使用後に上書きせず新しい版を作る。</li><li>学習設定と推論設定を分離する。</li><li>学習中の主要自動評価指標は平均適合率（mAP）とする。</li><li>正式な比較候補作成・リリース・モデル振り分けはモデル比較・リリースモードで行う。</li></ol>
 </section>
+<section class="card"><h2>17. 交差検証（OOF）と最終学習</h2><p>1実験は1つの学習設定で構成する。学習開始時に品質条件・画像分類で絞った学習用データだけをK分割し、検証用データセット（val版）は学習にも交差検証にも使わない。</p><ol><li>既定K=5。画像分類で層別し、同じ取り込み元フォルダを同一フォールドにまとめ、data.seedで再現可能に割り当てる。実使用データ一覧にはデータ識別子とフォールド番号を保存する。</li><li>各フォールドを順に検証側として学習し、各評価エポックで全フォールドの検証予測を集約したOOF mAPとフォールド別mAPを保存する。早期終了はフォールドごとに適用し、OOF曲線は全フォールドが到達したエポックまでとする。</li><li>OOF mAPが最大のエポックを共通の選択エポックとし、そのエポックのOOF予測を保存する。</li><li>同じ設定で学習用画像全体を選択エポック数まで再学習し、final.ptを作る。この段階は検証を行わずlossのみ記録する。</li></ol><pre>data:
+  cv:
+    n_folds: 5
+    stratify_by_classification: true
+    group_by_source_folder: true
+  seed: 42
+checkpoint:
+  save_every: 10
+  validation_interval: 5
+  best_metric: instance_map
+  best_mode: max
+  save_fold_models: true</pre></section>
 </div>
 </body>
 </html>
