@@ -2,7 +2,7 @@
 
 from collections import defaultdict
 
-from PySide6.QtCore import QSettings, Qt, QTimer
+from PySide6.QtCore import QEvent, QSettings, Qt, QTimer
 from PySide6.QtGui import QColor, QKeyEvent
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -19,15 +19,25 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QSpinBox,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
+    QWidget,
 )
 
 from ....services.models import DataItem, ImportCandidate
 from ...theme import Color, numeric_font, set_style
 from ...widgets.image_convert import DisplayMode, array_to_pixmap, render
 from ...widgets.image_view import ImageView
+from ...widgets.marks import KeyHintBar
+from .finalize_thumbnails import (
+    FinalizeThumbnailDelegate,
+    FinalizeThumbnailModel,
+    FinalizeThumbnailView,
+    ThumbnailPreviewDialog,
+)
 
 
 class ImportDialog(QDialog):
@@ -355,10 +365,14 @@ class DatasetFinalizeDialog(QDialog):
     def __init__(self, parent, backend) -> None:
         super().__init__(parent)
         self.setWindowTitle("データセットを確定")
-        self.setMinimumSize(720, 420)
+        self.setMinimumSize(960, 680)
         self.backend = backend
         self.created = []
         layout = QVBoxLayout(self)
+        tabs = QTabWidget()
+        self.finalize_tabs = tabs
+        overview = QWidget()
+        overview_layout = QVBoxLayout(overview)
         self.table = QTableWidget(2, 7)
         self.table.setHorizontalHeaderLabels(
             ["用途", "新しい版", "親版", "件数", "追加", "除外", "変更"]
@@ -367,8 +381,9 @@ class DatasetFinalizeDialog(QDialog):
         self.table.verticalHeader().hide()
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         changed_purposes = []
+        summaries = backend.summarize_finalize()
         for row, purpose in enumerate(("train", "val")):
-            summary = backend.summarize_finalize()[purpose]
+            summary = summaries[purpose]
             label = "学習" if purpose == "train" else "検証"
             base = backend.get_working_dataset(purpose).base_version
             has_changes = bool(summary.get("has_changes", True))
@@ -388,27 +403,71 @@ class DatasetFinalizeDialog(QDialog):
             )
             for col, value in enumerate(values):
                 self.table.setItem(row, col, QTableWidgetItem(value))
-        layout.addWidget(self.table)
+        overview_layout.addWidget(self.table)
         items = backend.get_working_items()
         n_unassigned = sum(item.usage == "unassigned" for item in items)
-        layout.addWidget(
+        overview_layout.addWidget(
             QLabel(
                 f"未振り分け {n_unassigned} 件は今回の版に含まれません。"
                 "学習用版には同時に発行する検証用版を自動で紐付けます。"
             )
         )
         self.comment = QLineEdit()
-        layout.addWidget(QLabel("コメント"))
-        layout.addWidget(self.comment)
+        overview_layout.addWidget(QLabel("コメント"))
+        overview_layout.addWidget(self.comment)
         self.archive = QCheckBox("確定後にアーカイブを作成する")
-        layout.addWidget(self.archive)
+        overview_layout.addWidget(self.archive)
         self.errors = backend.validate_items().errors
         self.error_label = QLabel(
             "" if not self.errors else f"整合性エラー {len(self.errors)} 件を解消してください"
         )
         if self.errors:
             set_style(self.error_label, state="error")
-        layout.addWidget(self.error_label)
+        overview_layout.addWidget(self.error_label)
+        tabs.addTab(overview, "概要")
+        self.thumbnail_filter = QComboBox()
+        self.thumbnail_filter.addItems(["追加・変更のみ", "すべて", "⚠ のあるもの"])
+        thumbnail_page = QWidget()
+        thumbnail_layout = QVBoxLayout(thumbnail_page)
+        thumbnail_layout.addWidget(
+            QLabel("今回の版に入る画像を用途ごとに確認できます。画像をクリックすると拡大します。")
+        )
+        thumbnail_layout.addWidget(self.thumbnail_filter)
+        self.thumbnail_tabs = QTabWidget()
+        self.thumbnail_models = {}
+        self.thumbnail_views = {}
+        self.thumbnail_stacks = {}
+        self.thumbnail_empty_labels = {}
+        self.thumbnail_source_items = {}
+        working_items = backend.get_working_items()
+        item_errors = {issue.item_id: issue.message for issue in self.errors}
+        for purpose, label in (("train", "学習用"), ("val", "検証用")):
+            items_for_purpose = [item for item in working_items if item.usage == purpose]
+            self.thumbnail_source_items[purpose] = items_for_purpose
+            model = FinalizeThumbnailModel(backend, self)
+            model.set_items(items_for_purpose, item_errors)
+            view = FinalizeThumbnailView()
+            view.setModel(model)
+            view.setItemDelegate(FinalizeThumbnailDelegate(view))
+            view.setUniformItemSizes(True)
+            model.attach_view(view)
+            view.clicked.connect(lambda index, source=model: self._preview_item(source, index))
+            self.thumbnail_models[purpose] = model
+            self.thumbnail_views[purpose] = view
+            stack = QStackedWidget()
+            empty_label = QLabel()
+            empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            set_style(empty_label, role="note", state="idle")
+            stack.addWidget(view)
+            stack.addWidget(empty_label)
+            self.thumbnail_stacks[purpose] = stack
+            self.thumbnail_empty_labels[purpose] = empty_label
+            self.thumbnail_tabs.addTab(stack, f"{label} ({len(items_for_purpose)} 件)")
+        self.thumbnail_filter.currentIndexChanged.connect(self._filter_thumbnails)
+        self._filter_thumbnails(0)
+        thumbnail_layout.addWidget(self.thumbnail_tabs, 1)
+        tabs.addTab(thumbnail_page, "サムネイルで確認")
+        layout.addWidget(tabs, 1)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
@@ -424,6 +483,42 @@ class DatasetFinalizeDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+    def _filter_thumbnails(self, index: int) -> None:
+        """用途ごとの一覧へ選択中の絞り込みを適用する。"""
+        filter_name = ("changed", "all", "errors")[index]
+        for purpose, model in self.thumbnail_models.items():
+            model.filter_name = filter_name
+            model.set_items(self.thumbnail_source_items[purpose], model.errors)
+            visible_count = model.rowCount()
+            total_count = len(self.thumbnail_source_items[purpose])
+            label = "学習用" if purpose == "train" else "検証用"
+            if filter_name == "all":
+                self.thumbnail_tabs.setTabText(
+                    self.thumbnail_tabs.indexOf(self.thumbnail_stacks[purpose]),
+                    f"{label} ({total_count} 件)",
+                )
+            else:
+                self.thumbnail_tabs.setTabText(
+                    self.thumbnail_tabs.indexOf(self.thumbnail_stacks[purpose]),
+                    f"{label} ({visible_count} / {total_count} 件)",
+                )
+            if visible_count:
+                self.thumbnail_stacks[purpose].setCurrentIndex(0)
+            else:
+                empty_message = {
+                    "changed": "追加・変更された画像はありません",
+                    "errors": "整合性エラーのある画像はありません",
+                    "all": "表示できる画像はありません",
+                }[filter_name]
+                self.thumbnail_empty_labels[purpose].setText(empty_message)
+                self.thumbnail_stacks[purpose].setCurrentIndex(1)
+
+    def _preview_item(self, model, index) -> None:
+        """選択したサムネイルを簡易拡大表示する。"""
+        item = model.data(index, Qt.ItemDataRole.UserRole)
+        if isinstance(item, DataItem):
+            ThumbnailPreviewDialog(self, self.backend, item).exec()
+
     def _accept(self) -> None:
         self.created = self.backend.finalize_working(
             self.comment.text().strip(), self.archive.isChecked()
@@ -434,7 +529,9 @@ class DatasetFinalizeDialog(QDialog):
 class ContinuousTriageDialog(QDialog):
     """一枚ずつ用途・分類・品質を設定する連続振り分け画面。"""
 
-    def __init__(self, parent, items: list[DataItem], on_update, backend=None) -> None:
+    def __init__(
+        self, parent, items: list[DataItem], on_update, backend=None, shortcuts=None
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("連続振り分け")
         self.source_items = list(items)
@@ -442,6 +539,11 @@ class ContinuousTriageDialog(QDialog):
         self.index = 0
         self.on_update = on_update
         self.backend = backend
+        self.shortcuts = shortcuts
+        self.display_modes = (DisplayMode.IMAGE, DisplayMode.OVERLAY, DisplayMode.INSTANCE_LABEL)
+        self.display_mode = DisplayMode.OVERLAY
+        self.channel_index = 0
+        self.current_item_id: str | None = None
         self.setMinimumSize(900, 580)
         layout = QVBoxLayout(self)
         self.counter = QLabel()
@@ -449,6 +551,10 @@ class ContinuousTriageDialog(QDialog):
         self.item_label.setFont(numeric_font(14))
         layout.addWidget(self.counter)
         layout.addWidget(self.item_label)
+        if shortcuts:
+            self.hints = KeyHintBar(self._hint_items())
+            layout.addWidget(self.hints)
+            shortcuts.changed.connect(self._shortcuts_changed)
         self.target_unassigned = QRadioButton("未振り分けのみ")
         self.target_unassigned.setChecked(True)
         self.target_filtered = QRadioButton("絞り込み中のすべて")
@@ -461,6 +567,8 @@ class ContinuousTriageDialog(QDialog):
         body = QHBoxLayout()
         self.image = ImageView()
         self.image.setMinimumSize(580, 380)
+        self.image.installEventFilter(self)
+        self.image.viewport().installEventFilter(self)
         body.addWidget(self.image, 1)
         self.filmstrip = QListWidget()
         self.filmstrip.setMaximumWidth(190)
@@ -519,27 +627,76 @@ class ContinuousTriageDialog(QDialog):
             else [item for item in self.source_items if item.usage == "unassigned"]
         )
         self.index = 0
+        self._refresh_filmstrip()
+        self._show_item()
+
+    def _refresh_filmstrip(self) -> None:
+        """対象画像に合わせてフィルムストリップを作り直す。"""
         self.filmstrip.clear()
         for item in self.items:
             self.filmstrip.addItem(f"{item.item_id}\n{item.source_filename}")
-        self._show_item()
 
     def _edit_metadata(self, field: str, value) -> None:
         if self.items and self.index < len(self.items):
             self.on_update(self.items[self.index].item_id, **{field: value})
             self._show_item()
 
+    def _hint_items(self) -> list[tuple[str, str]]:
+        """現在のキー割り当てからプレビューのヒントを作る。"""
+        return [
+            (self.shortcuts.display_key(self.shortcuts[name]), label)
+            for name, label in (
+                ("display_mode", "表示形式"),
+                ("channel_prev", "前チャンネル"),
+                ("channel_next", "次チャンネル"),
+                ("zoom_in", "拡大"),
+                ("zoom_out", "縮小"),
+                ("fit_view", "全体表示"),
+            )
+        ]
+
+    def _shortcuts_changed(self) -> None:
+        """共有キー変更をヒント行へ反映する。"""
+        if hasattr(self, "hints"):
+            self.hints.set_hints(self._hint_items())
+
     def assign(self, usage: str) -> None:
         if self.items:
             item = self.items[self.index]
+            current_id = item.item_id
             self.on_update(item.item_id, usage=usage)
             if self.next_box.isChecked():
-                self.index = (self.index + 1) % len(self.items)
+                if self.target_unassigned.isChecked() and self.backend:
+                    source_ids = {source.item_id for source in self.source_items}
+                    self.source_items = [
+                        candidate
+                        for candidate in self.backend.get_working_items()
+                        if candidate.item_id in source_ids
+                    ]
+                    self.items = [
+                        candidate
+                        for candidate in self.source_items
+                        if candidate.usage == "unassigned"
+                    ]
+                    self._refresh_filmstrip()
+                    next_index = next(
+                        (
+                            index
+                            for index, candidate in enumerate(self.items)
+                            if candidate.item_id != current_id
+                        ),
+                        None,
+                    )
+                    self.index = next_index if next_index is not None else 0
+                elif self.items:
+                    self.index = (self.index + 1) % len(self.items)
+            self.current_item_id = current_id
             self._show_item()
 
     def _show_item(self) -> None:
         if self.items:
             item = self.items[self.index]
+            self.current_item_id = item.item_id
             remaining = sum(i.usage == "unassigned" for i in self.items)
             self.counter.setText(f"未振り分け 残り {remaining} / {len(self.items)}")
             item_label = f"{item.item_id}　"
@@ -553,14 +710,16 @@ class ContinuousTriageDialog(QDialog):
                 combo.setCurrentIndex(max(0, combo.findData(value)))
                 combo.blockSignals(False)
             if self.backend:
-                channel = item.channels[0] if item.channels else "A"
+                self.channel_index %= max(1, len(item.channels))
+                channel = item.channels[self.channel_index] if item.channels else "A"
+                self.current_channel = channel
                 image = self.backend.get_item_image("all", item.item_id, channel)
                 labels = (
                     self.backend.get_item_mask("all", item.item_id, item.selected_mask_revision)
                     if item.mask_revisions
                     else None
                 )
-                self.image.set_image(array_to_pixmap(render(image, labels, DisplayMode.OVERLAY)))
+                self.image.set_image(array_to_pixmap(render(image, labels, self.display_mode)))
                 QTimer.singleShot(0, self.image.fit_image)
             if self.filmstrip.currentRow() != self.index:
                 self.filmstrip.blockSignals(True)
@@ -573,14 +732,70 @@ class ContinuousTriageDialog(QDialog):
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         """用途キーで分類し、Enter または Esc で戻る。"""
-        mapping = {"q": "train", "w": "val", "e": "excluded"}
-        usage = mapping.get(event.text().casefold())
-        if usage:
-            self.assign(usage)
-            event.accept()
+        if self.shortcuts:
+            for action, usage in (
+                ("usage_train", "train"),
+                ("usage_val", "val"),
+                ("usage_excluded", "excluded"),
+            ):
+                if self.shortcuts.matches(action, event):
+                    self.assign(usage)
+                    event.accept()
+                    return
+        if self._handle_view_shortcut(event):
             return
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             self.accept()
             event.accept()
             return
         super().keyPressEvent(event)
+
+    def eventFilter(self, watched, event) -> bool:
+        if (
+            watched in (self.image, self.image.viewport())
+            and event.type() == QEvent.Type.KeyPress
+            and self._handle_view_shortcut(event)
+        ):
+            return True
+        return super().eventFilter(watched, event)
+
+    def _handle_view_shortcut(self, event: QKeyEvent) -> bool:
+        """プレビュー表示形式とチャンネルのショートカットを処理する。"""
+        if self.shortcuts and self.shortcuts.matches("display_mode", event):
+            index = self.display_modes.index(self.display_mode)
+            self.display_mode = self.display_modes[(index + 1) % len(self.display_modes)]
+            labels = {
+                DisplayMode.IMAGE: "原画像",
+                DisplayMode.OVERLAY: "オーバーレイ",
+                DisplayMode.INSTANCE_LABEL: "インスタンスラベル",
+            }
+            if self.parent() and hasattr(self.parent(), "ctx"):
+                self.parent().ctx.status.show_message(f"表示形式: {labels[self.display_mode]}")
+            self._show_item()
+            event.accept()
+            return True
+        if self.shortcuts and (
+            self.shortcuts.matches("channel_prev", event)
+            or self.shortcuts.matches("channel_next", event)
+        ):
+            self.channel_index += -1 if self.shortcuts.matches("channel_prev", event) else 1
+            if self.items:
+                self.channel_index %= max(1, len(self.items[self.index].channels))
+            self._show_item()
+            if self.parent() and hasattr(self.parent(), "ctx"):
+                self.parent().ctx.status.show_message(f"チャンネル: {self.current_channel}")
+            event.accept()
+            return True
+        if self.shortcuts and self.shortcuts.matches("zoom_in", event):
+            self.image.zoom_by(1.2)
+            event.accept()
+            return True
+        if self.shortcuts and self.shortcuts.matches("zoom_out", event):
+            self.image.zoom_by(1 / 1.2)
+            event.accept()
+            return True
+        if self.shortcuts and self.shortcuts.matches("fit_view", event):
+            self.image.fit_image()
+            event.accept()
+            return True
+        return False

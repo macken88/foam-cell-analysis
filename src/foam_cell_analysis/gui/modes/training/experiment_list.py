@@ -200,6 +200,7 @@ class ExperimentListPage(BasePage):
         """一覧を再読込してフィルターと実行状況を反映する。"""
         selected_ids = {item.experiment_id for item in self._checked_experiments()}
         current = self._current_experiment_id()
+        scroll_value = self.table.verticalScrollBar().value()
         experiments = self.ctx.backend.list_experiments()
         studies = sorted({item.study_id for item in experiments})
         old_study = self.study_filter.currentText()
@@ -279,6 +280,7 @@ class ExperimentListPage(BasePage):
                 if self.table.item(row, 1).text() == current:
                     self.table.setCurrentCell(row, 1)
                     break
+        self.table.verticalScrollBar().setValue(scroll_value)
         self._current_changed()
         self._update_buttons()
 

@@ -290,6 +290,7 @@ table.rev{font-size:.92rem}
 <tr><td>v2.1</td><td>2026-09-25</td><td>レビュー反映: フォルダ単位のメタデータ（v2.2 で変更）、キー割り当ての変更、コンボ選択の維持、Excel 出力・取込の配置、用途変更の制限撤廃、画面構成をホーム＋モード別ウィンドウに変更（2章）</td><td>改良案・未実装</td></tr>
 <tr><td>v2.2</td><td>2026-09-25</td><td>レビュー反映: フォルダ単位のメタデータを「取り込み時に統一する項目を選んで各画像に書き込む」方式に変更（フォルダのメタデータは保持しない）、ホームのモード選択ショートカットを削除</td><td>改良案・未実装</td></tr>
 <tr><td>v2.3</td><td>2026-09-25</td><td>見た目の設計（2.6）を追加: 色（色はデータの意味にだけ使う）・フォント・部品の見た目。ホームを管理者の工程の流れとして表示（2.1）。フォルダパスは本文と同じ BIZ UDPゴシックで表示（レビューで決定）。画面モックを新しい見た目に更新し、表表示（4.3）、モデル学習〜本番推論（5〜10章）のモックを追加</td><td>改良案・未実装</td></tr>
+<tr><td>v2.4</td><td>2026-09-26</td><td>タブ切り替えの不具合修正、表示形式のショートカット、サムネイル表示を確定ダイアログへ移動。レビュー指摘の修正: 共有キー設定、既定キー操作、記号キー配列差の吸収、絞り込みと整合性表示、候補メニュー、推論中の二重実行防止、Excel 入出力、連続振り分け、確定サムネイルの件数・空表示、再表示時の状態更新</td><td>今回の対象を実装済み</td></tr>
 </tbody></table></div>
 <nav><strong>目次</strong><ol class="toc"><li><a href="#sec1">1. ソース構成</a></li><li><a href="#sec2">2. アプリ全体の画面構成</a> <span class="badge">改良案</span><br><a href="#sec2-6">2.6 見た目の設計（色・フォント・部品）</a> <span class="badge">v2.3</span></li><li><a href="#sec3">3. 共通部品</a></li><li><a href="#sec4">4. データ準備（PageId.DATA_PREPARATION）</a> <span class="badge">改良案</span></li><li><a href="#sec5">5. モデル学習（PageId.TRAINING）</a></li><li><a href="#sec6">6. 実験一覧（PageId.EXPERIMENTS）</a></li><li><a href="#sec7">7. モデル比較・リリース（PageId.CANDIDATES）</a></li><li><a href="#sec8">8. マスク比較（PageId.MASK_COMPARISON）</a></li><li><a href="#sec9">9. リリース済みモデル・モデル振り分け（PageId.RELEASED_MODELS）</a></li><li><a href="#sec10">10. 本番推論（PageId.INFERENCE）</a></li><li><a href="#sec11">11. MockBackend</a></li><li><a href="#sec12">12. テスト（tests/gui/）</a></li></ol></nav>
 </header>
@@ -396,6 +397,7 @@ table.rev{font-size:.92rem}
 <ul>
 <li>モードごとに専用の <code>QMainWindow</code> を持つ。初回は最大化で開き、次回からは前回の位置とサイズで開く。</li>
 <li>1つのモードにつきウィンドウは1つ。開いているモードをもう一度選ぶと、既存のウィンドウを前面に出す。複数のモードのウィンドウを同時に開いて並べられる（例: 学習の進み具合を見ながらデータ準備を進める）。</li>
+<li>ホームから既存モードを開き直す場合と、OS のタスクバーからウィンドウを再度前面に出す場合は、現在のタブを保って表示中のページを更新する。フィルター、選択、編集中の値は各ページの再表示更新で維持する。</li>
 <li>ウィンドウ上部にホームボタンとモード内のタブだけを置く。v1 のページ見出し・説明文は省き、説明はタブのツールチップに出す（縦の作業エリアを広くするため）。</li>
 <li>モードのウィンドウを閉じてもアプリは終了しない。実行中のジョブ（学習など）は続く。</li>
 <li>ステータスバーには、そのウィンドウのメッセージ、実行中ジョブ数（アプリ全体）、自動保存時刻を出す。</li>
@@ -620,7 +622,7 @@ table.rev{font-size:.92rem}
 <tr><td>キーの割り当て</td><td>なし</td><td>既定の割り当てあり。<strong>利用者が変更できる</strong></td><td>利用者の手癖や使うキーボードに合わせる</td></tr>
 <tr><td>学習/検証の分割</td><td>手作業</td><td><strong>自動振り分け</strong>（検証の割合を指定、分類ごとの層化、画像単位または取り込み元フォルダ単位、乱数シード）</td><td>数百枚の分割をボタン1回で終える</td></tr>
 <tr><td>Excel 出力・取込</td><td>ボタン2つ</td><td><strong>継続する。</strong>ツールバーの「Excel ▾」から実行（<kbd>Ctrl</kbd>+<kbd>E</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd>）。用途列・取り込み元フォルダ列を追加</td><td>表計算ソフトでの一括編集にも対応する</td></tr>
-<tr><td>表示</td><td>表のみ</td><td>表とサムネイル一覧を切り替え（<kbd>G</kbd>）</td><td>画像を目で見て振り分ける作業を速くする</td></tr>
+<tr><td>表示</td><td>作業データは表のみ。画像確認は右側プレビューと連続振り分けビューを使う</td><td>確定ダイアログで用途別サムネイルを確認</td><td>編集画面の一覧を軽く保ち、版の内容確認に画像一覧を使う</td></tr>
 <tr><td>元に戻す</td><td>なし</td><td><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd></td><td>押し間違いを気にせず速く操作できる</td></tr>
 <tr><td>タブ</td><td>作業中データ／整合性確認／データセット版履歴</td><td>作業中データ／データセット版履歴</td><td>整合性確認は絞り込み（⚠ エラー）で見る</td></tr>
 </tbody></table></div>
@@ -643,7 +645,7 @@ table.rev{font-size:.92rem}
 <ol class="steps">
 <li>5つのフォルダをまとめて画面にドラッグ → ポップアップで統一する項目（例: 画像分類・品質）にチェックを入れ、フォルダごとに値を選ぶ（5行ぶん）</li>
 <li><kbd>Ctrl</kbd>+<kbd>D</kbd> 自動振り分け（検証 20%、分類ごとに層化）</li>
-<li><kbd>G</kbd> でサムネイル表示にし、例外の画像だけ品質を変える（<kbd>X</kbd>/<kbd>C</kbd>）か不採用にする（<kbd>E</kbd>）</li>
+<li>表のプレビューを <kbd>M</kbd> で原画像・オーバーレイ・インスタンスラベルへ切り替え、<kbd>[</kbd>/<kbd>]</kbd> でチャンネルを選ぶ。例外の画像だけ品質を変える（<kbd>X</kbd>/<kbd>C</kbd>）か不採用にする（<kbd>E</kbd>）</li>
 <li>⚠ が付いた行だけを直す（自動検査）</li>
 <li><kbd>Ctrl</kbd>+<kbd>Enter</kbd> で確定（train/val をまとめて発行）</li>
 </ol>
@@ -651,43 +653,9 @@ table.rev{font-size:.92rem}
 </div>
 
 <h3>4.3 画面レイアウト（データ準備ウィンドウ）</h3>
-<p class="small">サムネイル表示（上）と表表示（下）。<kbd>G</kbd> で切り替える。選択・絞り込み・プレビューは両方の表示で共通。</p>
+<p class="small">作業中データは表表示だけとする。画像の確認は右側のプレビューで行い、<kbd>Enter</kbd> で連続振り分けを開く。</p>
 <div class="mock">
 <div class="mock-title">データ準備 — 気泡インスタンスセグメンテーション</div>
-<div class="mock-body">
-<div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span class="on">作業中データ</span><span>データセット版履歴</span></span>
-<span class="spacer"></span><span class="small">ベース <span class="num">train_v003</span> / <span class="num">val_v003</span></span></div>
-<div class="m-toolbar">
-<span class="btn">取り込み… <kbd>Ctrl+I</kbd></span>
-<span class="btn">自動振り分け… <kbd>Ctrl+D</kbd></span>
-<span class="btn">Excel ▾</span>
-<span class="btn">その他 ▾</span>
-<span class="spacer"></span>
-<span class="btn primary">確定… <kbd class="inv">Ctrl+Enter</kbd></span>
-</div>
-<div class="m-chips">
-<span class="chip on plain">すべて <b>612</b></span><span class="chip gray">未振り分け <b>23</b></span><span class="chip blue">学習 <b>489</b></span><span class="chip orange">検証 <b>96</b></span><span class="chip strike">不採用 <b>4</b></span><span class="chip red">⚠ エラー <b>2</b></span><span class="chip chg">変更あり <b>37</b></span>
-<span class="sep">|</span><span class="chip plain">分類A</span><span class="chip plain">分類B</span><span class="chip plain">分類C</span>
-<span class="sel-combo">取り込み元: すべて ▾</span>
-<span class="m-search">🔍 識別子・ファイル名（Ctrl+F）</span>
-</div>
-<div class="m-main">
-<div class="m-grid g4">
-<div class="fgroup"><span class="path">2026-09\分類A_lot12</span></div><div class="th blue"><svg><use href="#foam-raw"/></svg><span class="b">A・良</span><span class="u">学習</span></div><div class="th orange sel"><svg><use href="#foam-raw"/></svg><span class="b">A・良</span><span class="u">検証</span></div><div class="th blue"><svg><use href="#foam-raw"/></svg><span class="b">A・良</span><span class="u">学習</span></div><div class="th gray"><svg><use href="#foam-raw"/></svg><span class="b">A・良</span><span class="u">未振り分け</span></div><div class="fgroup"><span class="path">2026-09\分類B_lot07</span></div><div class="th blue sel"><svg><use href="#foam-raw"/></svg><span class="b">B・可</span><span class="u">学習</span></div><div class="th gray"><svg><use href="#foam-raw"/></svg><span class="b">B・良</span><span class="u">未振り分け</span></div><div class="th red"><svg><use href="#foam-raw"/></svg><span class="b e">⚠ マスクなし</span><span class="u">学習</span></div><div class="th strike"><svg><use href="#foam-raw"/></svg><span class="b">B・不良</span><span class="u">不採用</span></div><div class="fgroup"><span class="path">2026-09\lot03</span></div><div class="th gray"><svg><use href="#foam-raw"/></svg><span class="b">未設定</span><span class="u">未振り分け</span></div><div class="th orange"><svg><use href="#foam-raw"/></svg><span class="b">C・良</span><span class="u">検証</span></div><div class="th blue"><svg><use href="#foam-raw"/></svg><span class="b">C・良</span><span class="u">学習</span></div><div class="th gray"><svg><use href="#foam-raw"/></svg><span class="b">C・良</span><span class="u">未振り分け</span></div>
-</div>
-<div class="m-preview">
-<div class="m-img" style="min-height:230px"><svg><use href="#foam-ovl"/></svg><span class="cap">オーバーレイ ・ チャンネル B</span></div>
-<div class="m-info"><span class="num"><b>item_000123</b></span>　<span class="num">foam_0123.tif</span>　<span class="small">取り込み元 <span class="path">2026-09\分類B_lot07</span></span><br>
-用途 <span class="sel-combo">学習 ▾</span>　分類 <span class="sel-combo">分類B ▾</span>　品質 <span class="sel-combo">可 ▾</span>　マスク <span class="sel-combo num">rev_002 ▾</span><br>
-<span class="small"><span class="num">2</span> 件選択中。変更は選択中のすべてに適用</span></div>
-</div>
-</div>
-<div class="m-hint"><kbd>Q</kbd> 学習　<kbd>W</kbd> 検証　<kbd>E</kbd> 不採用　<kbd>R</kbd> 未振り分け　｜　<kbd>1</kbd>–<kbd>9</kbd> 分類　｜　<kbd>Z</kbd> 良 <kbd>X</kbd> 可 <kbd>C</kbd> 不良　｜　<kbd>Space</kbd> 次の未振り分け　<kbd>Enter</kbd> 連続振り分け　<kbd>G</kbd> 表 ⇔ サムネイル　<kbd>?</kbd> 一覧</div>
-<div class="status"><span>item_000123 ほか 1 件を 学習 にしました（Ctrl+Z で元に戻す）</span><span>実行中ジョブ <span class="num">1</span></span><span>自動保存 <span class="num">10:42:08</span></span></div>
-</div></div>
-
-<div class="mock">
-<div class="mock-title">データ準備 — 気泡インスタンスセグメンテーション（表表示）</div>
 <div class="mock-body">
 <div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span class="on">作業中データ</span><span>データセット版履歴</span></span>
 <span class="spacer"></span><span class="small">ベース <span class="num">train_v003</span> / <span class="num">val_v003</span></span></div>
@@ -716,7 +684,7 @@ table.rev{font-size:.92rem}
 <span class="small"><span class="num">2</span> 件選択中。変更は選択中のすべてに適用</span></div>
 </div>
 </div>
-<div class="m-hint"><kbd>Q</kbd> 学習　<kbd>W</kbd> 検証　<kbd>E</kbd> 不採用　<kbd>R</kbd> 未振り分け　｜　<kbd>1</kbd>–<kbd>9</kbd> 分類　｜　<kbd>Z</kbd> 良 <kbd>X</kbd> 可 <kbd>C</kbd> 不良　｜　<kbd>Space</kbd> 次の未振り分け　<kbd>Enter</kbd> 連続振り分け　<kbd>G</kbd> 表 ⇔ サムネイル　<kbd>?</kbd> 一覧</div>
+<div class="m-hint"><kbd>Q</kbd> 学習　<kbd>W</kbd> 検証　<kbd>E</kbd> 不採用　<kbd>R</kbd> 未振り分け　｜　<kbd>1</kbd>–<kbd>9</kbd> 分類　｜　<kbd>Z</kbd> 良 <kbd>X</kbd> 可 <kbd>C</kbd> 不良　｜　<kbd>Space</kbd> 次の未振り分け　<kbd>Enter</kbd> 連続振り分け　<kbd>M</kbd> 表示形式　<kbd>[</kbd>/<kbd>]</kbd> チャンネル　<kbd>?</kbd> 一覧</div>
 <div class="status"><span>item_000123 ほか 1 件を 学習 にしました（Ctrl+Z で元に戻す）</span><span>実行中ジョブ <span class="num">1</span></span><span>自動保存 <span class="num">10:42:08</span></span></div>
 </div></div>
 
@@ -725,11 +693,11 @@ table.rev{font-size:.92rem}
   <ul>
   <li>常に表示するのは「取り込み」「自動振り分け」「Excel ▾」「その他 ▾」「確定」。</li>
   <li>「Excel ▾」には「Excel に出力…」と「Excel から取り込む…」を入れる。</li>
-  <li>「その他 ▾」には「新しいマスク版を取り込む」「アーカイブ作成」「キー割り当て…」を入れる。</li>
+  <li>「その他 ▾」には「新しいマスク版を取り込む」「アーカイブ作成」「キー割り当て…」を入れる。新しいマスク版の取り込みは選択中の画像へ行い、アーカイブは最新の学習用版・検証用版を保存先へ作成する。</li>
   </ul></li>
 <li><strong>件数チップ</strong>: 用途ごとの件数が常に見え、クリック（または <kbd>Alt</kbd>+<kbd>1</kbd>〜）でその用途に絞り込む。分類チップ・取り込み元の絞り込みとは AND で組み合わせる。「⚠ エラー」チップが整合性確認タブの代わりになる。</li>
 <li><strong>取り込み元の絞り込み（▾）</strong>: 画像ごとに記録している取り込み元フォルダ（仕様8章「元ディレクトリからの相対パス」）で絞り込む。「あるフォルダの画像だけを見直す」ときに使う。フォルダを管理する機能ではなく、絞り込みの条件の1つにすぎない。</li>
-<li><strong>中央</strong>: 表とサムネイル一覧を <kbd>G</kbd> で切り替える。選択状態・絞り込み・操作は両方の表示で共通。</li>
+<li><strong>中央</strong>: 作業中データは表だけを表示する。画像の一覧確認は確定ダイアログに置く。</li>
 <li><strong>プレビュー（右）</strong>: 選択中の画像を大きく表示する。下に用途・分類・品質・マスク版の<strong>コンボボックス</strong>を置き、選択中のすべての画像に対して変更できる。</li>
 <li><strong>キーのヒント行</strong>: 画面下に主なキーを常に表示する。割り当てを変更した場合は、変更後のキーで表示する。</li>
 </ul>
@@ -815,7 +783,7 @@ table.rev{font-size:.92rem}
 </ul>
 
 <h3>4.7 キーボードショートカット</h3>
-<p>既定の割り当ては、左手で振り分け、右手で移動する配置にしている。単キーの操作は作業表・サムネイルにフォーカスがあるときだけ有効で、検索欄やコンボの入力中は効かない。<strong>割り当てはすべて変更できる（4.8）。</strong></p>
+<p>既定の割り当ては、左手で振り分け、右手で移動する配置にしている。単キーの操作はデータ準備の作業表・プレビュー、連続振り分けビュー、マスク比較、本番推論の結果プレビューで有効とし、検索欄やコンボの入力中は効かない。<strong>割り当てはすべて変更できる（4.8）。</strong></p>
 <div class="grid-2">
 <div class="table-wrap"><table class="keys">
 <thead><tr><th colspan="2">振り分け（選択中のすべてに適用）</th></tr></thead>
@@ -841,9 +809,8 @@ table.rev{font-size:.92rem}
 <tr><td><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd></td><td>前後の画像（<kbd>Shift</kbd> で範囲選択）</td></tr>
 <tr><td><kbd>Space</kbd> / <kbd>Shift</kbd>+<kbd>Space</kbd></td><td>次 / 前の未振り分け</td></tr>
 <tr><td><kbd>Enter</kbd></td><td>連続振り分けビューを開く / 閉じる</td></tr>
-<tr><td><kbd>G</kbd></td><td>表 ⇔ サムネイル</td></tr>
-<tr><td><kbd>M</kbd></td><td>原画像 → オーバーレイ → インスタンスラベル</td></tr>
-<tr><td><kbd>[</kbd> <kbd>]</kbd></td><td>前 / 次のチャンネル</td></tr>
+<tr><td><kbd>M</kbd></td><td>原画像 → オーバーレイ → インスタンスラベル（作業表プレビュー、連続振り分け、マスク比較、本番推論）</td></tr>
+<tr><td><kbd>[</kbd> / <kbd>]</kbd></td><td>前 / 次の画像チャンネル（作業表プレビュー、連続振り分け、マスク比較）</td></tr>
 <tr><td><kbd>+</kbd> <kbd>-</kbd> / <kbd>F</kbd></td><td>ズーム / 全体表示</td></tr>
 </tbody>
 <thead><tr><th colspan="2">画面の操作</th></tr></thead>
@@ -871,8 +838,8 @@ table.rev{font-size:.92rem}
 <tbody>
 <tr><td>振り分け</td><td>用途を「学習」にする</td><td><span class="input">A</span></td><td class="small">Q</td></tr>
 <tr><td>振り分け</td><td>用途を「検証」にする</td><td><span class="input">S</span></td><td class="small">W</td></tr>
-<tr><td>振り分け</td><td>用途を「不採用」にする</td><td><span class="input warn">G　⚠「表 ⇔ サムネイル」と重複しています［入れ替える］［やめる］</span></td><td class="small">E</td></tr>
-<tr><td>表示</td><td>表 ⇔ サムネイル</td><td><span class="input">G</span></td><td class="small">G</td></tr>
+<tr><td>振り分け</td><td>用途を「不採用」にする</td><td><span class="input warn">M　⚠「表示形式」と重複しています［入れ替える］［やめる］</span></td><td class="small">E</td></tr>
+<tr><td>表示</td><td>表示形式を切り替える</td><td><span class="input">M</span></td><td class="small">M</td></tr>
 </tbody></table></div>
 <div class="btns"><span class="btn">既定に戻す</span><span class="btn">書き出し…</span><span class="btn">読み込み…</span><span class="spacer"></span><span class="btn">キャンセル</span><span class="btn primary">保存</span></div>
 </div></div>
@@ -885,12 +852,13 @@ table.rev{font-size:.92rem}
 <li><kbd>Ctrl</kbd>+<kbd>C</kbd>/<kbd>V</kbd>/<kbd>Z</kbd> など OS 標準の編集キーは、変更できるが既定に戻すことを勧める注意を出す。</li>
 </ul>
 
-<h3>4.9 サムネイル一覧</h3>
+<h3>4.9 確定ダイアログのサムネイル確認</h3>
 <ul>
-<li>サムネイルの大きさは 160px を既定とし、<kbd>Ctrl</kbd>+ホイールで 96〜320px に変える。枠の色で用途、右上のバッジで分類・品質・⚠ を示す。</li>
-<li>選択はクリック、<kbd>Shift</kbd>/<kbd>Ctrl</kbd>+クリック、ドラッグの範囲選択に対応する。キー操作とプレビュー下のコンボは表表示と同じように使える。</li>
-<li>並び順は取り込み元フォルダ順・ファイル名順を既定とし、フォルダの区切りで見出しを入れる。</li>
-<li>性能の要件: 1,000枚でもスクロールが引っかからないこと。サムネイルは表示範囲の分だけバックグラウンドで作り、キャッシュする（<code>QListView</code> のアイコン表示と、遅延読み込みのモデルで実装）。</li>
+<li>確定ダイアログに「サムネイルで確認」タブを設け、学習用・検証用に分けて今回の版へ入る画像を並べる。絞り込みは「すべて」「追加・変更のみ」（既定）「⚠ のあるもの」とする。</li>
+<li>用途の色の枠、右上の分類・品質バッジ、下部の用途帯を表示する。⚠ のある項目は警告色で示す。クリックすると拡大プレビューを開く。</li>
+<li>固定サイズのグリッドを使い、可視範囲と少し先の画像だけを要求する。小さい画像は <code>Backend.get_item_thumbnail(item_id, size)</code> で生成し、<code>QThreadPool</code>/<code>QRunnable</code> または <code>concurrent.futures</code> でバックグラウンド処理する。生成中は灰色の領域を表示する。</li>
+<li>生成結果はアイテム ID と大きさをキーに枚数上限付き LRU で共有し、ダイアログを開き直しても再利用する。表示範囲外になった処理結果は破棄し、該当セルだけを再描画する。</li>
+<li>性能要件: 1,000件でもダイアログの初期表示を0.5秒以内に行い、スクロール中に画面を止めない。</li>
 </ul>
 
 <h3>4.10 連続振り分けビュー（<kbd>Enter</kbd>）</h3>
@@ -901,7 +869,7 @@ table.rev{font-size:.92rem}
 <div class="m-side panel">
 <p class="small" style="margin:0 0 2px"><span class="num">item_000124</span>　<span class="num">foam_0124.tif</span></p>
 <div class="m-state">用途 <span class="tag idle">未振り分け</span><br>分類 <span class="sel-combo">分類B ▾</span><br>品質 <span class="sel-combo">良 ▾</span></div>
-<p class="small"><kbd>Q</kbd> 学習　<kbd>W</kbd> 検証　<kbd>E</kbd> 不採用<br>用途を決めると次の画像へ進む<br><br>☑ 振り分けたら次へ進む<br>対象 ◉ 未振り分けのみ ○ 絞り込み中のすべて</p>
+<p class="small"><kbd>Q</kbd> 学習　<kbd>W</kbd> 検証　<kbd>E</kbd> 不採用<br><kbd>M</kbd> 表示形式　<kbd>[</kbd>/<kbd>]</kbd> チャンネル<br>用途を決めると次の画像へ進む<br><br>☑ 振り分けたら次へ進む<br>対象 ◉ 未振り分けのみ ○ 絞り込み中のすべて</p>
 </div></div>
 <div class="m-strip"><span style="border-color:var(--train)"></span><span style="border-color:var(--val)"></span><span class="cur"></span><span></span><span></span><span></span><span></span></div>
 </div></div>
@@ -968,8 +936,9 @@ table.rev{font-size:.92rem}
 </ul>
 
 <h3>4.14 確定ダイアログ（<kbd>Ctrl</kbd>+<kbd>Enter</kbd>）</h3>
-<div class="mock"><div class="mock-title">データセットを確定</div>
+<div class="mock"><div class="mock-title">データセットを確定 — 概要</div>
 <div class="mock-body">
+<div class="row"><span class="btn primary">概要</span><span class="btn">サムネイルで確認</span></div>
 <div class="table-wrap"><table>
 <thead><tr><th>用途</th><th>新しい版</th><th>親版</th><th>件数</th><th>追加</th><th>除外</th><th>変更</th></tr></thead>
 <tbody>
@@ -981,6 +950,18 @@ table.rev{font-size:.92rem}
 <div class="row"><span>確定時の検査</span><span>ファイルハッシュ照合 <span class="num" style="color:var(--ok)">585 / 585 ✔</span></span></div>
 <div class="row"><span>コメント</span><span class="input">&nbsp;</span></div>
 <div class="row"><span></span><span>☑ 確定後にアーカイブを作成する</span></div>
+<div class="btns"><span class="btn">キャンセル</span><span class="btn primary">train_v004 と val_v004 を作成</span></div>
+</div></div>
+<div class="mock"><div class="mock-title">データセットを確定 — サムネイルで確認</div>
+<div class="mock-body">
+<div class="row"><span class="btn">概要</span><span class="btn primary">サムネイルで確認</span></div>
+<div class="row"><span>用途</span><span class="btn primary">学習用 489 件</span> <span class="btn">検証用 96 件</span>　<span class="sel-combo">追加・変更のみ ▾</span></div>
+<div class="m-grid g4">
+<div class="th blue"><svg><use href="#foam-ovl"/></svg><span class="b">分類A・良</span><span class="u">学習 ・ 追加</span></div>
+<div class="th blue"><svg><use href="#foam-ovl"/></svg><span class="b">分類B・可</span><span class="u">学習 ・ 変更</span></div>
+<div class="th orange"><svg><use href="#foam-ovl"/></svg><span class="b">分類C・良</span><span class="u">検証 ・ 追加</span></div>
+<div class="th red"><svg><use href="#foam-ovl"/></svg><span class="b e">⚠ 品質未設定</span><span class="u">検証 ・ 変更</span></div>
+</div>
 <div class="btns"><span class="btn">キャンセル</span><span class="btn primary">train_v004 と val_v004 を作成</span></div>
 </div></div>
 <ul>
@@ -1026,9 +1007,9 @@ table.rev{font-size:.92rem}
 <li><strong>GUI</strong>
   <ul>
   <li><code>modes/data_preparation/</code> を作り直す。</li>
-  <li>新しい部品: <code>ImportWizard</code>（フォルダ選択 → 統一する項目）、<code>ThumbnailGrid</code>（QListView のアイコン表示と遅延読み込みモデル）、<code>TriageView</code>、<code>QUndoStack</code> による元に戻す。</li>
+  <li>新しい部品: <code>ImportWizard</code>（フォルダ選択 → 統一する項目）、確定ダイアログの非同期サムネイル一覧（可視範囲要求・枚数上限付き LRU）、<code>TriageView</code>、<code>QUndoStack</code> による元に戻す。</li>
   <li>共通部品: <code>gui/shortcuts.py</code>（<code>ShortcutMap</code>: 操作 ID → 既定キー、keymap.json の読み書き、重複の検出）と <code>KeymapDialog</code>。他のモードでも使えるよう共通部品とする。</li>
-  <li>件数チップ・分類・取り込み元による絞り込みは、表とサムネイルで共通の QSortFilterProxyModel を使う。</li>
+  <li>作業中データの編集表はページモデルの差分通知で更新する。確定ダイアログのサムネイルは用途別の一覧モデルを使い、可視範囲だけを非同期生成する。</li>
   </ul></li>
 <li><strong>他の画面への影響</strong>: モデル学習は <code>train_*</code>、モデル比較は <code>val_*</code> の版をこれまでどおり選ぶ。画面構成の変更（2章）は全モードに影響する。</li>
 <li><strong>テスト（12章）</strong>

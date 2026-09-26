@@ -58,3 +58,34 @@ def predict_like(labels: np.ndarray, seed: int) -> np.ndarray:
         for value in rng.choice(ids, size=max(1, len(ids) // 12), replace=False):
             result[result == value] = 0
     return result
+
+
+def make_thumbnail(seed: int, size: tuple[int, int]) -> np.ndarray:
+    """小さい解像度で合成画像とラベルのオーバーレイを作る。"""
+    width, height = size
+    rng = np.random.default_rng(seed)
+    gray = np.clip(rng.normal(42, 7, (height, width)), 0, 255).astype(np.uint8)
+    rgb = np.repeat(gray[:, :, None], 3, axis=2)
+    for index in range(1, 7):
+        radius = int(
+            rng.integers(max(3, min(width, height) // 22), max(5, min(width, height) // 10))
+        )
+        cy = int(rng.integers(radius, max(radius + 1, height - radius)))
+        cx = int(rng.integers(radius, max(radius + 1, width - radius)))
+        y0, y1 = max(0, cy - radius), min(height, cy + radius + 1)
+        x0, x1 = max(0, cx - radius), min(width, cx + radius + 1)
+        yy, xx = np.ogrid[y0:y1, x0:x1]
+        disk = (yy - cy) ** 2 + (xx - cx) ** 2 <= radius**2
+        color = np.array(
+            (
+                (index * 67 + 53) % 206 + 50,
+                (index * 131 + 97) % 206 + 50,
+                (index * 197 + 29) % 206 + 50,
+            ),
+            dtype=np.uint16,
+        )
+        region = rgb[y0:y1, x0:x1]
+        region[disk] = ((region[disk].astype(np.uint16) * 3 + color) // 4).astype(np.uint8)
+        rim = disk & ((yy - cy) ** 2 + (xx - cx) ** 2 <= (radius * 0.86) ** 2)
+        region[rim] = color.astype(np.uint8)
+    return np.ascontiguousarray(rgb)

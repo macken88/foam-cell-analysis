@@ -159,7 +159,7 @@ class TrainingPage(BasePage):
         mark_primary(self.start_button)
         self.validate_button.clicked.connect(self.validate_config)
         self.save_button.clicked.connect(self.save_draft)
-        self.start_button.clicked.connect(self.start_training)
+        self.start_button.clicked.connect(lambda: self.start_training())
         buttons.addStretch(1)
         buttons.addWidget(self.validate_button)
         buttons.addWidget(self.save_button)

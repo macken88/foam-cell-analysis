@@ -1,8 +1,8 @@
 """データ準備の一枚表と版履歴用モデル。"""
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, Signal
-from PySide6.QtGui import QColor, QPainter
-from PySide6.QtWidgets import QComboBox, QStyledItemDelegate
+from PySide6.QtGui import QColor, QPainter, QPalette
+from PySide6.QtWidgets import QComboBox, QStyle, QStyledItemDelegate, QStyleOptionViewItem
 
 from ....services.models import DataItem, DatasetVersion
 from ...theme import Color, numeric_font
@@ -35,32 +35,60 @@ class DataPreparationTableModel(QAbstractTableModel):
         self.source_folder: str | None = None
         self.changed_only = False
         self.errors_only = False
+        self._visible_cache: list[DataItem] | None = None
 
     def set_items(self, items: list[DataItem], errors: dict[str, str] | None = None) -> None:
         """モデル行を入れ替える。"""
         self.beginResetModel()
         self.items = list(items)
         self.errors = errors or {}
+        self._visible_cache = None
         self.endResetModel()
 
     def visible_items(self) -> list[DataItem]:
         """現在の絞り込みに合う項目を返す。"""
         query = self.query.casefold()
-        return [
-            item
-            for item in self.items
-            if (self.usages is None or item.usage in self.usages)
-            and (not self.classifications or item.classification in self.classifications)
-            and (self.source_folder is None or item.source_folder == self.source_folder)
-            and (not self.changed_only or item.change is not None)
-            and (not self.errors_only or item.item_id in self.errors)
-            and (
-                not query
-                or query in item.item_id.casefold()
-                or query in item.source_filename.casefold()
-                or query in item.source_relpath.casefold()
+        if self._visible_cache is None:
+            self._visible_cache = [
+                item
+                for item in self.items
+                if (self.usages is None or item.usage in self.usages)
+                and (not self.classifications or item.classification in self.classifications)
+                and (self.source_folder is None or item.source_folder == self.source_folder)
+                and (not self.changed_only or item.change is not None)
+                and (not self.errors_only or item.item_id in self.errors)
+                and (
+                    not query
+                    or query in item.item_id.casefold()
+                    or query in item.source_filename.casefold()
+                    or query in item.source_relpath.casefold()
+                )
+            ]
+        return self._visible_cache
+
+    def filters_changed(self) -> None:
+        """絞り込み条件変更を表へ通知する。"""
+        self._visible_cache = None
+        self.layoutChanged.emit()
+
+    def update_item_errors(
+        self, errors: dict[str, str], item_ids: set[str], *, refresh_layout: bool
+    ) -> None:
+        """指定項目の検査結果だけ差し替えて表示を更新する。"""
+        for item_id in item_ids:
+            self.errors.pop(item_id, None)
+        self.errors.update(errors)
+        if refresh_layout:
+            self._visible_cache = None
+            self.layoutChanged.emit()
+        visible = self.visible_items()
+        rows = [row for row, item in enumerate(visible) if item.item_id in item_ids]
+        for row in rows:
+            self.dataChanged.emit(
+                self.index(row, 0),
+                self.index(row, len(HEADERS) - 1),
+                [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.ToolTipRole],
             )
-        ]
 
     def rowCount(self, parent=None) -> int:
         if parent is None:
@@ -147,7 +175,20 @@ class ValueComboDelegate(QStyledItemDelegate):
     def paint(self, painter: QPainter, option, index) -> None:
         item = index.data(Qt.ItemDataRole.UserRole)
         if isinstance(item, DataItem) and item.change:
-            painter.fillRect(option.rect, QColor(Color.CHANGED))
+            color = (
+                Color.SELECTION_CHANGED
+                if option.state & QStyle.StateFlag.State_Selected
+                else Color.CHANGED
+            )
+            painter.fillRect(option.rect, QColor(color))
+            prepared = QStyleOptionViewItem(option)
+            if option.state & QStyle.StateFlag.State_Selected:
+                prepared.palette.setColor(QPalette.ColorRole.Highlight, QColor(color))
+                prepared.palette.setColor(
+                    QPalette.ColorRole.HighlightedText, QColor(Color.GRAPHITE)
+                )
+            super().paint(painter, prepared, index)
+            return
         super().paint(painter, option, index)
 
     def createEditor(self, parent, option, index):

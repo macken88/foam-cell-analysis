@@ -8,6 +8,7 @@ from PySide6.QtCore import QObject, Signal
 from ..services.backend import Backend
 from .jobs import JobManager
 from .navigation import Navigator
+from .shortcuts import ShortcutMap
 
 
 class StatusBus(QObject):
@@ -33,3 +34,4 @@ class AppContext:
     navigator: Navigator
     jobs: JobManager
     status: StatusBus = field(default_factory=StatusBus)
+    shortcuts: ShortcutMap = field(default_factory=ShortcutMap)

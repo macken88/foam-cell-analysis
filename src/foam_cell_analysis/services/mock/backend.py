@@ -32,7 +32,7 @@ from ..models import (
     ValidationReport,
     WorkingDataset,
 )
-from .synthetic import make_sample, predict_like
+from .synthetic import make_sample, make_thumbnail, predict_like
 
 
 class MockBackend:
@@ -461,12 +461,20 @@ class MockBackend:
 
     def validate_items(self, item_ids: list[str] | None = None) -> ValidationReport:
         """全件または指定項目を検査する。"""
-        report = self.validate_all_working_items()
         if item_ids is None:
-            return report
+            return self.validate_all_working_items()
+        dataset = self.working["all"]
         selected = set(item_ids)
-        errors = [issue for issue in report.errors if issue.item_id in selected]
-        return ValidationReport(report.checks, errors)
+        targets = [item for item in dataset.items if item.item_id in selected]
+        errors = [
+            ValidationIssue("エラー", item.item_id, "必須メタデータ", "分類または品質が未設定です")
+            for item in targets
+            if item.usage in {"train", "val"}
+            and (not item.classification or not item.quality or not item.mask_revisions)
+        ]
+        checks = dataset.validation.checks if dataset.validation else []
+        report = ValidationReport(checks, errors)
+        return report
 
     def summarize_finalize(self) -> dict[str, dict[str, int | str]]:
         """学習用・検証用の一括確定内容を集計する。"""
@@ -635,6 +643,9 @@ class MockBackend:
         """項目を更新し、変更状態・自動保存時刻を更新する。"""
         dataset = self.working["all"]
         item = next(item for item in dataset.items if item.item_id == item_id)
+        revision = changes.get("selected_mask_revision")
+        if revision and revision not in item.mask_revisions:
+            raise ValueError(f"{item_id} にマスク版 {revision} はありません")
         was_included = item.included
         original_change = item.previous_change if item.change == "excluded" else item.change
         legacy_included = "included" in changes
@@ -897,6 +908,11 @@ class MockBackend:
         item = self._get_item(purpose, item_id)
         images, _ = make_sample(item.seed, channels=(channel,))
         return images[channel].copy()
+
+    def get_item_thumbnail(self, item_id: str, size: tuple[int, int]) -> np.ndarray:
+        """小さな合成画像を直接生成してサムネイルに返す。"""
+        item = self._get_item("all", item_id)
+        return make_thumbnail(item.seed, size)
 
     def get_item_mask(self, purpose: str, item_id: str, revision: str) -> np.ndarray:
         """指定マスク版の合成ラベルを返す。"""

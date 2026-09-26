@@ -1,8 +1,13 @@
 """データ準備の既定キーとユーザー設定を管理する。"""
 
+from __future__ import annotations
+
 import json
 import os
 from pathlib import Path
+
+from PySide6.QtCore import QKeyCombination, QObject, Qt, Signal
+from PySide6.QtGui import QKeyEvent, QKeySequence
 
 DEFAULT_SHORTCUTS = {
     "usage_train": "Q",
@@ -14,7 +19,9 @@ DEFAULT_SHORTCUTS = {
     "quality_bad": "C",
     "next_unassigned": "Space",
     "triage_view": "Return",
-    "toggle_view": "G",
+    "display_mode": "M",
+    "channel_prev": "[",
+    "channel_next": "]",
     "help": "?",
     "import": "Ctrl+I",
     "auto_triage": "Ctrl+D",
@@ -34,6 +41,13 @@ DEFAULT_SHORTCUTS = {
     "class_8": "8",
     "class_9": "9",
     "class_dialog": "K",
+    "class_clear": "0",
+    "select_all": "Ctrl+A",
+    "clear_selection": "Esc",
+    "previous_unassigned": "Shift+Space",
+    "zoom_in": "+",
+    "zoom_out": "-",
+    "fit_view": "F",
     "filter_all": "Alt+1",
     "filter_unassigned": "Alt+2",
     "filter_train": "Alt+3",
@@ -52,7 +66,9 @@ LABELS = {
     "quality_bad": "品質を不良にする",
     "next_unassigned": "次の未振り分けへ",
     "triage_view": "連続振り分け",
-    "toggle_view": "表とサムネイルを切り替え",
+    "display_mode": "表示形式を切り替え",
+    "channel_prev": "前のチャンネル",
+    "channel_next": "次のチャンネル",
     "help": "キー一覧",
     "import": "取り込み",
     "auto_triage": "自動振り分け",
@@ -63,6 +79,13 @@ LABELS = {
     "redo": "やり直す",
     "search": "検索",
     "class_dialog": "分類を選ぶ",
+    "class_clear": "分類を未設定にする",
+    "select_all": "表示中のすべてを選択",
+    "clear_selection": "選択・絞り込みを解除",
+    "previous_unassigned": "前の未振り分けへ",
+    "zoom_in": "拡大",
+    "zoom_out": "縮小",
+    "fit_view": "全体表示",
 }
 for _number in range(1, 10):
     LABELS[f"class_{_number}"] = f"分類 {_number} を設定"
@@ -87,22 +110,35 @@ HINT_LABELS = {
     "quality_bad": "不良",
     "next_unassigned": "次へ",
     "triage_view": "連続振り分け",
-    "toggle_view": "表 ⇔ サムネイル",
+    "display_mode": "表示形式",
+    "channel_prev": "前チャンネル",
+    "channel_next": "次チャンネル",
+    "previous_unassigned": "前へ",
+    "class_clear": "分類解除",
+    "zoom_in": "拡大",
+    "zoom_out": "縮小",
+    "fit_view": "全体表示",
+    "help": "キー一覧",
 }
 HINT_LABELS["class_1"] = "分類"
 
 
-class ShortcutMap:
+class ShortcutMap(QObject):
     """操作キーの取得・保存・重複検出を行う。"""
 
+    changed = Signal()
+
     def __init__(self, path: str | Path | None = None, mapping: dict[str, str] | None = None):
+        super().__init__()
         self.path = (
             Path(path)
             if path
             else Path(os.getenv("APPDATA", Path.home())) / "foam-cell-analysis" / "keymap.json"
         )
         self.mapping = dict(DEFAULT_SHORTCUTS)
-        self.mapping.update(mapping or {})
+        self.mapping.update(
+            {key: self.normalize_key_text(value) for key, value in (mapping or {}).items()}
+        )
         self.load()
 
     def __getitem__(self, action: str) -> str:
@@ -118,15 +154,17 @@ class ShortcutMap:
 
     def duplicates(self, action: str, key: str) -> list[str]:
         """指定キーを使う他の操作を返す。"""
-        normalized = key.casefold().replace(" ", "")
+        normalized = self.normalize_key_text(key).casefold().replace(" ", "")
         return [
             name
             for name, value in self.mapping.items()
-            if name != action and value.casefold().replace(" ", "") == normalized
+            if name != action
+            and self.normalize_key_text(value).casefold().replace(" ", "") == normalized
         ]
 
     def assign(self, action: str, key: str, swap: bool = False) -> list[str]:
         """キーを設定し、必要なら重複操作と入れ替える。"""
+        key = self.normalize_key_text(key)
         conflicts = self.duplicates(action, key)
         if conflicts and swap:
             old = self.mapping.get(action, "")
@@ -134,13 +172,78 @@ class ShortcutMap:
         self.mapping[action] = key
         return conflicts
 
+    def copy(self) -> ShortcutMap:
+        """現在の割り当てを独立した作業用マップへ複製する。"""
+        return ShortcutMap(self.path, self.mapping)
+
+    @staticmethod
+    def normalize_sequence(sequence: QKeySequence) -> QKeySequence:
+        """記号キーの配列差を吸収した一打鍵のシーケンスを返す。"""
+        if sequence.count() != 1:
+            return sequence
+        combination = sequence[0]
+        key = combination.key()
+        modifiers = combination.keyboardModifiers()
+        aliases = {
+            Qt.Key.Key_BraceLeft: Qt.Key.Key_BracketLeft,
+            Qt.Key.Key_BraceRight: Qt.Key.Key_BracketRight,
+            Qt.Key.Key_Underscore: Qt.Key.Key_Minus,
+        }
+        if key == Qt.Key.Key_Equal and modifiers & Qt.KeyboardModifier.ShiftModifier:
+            key = Qt.Key.Key_Plus
+        elif key == Qt.Key.Key_Slash and modifiers & Qt.KeyboardModifier.ShiftModifier:
+            key = Qt.Key.Key_Question
+        else:
+            key = aliases.get(key, key)
+        if key in {
+            Qt.Key.Key_Plus,
+            Qt.Key.Key_Question,
+            Qt.Key.Key_BracketLeft,
+            Qt.Key.Key_BracketRight,
+            Qt.Key.Key_Minus,
+        }:
+            modifiers &= ~Qt.KeyboardModifier.ShiftModifier
+        return QKeySequence(QKeyCombination(modifiers, key))
+
+    @classmethod
+    def normalize_key_text(cls, key: str) -> str:
+        """記号キーを設定ファイル用の標準表記へ変換する。"""
+        sequence = cls.normalize_sequence(QKeySequence(key.replace("Control+", "Ctrl+")))
+        normalized = sequence.toString(QKeySequence.SequenceFormat.PortableText)
+        return normalized or key
+
+    @classmethod
+    def event_sequence(cls, event: QKeyEvent) -> QKeySequence:
+        """キーイベントを設定値と比較できる標準シーケンスへ変換する。"""
+        return cls.normalize_sequence(QKeySequence(event.keyCombination()))
+
+    def matches(self, action: str, event: QKeyEvent) -> bool:
+        """イベントのキーと修飾キーが操作の割り当てに一致するか返す。"""
+        return self.event_sequence(event) == self.normalize_sequence(QKeySequence(self[action]))
+
+    def replace(self, mapping: dict[str, str]) -> None:
+        """既知の割り当てを置き換え、変更を通知する。"""
+        self.mapping = dict(DEFAULT_SHORTCUTS)
+        self.mapping.update(
+            {
+                key: self.normalize_key_text(value)
+                for key, value in mapping.items()
+                if key in DEFAULT_SHORTCUTS
+            }
+        )
+        self.changed.emit()
+
     def load(self) -> None:
         """設定ファイルが存在する場合に読み込む。"""
         if self.path.is_file():
             data = json.loads(self.path.read_text(encoding="utf-8"))
             if isinstance(data, dict):
                 self.mapping.update(
-                    {str(k): str(v) for k, v in data.items() if k in DEFAULT_SHORTCUTS}
+                    {
+                        str(key): self.normalize_key_text(str(value))
+                        for key, value in data.items()
+                        if key in DEFAULT_SHORTCUTS
+                    }
                 )
 
     def save(self) -> None:
@@ -161,24 +264,37 @@ class ShortcutMap:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError("キー割り当てファイルの形式が正しくありません")
-        self.mapping.update({str(k): str(v) for k, v in data.items() if k in DEFAULT_SHORTCUTS})
+        self.mapping.update(
+            {
+                str(key): self.normalize_key_text(str(value))
+                for key, value in data.items()
+                if key in DEFAULT_SHORTCUTS
+            }
+        )
 
     def hint_items(self) -> list[tuple[str, str]]:
-        """常時表示するキーと操作の組を返す。"""
+        """常時表示する主なキーと操作の組を返す。"""
         order = (
             "usage_train",
             "usage_val",
             "usage_excluded",
             "usage_unassigned",
+            "class_1",
             "quality_good",
             "quality_ok",
             "quality_bad",
             "next_unassigned",
             "triage_view",
-            "toggle_view",
+            "display_mode",
+            "help",
         )
         keys = [self.display_key(self.mapping[f"class_{number}"]) for number in range(1, 10)]
         class_keys = "1–9" if keys == [str(number) for number in range(1, 10)] else " / ".join(keys)
-        hints = [(self.display_key(self.mapping[key]), HINT_LABELS[key]) for key in order]
-        hints.insert(4, (class_keys, "分類"))
+        hints = []
+        for action in order:
+            key = class_keys if action == "class_1" else self.display_key(self.mapping[action])
+            label = "分類" if action == "class_1" else HINT_LABELS[action]
+            if action == "next_unassigned":
+                label = "次の未振り分け"
+            hints.append((key, label))
         return hints

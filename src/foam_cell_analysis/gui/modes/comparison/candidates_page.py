@@ -95,13 +95,14 @@ class CandidatesPage(BasePage):
         self.more_button = QPushButton("その他 ▾")
         self.more_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.more_menu = QMenu(self.more_button)
+        self.menu_actions = {}
         for key, label, callback in (
             ("export", "粒子解析用マスク出力…", self._export_masks),
             ("reject", "非採用にする", self._reject),
         ):
             action = self.more_menu.addAction(label)
             action.triggered.connect(callback)
-            self.buttons[key] = QPushButton(label)
+            self.menu_actions[key] = action
         self.more_button.setMenu(self.more_menu)
         self.content_layout.addLayout(row)
         self.content_layout.addWidget(self.table, 1)
@@ -111,26 +112,74 @@ class CandidatesPage(BasePage):
         self.validation.currentTextChanged.connect(self.refresh)
         self.state_filter.currentTextChanged.connect(self.refresh)
         self.table.itemChanged.connect(lambda _item: self._update_buttons())
+        self.table.itemClicked.connect(self._remember_clicked_candidate)
         self.buttons["add"].clicked.connect(self._add_candidate)
         self.buttons["evaluate"].clicked.connect(self._evaluate)
         self.buttons["detail"].clicked.connect(self._detail)
         self.buttons["compare"].clicked.connect(self._compare)
-        self.buttons["export"].clicked.connect(self._export_masks)
-        self.buttons["reject"].clicked.connect(self._reject)
         self.buttons["release"].clicked.connect(self._release)
         self._pending_action = None
         self.refresh()
 
     def on_enter(self, params: dict) -> None:
         """他画面から候補追加を受け付ける。"""
-        self.refresh()
+        self._refresh_validation_versions()
         if params.get("action") == "add_candidate":
             preset = {key: params[key] for key in ("experiment_id", "checkpoint") if key in params}
             QTimer.singleShot(0, lambda: self._show_add_dialog(preset))
 
+    def refresh_on_activate(self) -> None:
+        """検証版と候補状態を読み直し、画面の選択を保つ。"""
+        current_row = self.table.currentRow()
+        current_id = (
+            self.table.item(current_row, 1).text()
+            if current_row >= 0 and self.table.item(current_row, 1)
+            else None
+        )
+        current_column = max(0, self.table.currentColumn())
+        scroll_value = self.table.verticalScrollBar().value()
+        self._activation_selection = {
+            self.table.item(row, 1).text()
+            for row in range(self.table.rowCount())
+            if self.table.item(row, 0)
+            and self.table.item(row, 0).checkState() == Qt.CheckState.Checked
+            and self.table.item(row, 1)
+        }
+        self._activation_current_id = current_id
+        self._activation_current_column = current_column
+        self._activation_scroll_value = scroll_value
+        try:
+            self._refresh_validation_versions()
+        finally:
+            del self._activation_selection
+            del self._activation_current_id
+            del self._activation_current_column
+            del self._activation_scroll_value
+
+    def _refresh_validation_versions(self) -> None:
+        """検証用版の候補を更新し、選択可能な版を維持する。"""
+        selected_version = self.validation.currentText()
+        available_versions = [
+            version.version for version in self.ctx.backend.list_validation_versions()
+        ]
+        self.validation.blockSignals(True)
+        self.validation.clear()
+        self.validation.addItems(available_versions)
+        target_version = (
+            selected_version
+            if selected_version in available_versions
+            else available_versions[-1]
+            if available_versions
+            else ""
+        )
+        self.validation.setCurrentText(target_version)
+        self.validation.blockSignals(False)
+        self.refresh()
+
     def refresh(self, _value: str = "") -> None:
         """選択中の検証版で候補評価を再表示する。"""
         version, state = self.validation.currentText(), self.state_filter.currentText()
+        selected_ids = getattr(self, "_activation_selection", set())
         self.table.blockSignals(True)
         self.table.setRowCount(0)
         candidates = self.ctx.backend.list_candidates()
@@ -174,6 +223,8 @@ class CandidatesPage(BasePage):
             )
             check.setCheckState(Qt.CheckState.Unchecked)
             self.table.setItem(row, 0, check)
+            if candidate.candidate_id in selected_ids:
+                check.setCheckState(Qt.CheckState.Checked)
             for col, value in enumerate(values, 1):
                 item = QTableWidgetItem(str(value))
                 if col in (1, 3, 4, 5, 6):
@@ -190,6 +241,20 @@ class CandidatesPage(BasePage):
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.table.setItem(row, col, item)
         self.table.blockSignals(False)
+        current_id = getattr(self, "_activation_current_id", None)
+        if current_id:
+            for row in range(self.table.rowCount()):
+                if self.table.item(row, 1).text() == current_id:
+                    self.table.setCurrentCell(
+                        row,
+                        min(
+                            getattr(self, "_activation_current_column", 0),
+                            self.table.columnCount() - 1,
+                        ),
+                    )
+                    break
+        if hasattr(self, "_activation_scroll_value"):
+            self.table.verticalScrollBar().setValue(self._activation_scroll_value)
         self._update_buttons()
 
     def _selected(self):
@@ -198,6 +263,11 @@ class CandidatesPage(BasePage):
             if self.table.item(row, 0).checkState() == Qt.CheckState.Checked:
                 selected.append(self.ctx.backend.get_candidate(self.table.item(row, 1).text()))
         return selected
+
+    def _remember_clicked_candidate(self, item: QTableWidgetItem) -> None:
+        """チェック欄をクリックした候補をキーボード操作対象にする。"""
+        if item.column() == 0:
+            self.table.setCurrentCell(item.row(), 0)
 
     def _update_buttons(self) -> None:
         selected = self._selected()
@@ -209,8 +279,6 @@ class CandidatesPage(BasePage):
             one and self.validation.currentText() in selected[0].evaluations
         )
         self.buttons["compare"].setEnabled(len(selected) >= 2)
-        self.buttons["export"].setEnabled(bool(selected))
-        self.buttons["reject"].setEnabled(any(c.status == "candidate" for c in selected))
         release_enabled = (
             one
             and selected[0].status == "candidate"
@@ -225,8 +293,8 @@ class CandidatesPage(BasePage):
         elif self.validation.currentText() not in selected[0].evaluations:
             reason = "選択中の検証用データセットで評価を完了してください。"
         self.buttons["release"].setToolTip(reason)
-        self.buttons["export"].setEnabled(bool(selected))
-        self.buttons["reject"].setEnabled(any(c.status == "candidate" for c in selected))
+        self.menu_actions["export"].setEnabled(bool(selected))
+        self.menu_actions["reject"].setEnabled(any(c.status == "candidate" for c in selected))
 
     def _show_add_dialog(self, preset=None) -> None:
         dialog = CandidateDialog(self.ctx, self, preset)

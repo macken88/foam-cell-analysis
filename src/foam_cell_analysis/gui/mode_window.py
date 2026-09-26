@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -53,6 +53,8 @@ class ModeWindow(QMainWindow):
 
     closed = Signal(object)
     home_requested = Signal()
+    tab_requested = Signal(object)
+    activated = Signal(object)
 
     def __init__(self, mode: ModeId, ctx: AppContext, page_ids: list[PageId], parent=None) -> None:
         super().__init__(parent)
@@ -107,7 +109,7 @@ class ModeWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.tabs.currentChanged.connect(self._select_tab)
         self.tabs.currentChanged.connect(self.tab_bar.setCurrentIndex)
-        self.tab_bar.currentChanged.connect(self.tabs.setCurrentIndex)
+        self.tab_bar.currentChanged.connect(self._select_requested_tab)
         layout.addWidget(self.stack, 1)
         self.setCentralWidget(root)
         self.status_text = QLabel("準備完了")
@@ -144,7 +146,12 @@ class ModeWindow(QMainWindow):
     def select_page(self, page_id: PageId) -> None:
         """指定ページのタブを選択する。"""
         index = self.page_ids.index(PageId(page_id))
+        self.tab_bar.blockSignals(True)
+        self.tabs.blockSignals(True)
         self.tabs.setCurrentIndex(index)
+        self.tab_bar.setCurrentIndex(index)
+        self.tabs.blockSignals(False)
+        self.tab_bar.blockSignals(False)
         widget = self._page_widgets.get(PageId(page_id))
         if widget:
             self.stack.setCurrentWidget(widget)
@@ -155,11 +162,23 @@ class ModeWindow(QMainWindow):
             if widget:
                 self.stack.setCurrentWidget(widget)
 
+    def _select_requested_tab(self, index: int) -> None:
+        """利用者が押した未生成タブを管理側へ通知する。"""
+        if 0 <= index < len(self.page_ids):
+            self.tab_requested.emit(self.page_ids[index])
+
     def _update_job_count(self, count: int) -> None:
         self.job_count.setText(running_jobs_label(count))
 
     def _update_saved_time(self, value: datetime) -> None:
         self.autosave_text.setText(autosave_label(value))
+
+    def event(self, event) -> bool:
+        """タスクバー等から前面に戻ったことを管理側へ通知する。"""
+        result = super().event(event)
+        if event.type() == QEvent.Type.WindowActivate:
+            self.activated.emit(self.mode)
+        return result
 
     def closeEvent(self, event) -> None:
         """閉じたウィンドウを管理側へ通知する。"""

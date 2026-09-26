@@ -1,11 +1,19 @@
-"""作業データを表・サムネイルで整えて同時確定する画面。"""
+"""作業データを表で整えて同時確定する画面。"""
 
 from __future__ import annotations
 
 from collections import Counter
 
-from PySide6.QtCore import QEvent, QItemSelectionModel, Qt
-from PySide6.QtGui import QAction, QBrush, QKeySequence, QUndoCommand, QUndoStack
+from PySide6.QtCore import QEvent, Qt
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QKeySequence,
+    QPalette,
+    QShortcut,
+    QUndoCommand,
+    QUndoStack,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -17,12 +25,10 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
-    QListView,
     QMenu,
     QMessageBox,
     QPushButton,
     QSplitter,
-    QStackedWidget,
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
@@ -34,7 +40,6 @@ from PySide6.QtWidgets import (
 from ....services.models import DataItem, ImportCandidate
 from ...context import AppContext
 from ...keymap_dialog import KeymapDialog
-from ...shortcuts import ShortcutMap
 from ...theme import Color, numeric_font, set_style
 from ...widgets.image_convert import DisplayMode, array_to_pixmap, render
 from ...widgets.image_view import ImageView
@@ -52,13 +57,6 @@ from .table_model import (
     DataPreparationTableModel,
     DatasetHistoryModel,
     ValueComboDelegate,
-)
-from .thumbnails import (
-    FolderHeader,
-    ThumbnailDelegate,
-    ThumbnailListView,
-    ThumbnailModel,
-    configure_thumbnail_view,
 )
 
 
@@ -88,7 +86,10 @@ class _EditCommand(QUndoCommand):
         for item_id, values in self.before.items():
             self.page.ctx.backend.update_item("all", item_id, **values)
         self.page._restore_change_flags(self.before_flags)
-        self.page.refresh()
+        self.page.refresh(
+            self.item_ids,
+            filter_membership_changed=bool(set(self.changes) & {"usage", "classification"}),
+        )
 
 
 class _UsageDelegate(TagDelegate):
@@ -101,13 +102,22 @@ class _UsageDelegate(TagDelegate):
 
     def paint(self, painter, option, index) -> None:
         item = index.data(Qt.ItemDataRole.UserRole)
-        if (
-            isinstance(item, DataItem)
-            and item.change
-            and not (option.state & QStyle.StateFlag.State_Selected)
-        ):
-            painter.fillRect(option.rect, Color.CHANGED)
-        super().paint(painter, option, index)
+        if isinstance(item, DataItem) and item.change:
+            color = (
+                Color.SELECTION_CHANGED
+                if option.state & QStyle.StateFlag.State_Selected
+                else Color.CHANGED
+            )
+            painter.fillRect(option.rect, color)
+            prepared = QStyleOptionViewItem(option)
+            if option.state & QStyle.StateFlag.State_Selected:
+                prepared.palette.setColor(QPalette.ColorRole.Highlight, QColor(color))
+                prepared.palette.setColor(
+                    QPalette.ColorRole.HighlightedText, QColor(Color.GRAPHITE)
+                )
+        else:
+            prepared = option
+        super().paint(painter, prepared, index)
 
     def setEditorData(self, editor, index) -> None:
         editor.setCurrentText(str(index.data(Qt.ItemDataRole.EditRole) or ""))
@@ -123,7 +133,18 @@ class _ChangedRowDelegate(QStyledItemDelegate):
         item = index.data(Qt.ItemDataRole.UserRole)
         prepared = QStyleOptionViewItem(option)
         if isinstance(item, DataItem) and item.change:
-            prepared.backgroundBrush = QBrush(Color.CHANGED)
+            color = (
+                Color.SELECTION_CHANGED
+                if option.state & QStyle.StateFlag.State_Selected
+                else Color.CHANGED
+            )
+            # QSS 適用下では backgroundBrush が無視されるため、先に直接塗る
+            painter.fillRect(option.rect, QColor(color))
+            if option.state & QStyle.StateFlag.State_Selected:
+                prepared.palette.setColor(QPalette.ColorRole.Highlight, QColor(color))
+                prepared.palette.setColor(
+                    QPalette.ColorRole.HighlightedText, QColor(Color.GRAPHITE)
+                )
         super().paint(painter, prepared, index)
 
 
@@ -153,12 +174,12 @@ class _TriageCommand(QUndoCommand):
     def undo(self):
         self._apply(self.before)
         self.page._restore_change_flags(self.before_flags)
-        self.page.refresh()
+        self.page.refresh(list(self.before), filter_membership_changed=True)
 
     def _apply(self, values):
         for item_id, usage in values.items():
             self.page.ctx.backend.update_item("all", item_id, usage=usage)
-        self.page.refresh()
+        self.page.refresh(list(values), filter_membership_changed=True)
 
 
 class DataPreparationPage(BasePage):
@@ -168,11 +189,10 @@ class DataPreparationPage(BasePage):
         super().__init__(
             ctx, "作業中データ", "画像を確認して用途・分類・品質を決めます。", parent, show_heading
         )
-        self.shortcuts = ShortcutMap()
+        self.shortcuts = ctx.shortcuts
         self.undo_stack = QUndoStack(self)
         self.items = ctx.backend.get_working_items()
         self.model = DataPreparationTableModel(self)
-        self.thumbnail_model = ThumbnailModel(ctx.backend, self)
         self._selected_ids: list[str] = []
         self._syncing_selection = False
         root = self.content_layout
@@ -232,7 +252,7 @@ class DataPreparationPage(BasePage):
             ("excluded", "filter_excluded"),
             ("errors", "filter_errors"),
         ):
-            self.chips[name].setToolTip(self.shortcuts[key])
+            self.chips[name].setToolTip(self.shortcuts.display_key(self.shortcuts[key]))
         chips.addStretch(1)
         root.addLayout(chips)
         filter_controls = QHBoxLayout()
@@ -250,7 +270,6 @@ class DataPreparationPage(BasePage):
         root.addLayout(filter_controls)
         self._make_menus()
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.views = QStackedWidget()
         self.table = QTableView()
         self.table.setModel(self.model)
         self.table.setItemDelegate(_ChangedRowDelegate(self.table))
@@ -274,14 +293,7 @@ class DataPreparationPage(BasePage):
             5, ValueComboDelegate(["未設定", "良", "可", "不良"], self.table)
         )
         self.model.edit_requested.connect(self._table_edit_requested)
-        self.thumbnail = ThumbnailListView()
-        self.thumbnail.setModel(self.thumbnail_model)
-        self.thumbnail.setItemDelegate(ThumbnailDelegate(self.thumbnail))
-        configure_thumbnail_view(self.thumbnail)
-        self.views.addWidget(self.table)
-        self.views.addWidget(self.thumbnail)
-        self.views.setCurrentIndex(1)
-        self.splitter.addWidget(self.views)
+        self.splitter.addWidget(self.table)
         self.preview_panel = QWidget()
         preview = QVBoxLayout(self.preview_panel)
         preview.setContentsMargins(8, 0, 0, 0)
@@ -340,19 +352,18 @@ class DataPreparationPage(BasePage):
         self.table.selectionModel().selectionChanged.connect(
             lambda *_: self._selection_changed(self.table)
         )
-        self.thumbnail.selectionModel().selectionChanged.connect(
-            lambda *_: self._selection_changed(self.thumbnail)
-        )
         self.table.installEventFilter(self)
         self.table.viewport().installEventFilter(self)
-        self.thumbnail.installEventFilter(self)
-        self.thumbnail.viewport().installEventFilter(self)
+        self._install_filter_shortcuts()
+        self.image_view.installEventFilter(self)
+        self.image_view.viewport().installEventFilter(self)
         self.import_button.clicked.connect(self.import_data)
         self.auto_button.clicked.connect(self.auto_triage)
         self.finalize_button.clicked.connect(self.finalize)
         self.display_combo.currentIndexChanged.connect(self._show_preview)
         self.channel_combo.currentIndexChanged.connect(self._show_preview)
         self.refresh()
+        self.shortcuts.changed.connect(self._shortcuts_changed)
 
     def _make_menus(self) -> None:
         excel = QMenu(self)
@@ -362,9 +373,14 @@ class DataPreparationPage(BasePage):
         other = QMenu(self)
         other.addAction("連続振り分け…", self.open_triage)
         other.addAction("キー割り当て…", self.open_keymap)
-        other.addAction("表示を切り替え", self.toggle_view)
         other.addAction("元に戻す", self.undo_stack.undo)
         other.addAction("やり直す", self.undo_stack.redo)
+        self.mask_revision_action = QAction("新しいマスク版を取り込む", self)
+        other.addAction(self.mask_revision_action)
+        self.mask_revision_action.triggered.connect(self.import_mask_revision)
+        self.archive_action = QAction("アーカイブ作成…", self)
+        other.addAction(self.archive_action)
+        self.archive_action.triggered.connect(self.create_archive)
         self.other_button.setMenu(other)
         self._shortcut_actions = {}
         for action, callback in (
@@ -383,7 +399,57 @@ class DataPreparationPage(BasePage):
             shortcut.triggered.connect(callback)
             self.addAction(shortcut)
             self._shortcut_actions[action] = shortcut
-        for name, key in (
+        for name in (
+            "filter_all",
+            "filter_unassigned",
+            "filter_train",
+            "filter_val",
+            "filter_excluded",
+            "filter_errors",
+        ):
+            action = QAction(self)
+            action.setShortcut(QKeySequence(self.shortcuts[name]))
+            self._shortcut_actions[name] = action
+        self._shortcut_actions["select_all"] = self._add_key_action(
+            "select_all", lambda: self.table.selectAll()
+        )
+        self._shortcut_actions["clear_selection"] = self._add_key_action(
+            "clear_selection", self._clear_selection_or_filter
+        )
+
+    def _add_key_action(self, name: str, callback) -> QAction:
+        action = QAction(self)
+        action.setShortcut(QKeySequence(self.shortcuts[name]))
+        action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        action.triggered.connect(callback)
+        self.addAction(action)
+        return action
+
+    def _install_filter_shortcuts(self) -> None:
+        """件数チップのキー操作を表にフォーカスがある間有効にする。"""
+        self._filter_shortcuts = {}
+        for name in (
+            "filter_all",
+            "filter_unassigned",
+            "filter_train",
+            "filter_val",
+            "filter_excluded",
+            "filter_errors",
+        ):
+            shortcut = QShortcut(QKeySequence(self.shortcuts[name]), self.table)
+            shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+            shortcut.activated.connect(
+                lambda target=name: self._filter_usage(target.removeprefix("filter_"))
+            )
+            self._filter_shortcuts[name] = shortcut
+
+    def _shortcuts_changed(self) -> None:
+        """共有キー変更を画面の操作・表示へ反映する。"""
+        for name, action in self._shortcut_actions.items():
+            action.setShortcut(QKeySequence(self.shortcuts[name]))
+        for name, shortcut in self._filter_shortcuts.items():
+            shortcut.setKey(QKeySequence(self.shortcuts[name]))
+        for chip, name in (
             ("all", "filter_all"),
             ("unassigned", "filter_unassigned"),
             ("train", "filter_train"),
@@ -391,19 +457,18 @@ class DataPreparationPage(BasePage):
             ("excluded", "filter_excluded"),
             ("errors", "filter_errors"),
         ):
-            action = QAction(self)
-            action.setShortcut(QKeySequence(self.shortcuts[key]))
-            action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-            action.triggered.connect(lambda checked=False, value=name: self._filter_usage(value))
-            self.addAction(action)
-            self._shortcut_actions[key] = action
+            self.chips[chip].setToolTip(self.shortcuts.display_key(self.shortcuts[name]))
+        self.hints.set_hints(self.shortcuts.hint_items())
 
     def _apply_changes(self, item_ids: list[str], changes: dict) -> None:
         if "usage" in changes and len(changes) == 1:
             self.ctx.backend.set_usage(item_ids, changes["usage"])
         else:
             self.ctx.backend.update_items(item_ids, **changes)
-        self.refresh()
+        self.refresh(
+            item_ids,
+            filter_membership_changed=bool(set(changes) & {"usage", "classification"}),
+        )
         if item_ids:
             names = {
                 "train": "学習",
@@ -436,48 +501,20 @@ class DataPreparationPage(BasePage):
         if item_ids:
             self.undo_stack.push(_EditCommand(self, item_ids, changes, "作業データの変更"))
 
-    def _selected_ids_from(self, view) -> list[str]:
-        ids = []
-        for index in view.selectionModel().selectedRows():
-            if view is self.table:
-                item = self.model.item_at(index.row())
-            else:
-                item = self.thumbnail_model.data(index, Qt.ItemDataRole.UserRole)
-            if isinstance(item, DataItem):
-                ids.append(item.item_id)
-        return ids
-
-    def _selection_changed(self, source) -> None:
+    def _selection_changed(self, source=None) -> None:
         if self._syncing_selection:
             return
         self._syncing_selection = True
-        ids = self._selected_ids_from(source)
+        ids = [
+            item.item_id
+            for index in self.table.selectionModel().selectedRows()
+            if (item := self.model.item_at(index.row())) is not None
+        ]
         self._selected_ids = ids
-        other = self.thumbnail if source is self.table else self.table
-        selection_model = other.selectionModel()
-        old_block = selection_model.blockSignals(True)
-        other.clearSelection()
-        wanted = set(ids)
-        if source is self.table:
-            for item in self.model.visible_items():
-                if item.item_id in wanted:
-                    self.thumbnail.selectionModel().select(
-                        self._index_for_thumb(item), QItemSelectionModel.SelectionFlag.Select
-                    )
-        else:
-            for row, item in enumerate(self.model.visible_items()):
-                if item.item_id in wanted:
-                    self.table.selectRow(row)
-        selection_model.blockSignals(old_block)
         self.selection_note.setText(f"{len(ids)} 件選択中。変更は選択中のすべてに適用")
+        self.mask_revision_action.setEnabled(bool(ids))
         self._show_preview()
         self._syncing_selection = False
-
-    def _index_for_thumb(self, item: DataItem):
-        for row, value in enumerate(self.thumbnail_model.rows):
-            if isinstance(value, DataItem) and value.item_id == item.item_id:
-                return self.thumbnail_model.index(row, 0)
-        return self.thumbnail_model.index(-1, 0)
 
     def _edit_selection(self, control) -> None:
         if not self._selected_ids or control.currentIndex() < 0:
@@ -494,6 +531,17 @@ class DataPreparationPage(BasePage):
     def _show_preview(self, *_args) -> None:
         if not self._selected_ids:
             self.image_view.set_image(None)
+            self._preview_signature = None
+            self.preview_meta.setText("画像を選択してください")
+            self.image_caption.setText("画像表示形式・チャンネル")
+            self.mask_combo.clear()
+            for control in (
+                self.usage_combo,
+                self.class_combo,
+                self.quality_combo,
+                self.mask_combo,
+            ):
+                control.setEnabled(False)
             return
         item = next((item for item in self.items if item.item_id == self._selected_ids[0]), None)
         if not item:
@@ -505,16 +553,40 @@ class DataPreparationPage(BasePage):
         self.class_combo.blockSignals(True)
         self.quality_combo.blockSignals(True)
         self.mask_combo.blockSignals(True)
+        self.usage_combo.setEnabled(True)
+        self.class_combo.setEnabled(True)
+        self.quality_combo.setEnabled(True)
         self.usage_combo.setCurrentIndex(self.usage_combo.findData(item.usage))
         self.class_combo.setCurrentIndex(max(0, self.class_combo.findData(item.classification)))
         self.quality_combo.setCurrentIndex(max(0, self.quality_combo.findData(item.quality)))
+        selected_items = [
+            candidate for candidate in self.items if candidate.item_id in self._selected_ids
+        ]
+        common_revisions = set(item.mask_revisions)
+        for selected_item in selected_items[1:]:
+            common_revisions.intersection_update(selected_item.mask_revisions)
+        revisions = [revision for revision in item.mask_revisions if revision in common_revisions]
         self.mask_combo.clear()
-        self.mask_combo.addItems(item.mask_revisions)
-        self.mask_combo.setCurrentText(item.selected_mask_revision)
+        self.mask_combo.addItems(revisions)
+        self.mask_combo.setEnabled(bool(revisions))
+        if item.selected_mask_revision in revisions:
+            self.mask_combo.setCurrentText(item.selected_mask_revision)
         self.usage_combo.blockSignals(False)
         self.class_combo.blockSignals(False)
         self.quality_combo.blockSignals(False)
         self.mask_combo.blockSignals(False)
+        channels = item.channels or ["A"]
+        if [
+            self.channel_combo.itemText(index) for index in range(self.channel_combo.count())
+        ] != channels:
+            selected_channel = self.channel_combo.currentText()
+            self.channel_combo.blockSignals(True)
+            self.channel_combo.clear()
+            self.channel_combo.addItems(channels)
+            self.channel_combo.setCurrentIndex(
+                max(0, self.channel_combo.findText(selected_channel))
+            )
+            self.channel_combo.blockSignals(False)
         channel = self.channel_combo.currentText() or (item.channels[0] if item.channels else "A")
         image = self.ctx.backend.get_item_image("all", item.item_id, channel)
         mode = (
@@ -528,7 +600,11 @@ class DataPreparationPage(BasePage):
             if item.mask_revisions
             else None
         )
-        self.image_view.set_image(array_to_pixmap(render(image, labels, mode)))
+        signature = (tuple(self._selected_ids), item.selected_mask_revision, channel, mode)
+        skip_unchanged = getattr(self, "_preserve_preview_on_refresh", False)
+        if not skip_unchanged or signature != getattr(self, "_preview_signature", None):
+            self.image_view.set_image(array_to_pixmap(render(image, labels, mode)))
+            self._preview_signature = signature
         self.image_caption.setText(f"{self.display_combo.currentText()} ・ チャンネル {channel}")
 
     def _filter_usage(self, name: str) -> None:
@@ -538,13 +614,14 @@ class DataPreparationPage(BasePage):
             "train": {"train"},
             "val": {"val"},
             "excluded": {"excluded"},
-            "errors": set(),
+            "errors": None,
             "changed": None,
         }
         self.model.usages = mapping[name]
         self.model.errors_only = name == "errors"
         self.model.changed_only = name == "changed"
         self.refresh_views()
+        self._sync_selection_to_visible()
         for key in ("all", "unassigned", "train", "val", "excluded", "errors", "changed"):
             self.chips[key].setChecked(key == name)
 
@@ -562,24 +639,62 @@ class DataPreparationPage(BasePage):
             self.model.classifications.add(value)
         self.chips[value].setChecked(value in self.model.classifications)
         self.refresh_views()
+        self._sync_selection_to_visible()
 
     def _source_changed(self, index: int) -> None:
         self.model.source_folder = self.source_combo.currentData()
         self.refresh_views()
+        self._sync_selection_to_visible()
 
     def _search_changed(self, text: str) -> None:
         self.model.query = text
         self.refresh_views()
+        self._sync_selection_to_visible()
+
+    def _sync_selection_to_visible(self) -> None:
+        """絞り込み後に選択とプレビューを表示行だけへそろえる。"""
+        visible = self.model.visible_items()
+        visible_ids = {item.item_id for item in visible}
+        self._selected_ids = [item_id for item_id in self._selected_ids if item_id in visible_ids]
+        if not self._selected_ids and visible:
+            self._selected_ids = [visible[0].item_id]
+        self._syncing_selection = True
+        self.table.clearSelection()
+        if self._selected_ids:
+            row = next(
+                index for index, item in enumerate(visible) if item.item_id == self._selected_ids[0]
+            )
+            self.table.selectRow(row)
+        self._syncing_selection = False
+        self._show_preview()
+
+    def _select_only_row(self, row: int, item_id: str) -> None:
+        """拡張選択状態でも対象行だけを選ぶ。"""
+        self._syncing_selection = True
+        self.table.clearSelection()
+        self.table.selectRow(row)
+        self._selected_ids = [item_id]
+        self._syncing_selection = False
 
     def refresh_views(self) -> None:
-        self.model.layoutChanged.emit()
-        self.thumbnail_model.set_items(self.model.visible_items(), self.model.errors)
+        self.model.filters_changed()
 
-    def refresh(self) -> None:
+    def refresh(
+        self, item_ids: list[str] | None = None, *, filter_membership_changed: bool = False
+    ) -> None:
         self.items = self.ctx.backend.get_working_items()
         report = self.ctx.backend.validate_items()
         errors = {issue.item_id: issue.message for issue in report.errors}
-        self.model.set_items(self.items, errors)
+        if item_ids is None:
+            self.model.set_items(self.items, errors)
+        else:
+            self.model.update_item_errors(
+                errors,
+                set(item_ids),
+                refresh_layout=(
+                    filter_membership_changed or self.model.errors_only or self.model.changed_only
+                ),
+            )
         self.base_label.setText(
             f"ベース版　学習 {self.ctx.backend.working['all'].base_train_version} / "
             f"検証 {self.ctx.backend.working['all'].base_val_version}"
@@ -612,7 +727,6 @@ class DataPreparationPage(BasePage):
             self.source_combo.addItem(folder, folder)
         self.source_combo.setCurrentIndex(max(0, self.source_combo.findData(selected_folder)))
         self.source_combo.blockSignals(False)
-        self.thumbnail_model.set_items(self.model.visible_items(), errors)
         self.finalize_button.setEnabled(not errors)
         self.finalize_button.setToolTip("整合性エラーを解消してください" if errors else "")
         if not self._selected_ids and self.model.visible_items():
@@ -628,19 +742,11 @@ class DataPreparationPage(BasePage):
             )
             if first:
                 self.table.selectRow(self.model.visible_items().index(first))
-                first_index = self._index_for_thumb(first)
-                self.thumbnail.selectionModel().select(
-                    first_index,
-                    QItemSelectionModel.SelectionFlag.Select
-                    | QItemSelectionModel.SelectionFlag.Rows,
-                )
-                header_row = first_index.row() - 1
-                if header_row >= 0 and isinstance(
-                    self.thumbnail_model.rows[header_row], FolderHeader
-                ):
-                    first_index = self.thumbnail_model.index(header_row, 0)
-                self.thumbnail.scrollTo(first_index, QListView.ScrollHint.PositionAtTop)
-            self._show_preview()
+                self._show_preview()
+            else:
+                self._sync_selection_to_visible()
+        self.mask_revision_action.setEnabled(bool(self._selected_ids))
+        self.archive_action.setEnabled(bool(self.ctx.backend.list_dataset_versions()))
 
     def import_data(self) -> None:
         dialog = ImportDialog(self)
@@ -659,9 +765,10 @@ class DataPreparationPage(BasePage):
         settings = ImportSettingsDialog(self, folders)
         if settings.exec() != QDialog.DialogCode.Accepted:
             return
-        self.ctx.backend.import_folders(candidates, settings.values)
-        self.model.usages = {"unassigned"}
-        self.model.source_folder = next(iter(folders), None)
+        imported_items = self.ctx.backend.import_folders(candidates, settings.values)
+        self.model.usages = {item.usage for item in imported_items}
+        self.model.source_folder = None
+        self.source_combo.setCurrentIndex(0)
         self.refresh()
 
     def auto_triage(self) -> None:
@@ -698,9 +805,16 @@ class DataPreparationPage(BasePage):
             targets,
             lambda item_id, **changes: self._change([item_id], **changes),
             self.ctx.backend,
+            self.shortcuts,
         )
         dialog.exec()
+        current_id = dialog.current_item_id
         self.refresh()
+        visible = self.model.visible_items()
+        if current_id and any(item.item_id == current_id for item in visible):
+            row = next(index for index, item in enumerate(visible) if item.item_id == current_id)
+            self._select_only_row(row, current_id)
+            self._show_preview()
 
     def finalize(self) -> None:
         dialog = DatasetFinalizeDialog(self, self.ctx.backend)
@@ -754,7 +868,8 @@ class DataPreparationPage(BasePage):
             ):
                 rule = DataValidation(type="list", formula1=formula, allow_blank=True)
                 sheet.add_data_validation(rule)
-                rule.add(f"{chr(64 + col)}2:{chr(64 + col)}{sheet.max_row}")
+                if sheet.max_row >= 2:
+                    rule.add(f"{chr(64 + col)}2:{chr(64 + col)}{sheet.max_row}")
             book.save(path)
         except ImportError:
             QMessageBox.warning(self, "Excel 出力", "Excel 出力に必要なライブラリがありません")
@@ -768,7 +883,8 @@ class DataPreparationPage(BasePage):
         try:
             from openpyxl import load_workbook
 
-            sheet = load_workbook(path, read_only=True, data_only=True).active
+            workbook = load_workbook(path, read_only=True, data_only=True)
+            sheet = workbook.active
             rows = list(sheet.iter_rows(min_row=2, values_only=True))
             updates = []
             by_id = {item.item_id: item for item in self.items}
@@ -793,14 +909,12 @@ class DataPreparationPage(BasePage):
             self.undo_stack.push(command)
         except (ImportError, OSError, ValueError) as error:
             QMessageBox.warning(self, "Excel 取込エラー", str(error))
+        finally:
+            if "workbook" in locals():
+                workbook.close()
 
     def open_keymap(self) -> None:
-        if KeymapDialog(self, self.shortcuts).exec() == QDialog.DialogCode.Accepted:
-            for name, action in self._shortcut_actions.items():
-                action.setShortcut(QKeySequence(self.shortcuts[name]))
-            self.hints.deleteLater()
-            self.hints = KeyHintBar(self.shortcuts.hint_items())
-            self.content_layout.addWidget(self.hints)
+        KeymapDialog(self, self.shortcuts).exec()
 
     def choose_classification(self) -> None:
         """選択項目へ分類をまとめて設定する。"""
@@ -817,18 +931,82 @@ class DataPreparationPage(BasePage):
         details = "\n".join(f"{key}　{label}" for key, label in self.shortcuts.hint_items())
         QMessageBox.information(self, "キー操作", details)
 
-    def toggle_view(self) -> None:
-        self.views.setCurrentIndex(1 - self.views.currentIndex())
+    def _clear_selection_or_filter(self) -> None:
+        """最初は選択を解除し、次はすべての絞り込みを解除する。"""
+        if self._selected_ids:
+            self.table.clearSelection()
+            self._selected_ids = []
+            self._show_preview()
+        else:
+            self.search.clear()
+            self.source_combo.setCurrentIndex(0)
+            self._filter_usage("all")
+            self.model.classifications.clear()
+            for name in ("分類A", "分類B", "分類C"):
+                self.chips[name].setChecked(False)
+            self.refresh_views()
+
+    def import_mask_revision(self) -> None:
+        """選択中の項目へ新しいマスク版を追加する。"""
+        if not self._selected_ids:
+            return
+        created = []
+        for item_id in self._selected_ids:
+            created.append(self.ctx.backend.add_mask_revision("all", item_id))
+        self.refresh(self._selected_ids)
+        self.ctx.status.show_message(f"{len(created)} 件に新しいマスク版を取り込みました")
+
+    def create_archive(self) -> None:
+        """最新の学習用・検証用版のアーカイブを作成する。"""
+        versions = self.ctx.backend.list_dataset_versions()
+        latest_by_purpose = {}
+        for version in versions:
+            latest_by_purpose[version.purpose] = version
+        if not latest_by_purpose:
+            QMessageBox.information(self, "アーカイブ作成", "確定済みデータセット版がありません")
+            return
+        output_path = QFileDialog.getExistingDirectory(self, "アーカイブの保存先を選択")
+        if not output_path:
+            return
+        for version in latest_by_purpose.values():
+            self.ctx.backend.record_archive_result(version.version, output_path)
+        self.ctx.status.show_message("データセットのアーカイブを作成しました")
+
+    def _cycle_preview_mode(self) -> None:
+        modes = (0, 1, 2)
+        current = self.display_combo.currentIndex()
+        next_mode = modes[(modes.index(current) + 1) % len(modes)] if current in modes else modes[0]
+        self.display_combo.setCurrentIndex(next_mode)
+        self.ctx.status.show_message(f"表示形式: {self.display_combo.currentText()}")
+
+    def _step_channel(self, delta: int) -> None:
+        if self.channel_combo.count() == 0:
+            return
+        index = (self.channel_combo.currentIndex() + delta) % self.channel_combo.count()
+        self.channel_combo.setCurrentIndex(index)
+        self.ctx.status.show_message(f"チャンネル: {self.channel_combo.currentText()}")
 
     def eventFilter(self, watched, event) -> bool:
         if event.type() == QEvent.Type.KeyPress and watched in (
             self.table,
             self.table.viewport(),
-            self.thumbnail,
-            self.thumbnail.viewport(),
+            self.image_view,
+            self.image_view.viewport(),
         ):
-            key = event.key()
-            key_text = event.text().upper()
+            from PySide6.QtWidgets import QComboBox, QLineEdit
+
+            focus = self.focusWidget()
+            if isinstance(focus, (QComboBox, QLineEdit)):
+                return super().eventFilter(watched, event)
+            if self.shortcuts.matches("zoom_in", event):
+                self.image_view.zoom_by(1.2)
+                return True
+            if self.shortcuts.matches("zoom_out", event):
+                self.image_view.zoom_by(1 / 1.2)
+                return True
+            if self.shortcuts.matches("fit_view", event):
+                self.image_view.fit_image()
+                return True
             for action, field, value in (
                 ("usage_train", "usage", "train"),
                 ("usage_val", "usage", "val"),
@@ -838,27 +1016,42 @@ class DataPreparationPage(BasePage):
                 ("quality_ok", "quality", "可"),
                 ("quality_bad", "quality", "不良"),
             ):
-                if key_text and key_text == self.shortcuts[action].upper() and self._selected_ids:
+                if self.shortcuts.matches(action, event) and self._selected_ids:
                     self._change(self._selected_ids, **{field: value})
                     return True
-            if key_text == self.shortcuts["toggle_view"].upper():
-                self.toggle_view()
+            if self.shortcuts.matches("display_mode", event):
+                self._cycle_preview_mode()
                 return True
-            if key_text == self.shortcuts["class_dialog"].upper() and self._selected_ids:
+            if self.shortcuts.matches("channel_prev", event):
+                self._step_channel(-1)
+                return True
+            if self.shortcuts.matches("channel_next", event):
+                self._step_channel(1)
+                return True
+            if self.shortcuts.matches("class_dialog", event) and self._selected_ids:
                 self.choose_classification()
                 return True
-            if key_text == self.shortcuts["help"]:
+            if self.shortcuts.matches("help", event) or event.key() == Qt.Key.Key_F1:
                 self.show_key_help()
                 return True
-            if key == Qt.Key.Key_Space:
+            if self.shortcuts.matches("previous_unassigned", event):
+                self.select_next_unassigned(-1)
+                return True
+            if self.shortcuts.matches("next_unassigned", event):
                 self.select_next_unassigned()
                 return True
-            if key == Qt.Key.Key_Return or key == Qt.Key.Key_Enter:
+            if self.shortcuts.matches("triage_view", event):
                 self.open_triage()
                 return True
+            if event.key() == Qt.Key.Key_Escape:
+                self._clear_selection_or_filter()
+                return True
             if self._selected_ids:
+                if self.shortcuts.matches("class_clear", event):
+                    self._change(self._selected_ids, classification=None)
+                    return True
                 for index in range(9):
-                    if key_text == self.shortcuts[f"class_{index + 1}"]:
+                    if self.shortcuts.matches(f"class_{index + 1}", event):
                         if index < len(self.ctx.backend.classifications):
                             self._change(
                                 self._selected_ids,
@@ -867,8 +1060,8 @@ class DataPreparationPage(BasePage):
                         return True
         return super().eventFilter(watched, event)
 
-    def select_next_unassigned(self) -> None:
-        """次の未振り分け画像へ選択を移す。"""
+    def select_next_unassigned(self, direction: int = 1) -> None:
+        """次または前の未振り分け画像へ選択を移す。"""
         visible = self.model.visible_items()
         if not visible:
             return
@@ -876,22 +1069,25 @@ class DataPreparationPage(BasePage):
             (index for index, item in enumerate(visible) if item.item_id in self._selected_ids), -1
         )
         for offset in range(1, len(visible) + 1):
-            index = (current + offset) % len(visible)
+            index = (current + direction * offset) % len(visible)
             if visible[index].usage == "unassigned":
                 item = visible[index]
-                self._selected_ids = [item.item_id]
-                self.table.selectRow(index)
-                self.thumbnail.selectionModel().clearSelection()
-                self.thumbnail.selectionModel().select(
-                    self._index_for_thumb(item),
-                    QItemSelectionModel.SelectionFlag.Select
-                    | QItemSelectionModel.SelectionFlag.Rows,
-                )
+                self._select_only_row(index, item.item_id)
                 self._show_preview()
                 return
 
     def on_enter(self, params: dict) -> None:
         self.refresh()
+
+    def refresh_on_activate(self) -> None:
+        """編集中のセルを保ち、それ以外は最新データへ更新する。"""
+        if self.table.state() == QAbstractItemView.State.EditingState:
+            return
+        self._preserve_preview_on_refresh = True
+        try:
+            self.refresh()
+        finally:
+            self._preserve_preview_on_refresh = False
 
 
 class _ExcelCommand(QUndoCommand):
@@ -960,3 +1156,15 @@ class DatasetHistoryPage(BasePage):
 
     def on_enter(self, params: dict) -> None:
         self.refresh()
+
+    def refresh_on_activate(self) -> None:
+        """版一覧を更新し、選択中の版を再選択する。"""
+        selected_versions = [
+            self.model.index(index.row(), 0).data()
+            for index in self.table.selectionModel().selectedRows()
+        ]
+        self.refresh()
+        if selected_versions:
+            for row, version in enumerate(self.model.versions):
+                if version.version in selected_versions:
+                    self.table.selectRow(row)

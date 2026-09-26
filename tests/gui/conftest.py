@@ -1,6 +1,8 @@
 """GUI テストの共通環境。"""
 
 import os
+import sys
+import traceback
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("FOAM_MOCK_SPEED", "1000")
@@ -13,6 +15,7 @@ from foam_cell_analysis.gui.context import AppContext, StatusBus
 from foam_cell_analysis.gui.home_window import HomeWindow
 from foam_cell_analysis.gui.jobs import JobManager
 from foam_cell_analysis.gui.navigation import Navigator
+from foam_cell_analysis.gui.shortcuts import ShortcutMap
 from foam_cell_analysis.gui.window_manager import WindowManager
 from foam_cell_analysis.services.mock.backend import MockBackend
 
@@ -21,6 +24,22 @@ from foam_cell_analysis.services.mock.backend import MockBackend
 def qapp():
     """共有 QApplication を返す。"""
     return QApplication.instance() or QApplication([])
+
+
+@pytest.fixture(autouse=True)
+def fail_on_qt_slot_exceptions():
+    """Qt スロットから伝播した Python 例外をテスト失敗にする。"""
+    exceptions = []
+    previous_hook = sys.excepthook
+
+    def record_exception(exc_type, value, tb):
+        exceptions.append("".join(traceback.format_exception(exc_type, value, tb)))
+
+    sys.excepthook = record_exception
+    yield
+    sys.excepthook = previous_hook
+    if exceptions:
+        pytest.fail("Qt スロット内で例外が発生しました:\n" + "\n".join(exceptions))
 
 
 @pytest.fixture
@@ -32,7 +51,13 @@ def mock_backend():
 @pytest.fixture
 def shell(qapp, mock_backend, tmp_path):
     """ホームとモードウィンドウを束ねたテスト用シェルを返す。"""
-    context = AppContext(mock_backend, Navigator(), JobManager(), StatusBus())
+    context = AppContext(
+        mock_backend,
+        Navigator(),
+        JobManager(),
+        StatusBus(),
+        ShortcutMap(tmp_path / "keymap.json"),
+    )
     QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path))
     settings = QSettings(QSettings.Format.IniFormat, QSettings.Scope.UserScope, "tests", "foam")
     manager = WindowManager(context, settings)

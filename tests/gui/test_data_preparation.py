@@ -6,14 +6,20 @@ from dataclasses import replace
 from time import perf_counter
 
 from PySide6.QtCore import Qt
+from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import QFileDialog
 
 from foam_cell_analysis.gui.context import AppContext
 from foam_cell_analysis.gui.jobs import JobManager
-from foam_cell_analysis.gui.modes.data_preparation.dialogs import ImportSettingsDialog
+from foam_cell_analysis.gui.modes.data_preparation import finalize_thumbnails
+from foam_cell_analysis.gui.modes.data_preparation.dialogs import (
+    ContinuousTriageDialog,
+    DatasetFinalizeDialog,
+    ImportSettingsDialog,
+)
 from foam_cell_analysis.gui.modes.data_preparation.page import DataPreparationPage
-from foam_cell_analysis.gui.modes.data_preparation.thumbnails import ThumbnailModel
 from foam_cell_analysis.gui.navigation import Navigator
+from foam_cell_analysis.gui.widgets.image_convert import DisplayMode
 from foam_cell_analysis.services.mock.backend import MockBackend
 from foam_cell_analysis.services.models import DataItem
 
@@ -173,29 +179,115 @@ def test_excel_export_and_import_round_trip(qapp, tmp_path, monkeypatch):
     page.close()
 
 
-def test_thumbnails_construct_and_scroll_one_thousand_items_without_eager_rendering(qapp, qtbot):
+def test_working_table_uses_no_thumbnail_toggle_and_updates_only_edited_items(qapp):
     backend = MockBackend()
-    items = backend.get_working_items()
-    items.extend(
-        replace(
-            items[index % len(items)],
-            item_id=f"item_extra_{index:04d}",
-            source_filename=f"extra_{index:04d}.tif",
-            source_relpath=f"large-folder/extra_{index:04d}.tif",
-            seed=index + 2000,
-        )
-        for index in range(910)
+    page = _page(qapp, backend)
+    assert not hasattr(page, "thumbnail")
+    assert "toggle_view" not in page.shortcuts.mapping
+    calls = []
+    validate = backend.validate_items
+
+    def record(item_ids=None):
+        calls.append(item_ids)
+        return validate(item_ids)
+
+    backend.validate_items = record
+    resets = QSignalSpy(page.model.modelReset)
+    layouts = QSignalSpy(page.model.layoutChanged)
+    item = next(item for item in backend.get_working_items() if item.usage == "unassigned")
+    page._change([item.item_id], quality="可")
+    assert calls == [None]
+    assert resets.count() == 0
+    assert layouts.count() == 0
+    page.close()
+
+
+def test_preview_shortcuts_work_from_table_but_not_search_input(qapp):
+    backend = MockBackend()
+    page = _page(qapp, backend)
+    messages = []
+    page.ctx.status.message.connect(messages.append)
+    page.table.setFocus()
+    QTest.keyClick(page.table, Qt.Key.Key_M)
+    assert page.display_combo.currentText() == "オーバーレイ"
+    assert messages[-1] == "表示形式: オーバーレイ"
+    QTest.keyClick(page.table, Qt.Key.Key_BracketLeft)
+    assert page.channel_combo.currentText() == "C"
+    page.search.setFocus()
+    QTest.keyClick(page.search, Qt.Key.Key_M)
+    assert page.search.text().casefold() == "m"
+    assert page.display_combo.currentText() == "オーバーレイ"
+    page.close()
+
+
+def test_continuous_triage_shortcuts_change_mode_and_channel(qapp, qtbot):
+    backend = MockBackend()
+    page = _page(qapp, backend)
+    item = next(item for item in backend.get_working_items() if item.usage == "unassigned")
+    dialog = ContinuousTriageDialog(
+        page, [item], lambda *_args, **_kwargs: None, backend, page.shortcuts
     )
-    view = __import__("PySide6.QtWidgets", fromlist=["QListView"]).QListView()
-    qtbot.addWidget(view)
-    model = ThumbnailModel(backend, view)
+    qtbot.addWidget(dialog)
+    messages = []
+    page.ctx.status.message.connect(messages.append)
+    dialog.show()
+    dialog.setFocus()
+    QTest.keyClick(dialog, Qt.Key.Key_M)
+    assert dialog.display_mode == DisplayMode.INSTANCE_LABEL
+    assert messages[-1] == "表示形式: インスタンスラベル"
+    QTest.keyClick(dialog, Qt.Key.Key_BracketRight)
+    assert dialog.channel_index == 1
+    assert messages[-1] == "チャンネル: B"
+    dialog.close()
+    page.close()
+
+
+def test_finalize_thumbnail_dialog_opens_fast_and_loads_visible_range(qapp, qtbot):
+    backend = MockBackend()
+    base = backend.get_working_items()
+    additions = [
+        replace(
+            base[index % len(base)],
+            item_id=f"perf_item_{index:04d}",
+            source_filename=f"perf_{index:04d}.tif",
+            source_relpath=f"perf/perf_{index:04d}.tif",
+            seed=index + 5000,
+            change="added",
+            usage="train" if index % 2 == 0 else "val",
+        )
+        for index in range(911)
+    ]
+    backend.add_imported_items("all", additions)
     started = perf_counter()
-    model.set_items(items)
-    view.setModel(model)
-    view.show()
-    view.scrollTo(model.index(model.rowCount() - 1, 0))
+    dialog = DatasetFinalizeDialog(None, backend)
+    qtbot.addWidget(dialog)
+    dialog.show()
     qapp.processEvents()
     elapsed = perf_counter() - started
-    assert model.rowCount() >= 1000
-    assert elapsed < 4.0
-    assert len(model.cache) <= 320
+    assert elapsed < 0.5
+    assert dialog.thumbnail_filter.currentText() == "追加・変更のみ"
+    assert sum(model.rowCount() for model in dialog.thumbnail_models.values()) >= 900
+    for purpose, model in dialog.thumbnail_models.items():
+        model.filter_name = "all"
+        model.set_items(dialog.thumbnail_source_items[purpose], model.errors)
+    dialog.finalize_tabs.setCurrentIndex(1)
+    qapp.processEvents()
+    view = dialog.thumbnail_views["train"]
+    model = dialog.thumbnail_models["train"]
+    scroll_started = perf_counter()
+    view.verticalScrollBar().setValue(view.verticalScrollBar().maximum())
+    model.request_visible()
+    scroll_elapsed = perf_counter() - scroll_started
+    assert any(item_id.startswith("perf_item_") for item_id in model._wanted)
+    assert len(model._wanted) <= 30
+    assert scroll_elapsed < 0.25
+    qapp.processEvents()
+    qtbot.waitUntil(
+        lambda: any(
+            key[0].startswith("perf_item_") for key in finalize_thumbnails._thumbnail_cache
+        ),
+        timeout=5000,
+    )
+    assert model.rowCount() >= 400
+    assert len(finalize_thumbnails._thumbnail_cache) <= 240
+    dialog.close()

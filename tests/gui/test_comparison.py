@@ -14,6 +14,7 @@ from foam_cell_analysis.gui.modes.comparison.dialogs import (
 )
 from foam_cell_analysis.gui.modes.comparison.mask_compare import MaskComparisonPage
 from foam_cell_analysis.gui.navigation import Navigator
+from foam_cell_analysis.gui.widgets.image_convert import DisplayMode
 from foam_cell_analysis.services.mock.backend import MockBackend
 
 
@@ -62,6 +63,22 @@ def test_mask_comparison_slots_and_navigation(qtbot):
     assert page.index == (original + 1) % len(page.items)
     assert not page.views[0].scene().items() == []
     assert all(view.horizontalScrollBarPolicy().name == "ScrollBarAlwaysOff" for view in page.views)
+
+
+def test_mask_comparison_shortcuts_update_every_slot_and_status(qtbot):
+    ctx = make_context()
+    page = MaskComparisonPage(ctx)
+    qtbot.addWidget(page)
+    page.on_enter({"candidate_ids": ["RC-001", "RC-002"]})
+    messages = []
+    ctx.status.message.connect(messages.append)
+    page.views[0].setFocus()
+    QTest.keyClick(page.views[0], Qt.Key.Key_M)
+    assert page.mode_buttons[DisplayMode.INSTANCE_LABEL].isChecked()
+    assert messages[-1] == "表示形式: インスタンスラベル"
+    QTest.keyClick(page.views[0], Qt.Key.Key_BracketRight)
+    assert page._channel == "B"
+    assert all(not view.scene().items() == [] for view in page.views)
 
 
 def test_candidate_table_defaults_to_latest_and_uses_checkboxes(qtbot):

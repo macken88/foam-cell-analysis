@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -30,7 +30,7 @@ from ...theme import Color, numeric_font, set_style
 from ...widgets.form import FormSection
 from ...widgets.image_convert import DisplayMode, array_to_pixmap, render
 from ...widgets.image_view import ImageView
-from ...widgets.marks import STATUS_MARKS, TagDelegate
+from ...widgets.marks import STATUS_MARKS, KeyHintBar, TagDelegate
 from ...widgets.page_base import BasePage
 from ...widgets.table import mark_primary, setup_table
 
@@ -52,9 +52,9 @@ class InferencePage(BasePage):
 
     classifications = ("分類A", "分類B", "分類C")
     modes = {
+        "原画像": DisplayMode.IMAGE,
         "オーバーレイ": DisplayMode.OVERLAY,
         "インスタンスラベル": DisplayMode.INSTANCE_LABEL,
-        "二値マスク": DisplayMode.BINARY,
     }
 
     def __init__(self, ctx, parent=None, *, show_heading: bool = True) -> None:
@@ -66,9 +66,12 @@ class InferencePage(BasePage):
             show_heading=show_heading,
         )
         self.inputs: list[InferenceInput] = []
+        self.shortcuts = ctx.shortcuts
         self.output_path = ""
+        self._running = False
         self._build_ui()
         self.refresh_routing()
+        self.shortcuts.changed.connect(self._shortcuts_changed)
 
     def _build_ui(self) -> None:
         input_section = FormSection("入力画像")
@@ -159,6 +162,15 @@ class InferencePage(BasePage):
         self.detection_count = QLabel("検出数: —")
         self.image_view.set_overlay_labels("", "")
         preview_section.form.addRow(self.detection_count)
+        self.hints = KeyHintBar(
+            [
+                (self.shortcuts.display_key(self.shortcuts["display_mode"]), "表示形式"),
+                (self.shortcuts.display_key(self.shortcuts["zoom_in"]), "拡大"),
+                (self.shortcuts.display_key(self.shortcuts["zoom_out"]), "縮小"),
+                (self.shortcuts.display_key(self.shortcuts["fit_view"]), "全体表示"),
+            ]
+        )
+        preview_section.form.addRow(self.hints)
 
         self.error_banner = QWidget()
         set_style(self.error_banner, role="errorBanner")
@@ -197,6 +209,8 @@ class InferencePage(BasePage):
         self.display_group.buttonToggled.connect(
             lambda _button, checked: checked and self._render_selected()
         )
+        self.image_view.installEventFilter(self)
+        self.image_view.viewport().installEventFilter(self)
 
     @staticmethod
     def _checkbox_row(*checks: QCheckBox) -> QWidget:
@@ -210,6 +224,15 @@ class InferencePage(BasePage):
     def on_enter(self, params: dict) -> None:
         """ページ表示時に最新のモデル振り分けを反映する。"""
         self.refresh_routing()
+
+    def refresh_on_activate(self) -> None:
+        """入力欄の設定を保ちながら最新のモデル一覧を反映する。"""
+        selected_models = [entry.model_id for entry in self.inputs]
+        self.refresh_routing()
+        for entry, model_id in zip(self.inputs, selected_models, strict=False):
+            if model_id in self.models:
+                entry.model_id = model_id
+        self._refresh_table()
 
     def refresh_routing(self) -> None:
         """入力行の適用モデルを現在の振り分けで更新する。"""
@@ -264,6 +287,16 @@ class InferencePage(BasePage):
         self._refresh_table()
 
     def _refresh_table(self) -> None:
+        current_row = self.table.currentRow()
+        current_filename = (
+            self.inputs[current_row].filename if 0 <= current_row < len(self.inputs) else None
+        )
+        selected_filenames = {
+            self.inputs[index.row()].filename
+            for index in self.table.selectionModel().selectedRows()
+            if index.row() < len(self.inputs)
+        }
+        scroll_value = self.table.verticalScrollBar().value()
         self.table.setRowCount(len(self.inputs))
         for row, entry in enumerate(self.inputs):
             self.table.setItem(row, 0, QTableWidgetItem(entry.filename))
@@ -289,6 +322,12 @@ class InferencePage(BasePage):
             count_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self.table.setItem(row, 4, count_item)
         self.table.resizeColumnsToContents()
+        for row, entry in enumerate(self.inputs):
+            if entry.filename in selected_filenames:
+                self.table.selectRow(row)
+            if entry.filename == current_filename:
+                self.table.setCurrentCell(row, 0)
+        self.table.verticalScrollBar().setValue(scroll_value)
         self._update_run_state()
 
     def _classification_changed(self, row: int, value: str) -> None:
@@ -305,7 +344,7 @@ class InferencePage(BasePage):
 
     def _update_run_state(self) -> None:
         missing = [entry for entry in self.inputs if not entry.model_id]
-        self.run_button.setEnabled(bool(self.inputs) and not missing)
+        self.run_button.setEnabled(bool(self.inputs) and not missing and not self._running)
         runnable = sum(bool(entry.model_id) for entry in self.inputs)
         self.run_button.setText(f"推論を実行（{runnable} 枚）")
         self.error_banner.setVisible(bool(missing))
@@ -323,7 +362,7 @@ class InferencePage(BasePage):
 
     def run_inference(self) -> None:
         """入力画像を順に処理する FakeJob を開始する。"""
-        if not self.inputs:
+        if not self.inputs or self._running:
             return
         if not self.output_path:
             QMessageBox.warning(
@@ -367,10 +406,12 @@ class InferencePage(BasePage):
             "本番推論", total_steps=len(self.inputs) * 2, interval_ms=200, on_step=advance
         )
         job.finished.connect(lambda ok, message: self._job_finished(ok, message))
+        self._running = True
         self.run_button.setEnabled(False)
         self.ctx.jobs.start(job)
 
     def _job_finished(self, ok: bool, message: str) -> None:
+        self._running = False
         if not ok:
             for entry in self.inputs:
                 if entry.status == "実行中":
@@ -386,24 +427,66 @@ class InferencePage(BasePage):
         rows = self.table.selectionModel().selectedRows()
         if not rows:
             self.image_view.set_image(None)
+            self._render_signature = None
             self.detection_count.setText("検出数: —")
             self.image_view.set_overlay_labels("", "")
             return
         entry = self.inputs[rows[0].row()]
-        if entry.status != "完了" or entry.image is None or entry.labels is None:
-            self.image_view.set_image(None)
-            self.detection_count.setText("検出数: —")
-            self.image_view.set_overlay_labels(entry.filename, entry.model_id or "未割り当て")
-            return
         selected_mode = next(
             label for label, button in self.display_buttons.items() if button.isChecked()
         )
+        signature = (entry.filename, entry.model_id, entry.status, selected_mode, id(entry.image))
+        if entry.status != "完了" or entry.image is None or entry.labels is None:
+            if signature == getattr(self, "_render_signature", None):
+                return
+            self.image_view.set_image(None)
+            self._render_signature = signature
+            self.detection_count.setText("検出数: —")
+            self.image_view.set_overlay_labels(entry.filename, entry.model_id or "未割り当て")
+            return
+        if signature == getattr(self, "_render_signature", None):
+            return
         mode = self.modes[selected_mode]
         self.image_view.set_image(array_to_pixmap(render(entry.image, entry.labels, mode)))
+        self._render_signature = signature
         count = len(set(entry.labels.ravel()) - {0})
         self.detection_count.setText(f"検出数: {count}")
         self.image_view.set_overlay_labels(
             f"{entry.filename}　{entry.model_id}", f"検出 {count} 個"
+        )
+
+    def eventFilter(self, watched, event) -> bool:
+        if event.type() == QEvent.Type.KeyPress:
+            if self.shortcuts.matches("zoom_in", event):
+                self.image_view.zoom_by(1.2)
+                return True
+            if self.shortcuts.matches("zoom_out", event):
+                self.image_view.zoom_by(1 / 1.2)
+                return True
+            if self.shortcuts.matches("fit_view", event):
+                self.image_view.fit_image()
+                return True
+            if not self.shortcuts.matches("display_mode", event):
+                return super().eventFilter(watched, event)
+            modes = tuple(self.modes)
+            current = next(
+                label for label, button in self.display_buttons.items() if button.isChecked()
+            )
+            label = modes[(modes.index(current) + 1) % len(modes)]
+            self.display_buttons[label].setChecked(True)
+            self.ctx.status.show_message(f"表示形式: {label}")
+            return True
+        return super().eventFilter(watched, event)
+
+    def _shortcuts_changed(self) -> None:
+        """共有キー変更後に推論画面のヒントを更新する。"""
+        self.hints.set_hints(
+            [
+                (self.shortcuts.display_key(self.shortcuts["display_mode"]), "表示形式"),
+                (self.shortcuts.display_key(self.shortcuts["zoom_in"]), "拡大"),
+                (self.shortcuts.display_key(self.shortcuts["zoom_out"]), "縮小"),
+                (self.shortcuts.display_key(self.shortcuts["fit_view"]), "全体表示"),
+            ]
         )
 
     def open_routing(self) -> None:

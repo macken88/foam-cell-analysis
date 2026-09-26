@@ -190,7 +190,32 @@ class ReleasedModelsPage(BasePage):
         elif self._models:
             self.select_model(next(iter(self._models)))
 
+    def refresh_on_activate(self) -> None:
+        """一覧を読み直し、選択中のリリースモデルを保つ。"""
+        selected_model = self._selected_model.model_id if self._selected_model else None
+        pending_changes = self._pending_changes()
+        self.on_enter({"select": selected_model})
+        for classification, model_id in pending_changes.items():
+            control = self._routing_controls.get(classification)
+            if control:
+                index = control.findData(model_id)
+                if index >= 0:
+                    control.setCurrentIndex(index)
+        self._update_routing_rows()
+
     def _load_models(self) -> None:
+        current_row = self.model_table.currentRow()
+        current_id = (
+            self.model_table.item(current_row, 0).text()
+            if current_row >= 0 and self.model_table.item(current_row, 0)
+            else None
+        )
+        selected_ids = {
+            item.text()
+            for index in self.model_table.selectionModel().selectedRows()
+            if (item := self.model_table.item(index.row(), 0)) is not None
+        }
+        scroll_value = self.model_table.verticalScrollBar().value()
         self._models = {model.model_id: model for model in self.ctx.backend.list_released_models()}
         assignments: dict[str, list[str]] = {model_id: [] for model_id in self._models}
         for classification, model_id in self.ctx.backend.get_routing().items():
@@ -240,6 +265,13 @@ class ReleasedModelsPage(BasePage):
             10: 170,
         }.items():
             self.model_table.setColumnWidth(column, width)
+        for row in range(self.model_table.rowCount()):
+            model_id = self.model_table.item(row, 0).text()
+            if model_id in selected_ids:
+                self.model_table.selectRow(row)
+            if model_id == current_id:
+                self.model_table.setCurrentCell(row, 0)
+        self.model_table.verticalScrollBar().setValue(scroll_value)
 
     def _show_model_detail(self) -> None:
         rows = self.model_table.selectionModel().selectedRows()

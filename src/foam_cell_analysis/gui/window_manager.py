@@ -1,5 +1,7 @@
 """ページ遷移をモードウィンドウへ振り分ける。"""
 
+from time import monotonic
+
 from PySide6.QtCore import QObject, QSettings, Signal
 
 from .context import AppContext
@@ -56,6 +58,8 @@ class WindowManager(QObject):
         self._current: dict[ModeId, PageId] = {}
         self._last_page: PageId | None = None
         self._last_status = "準備完了"
+        self._last_navigation_at: dict[ModeId, float] = {}
+        self._last_activation_refresh_at: dict[ModeId, float] = {}
         self.ctx.navigator.navigation_requested.connect(self.navigate)
         self.ctx.status.message.connect(self._remember_status)
 
@@ -101,7 +105,9 @@ class WindowManager(QObject):
             window = ModeWindow(mode, self.ctx, MODE_PAGES[mode])
             window.status_text.setText(self._last_status)
             window.home_requested.connect(self.show_home_requested)
+            window.tab_requested.connect(lambda page_id: self.navigate(page_id, {}))
             window.closed.connect(self._save_window)
+            window.activated.connect(self._refresh_active_page)
             self._windows[mode] = window
             geometry = self.settings.value(f"windows/{mode.value}/geometry")
             if geometry:
@@ -119,15 +125,35 @@ class WindowManager(QObject):
         """モードごとの現在のページを返す。"""
         return self._current.get(ModeId(mode))
 
+    def _refresh_active_page(self, mode: ModeId) -> None:
+        """OS から前面に戻った画面を軽量な再表示更新で同期する。"""
+        mode = ModeId(mode)
+        now = monotonic()
+        if now - self._last_navigation_at.get(mode, 0.0) < 0.5:
+            return
+        if now - self._last_activation_refresh_at.get(mode, 0.0) < 1.0:
+            return
+        page_id = self._current.get(mode)
+        page = self._pages.get(page_id)
+        if page:
+            self._last_activation_refresh_at[mode] = now
+            page.refresh_on_activate()
+
     def navigate(self, page_id: PageId, params: dict | None = None) -> None:
         """遷移先のウィンドウを開き、タブ選択後に on_enter を1回呼ぶ。"""
         page_id = PageId(page_id)
         mode, _tab = PAGE_TO_MODE_TAB[page_id]
         page = self.page(page_id)
         window = self._ensure_window(mode)
-        window.select_page(page_id)
-        self._current[mode] = page_id
-        self._last_page = page_id
+        self._last_navigation_at[mode] = monotonic()
+        keep_current = bool((params or {}).get("_preserve_current_tab")) and window.isVisible()
+        if keep_current:
+            page_id = self._current.get(mode, page_id)
+            page = self.page(page_id)
+        else:
+            window.select_page(page_id)
+            self._current[mode] = page_id
+            self._last_page = page_id
         if not window.isVisible():
             saved_geometry = getattr(window, "_saved_geometry", None)
             if saved_geometry:
@@ -144,7 +170,16 @@ class WindowManager(QObject):
             window.show()
         window.raise_()
         window.activateWindow()
-        page.on_enter(params or {})
+        if not keep_current:
+            page.on_enter(
+                {
+                    key: value
+                    for key, value in (params or {}).items()
+                    if key != "_preserve_current_tab"
+                }
+            )
+        else:
+            page.refresh_on_activate()
 
     def show_home_requested(self) -> None:
         """Ctrl+H またはホームボタンをホーム側へ通知する。"""

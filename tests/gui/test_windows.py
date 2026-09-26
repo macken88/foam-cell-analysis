@@ -3,11 +3,17 @@
 from datetime import datetime
 
 from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
 
 from foam_cell_analysis.gui.home_summary import build_home_summary
 from foam_cell_analysis.gui.jobs import FakeJob
 from foam_cell_analysis.gui.navigation import ModeId, PageId
-from foam_cell_analysis.gui.window_manager import PAGE_TO_MODE_TAB, WindowManager
+from foam_cell_analysis.gui.window_manager import (
+    MODE_PAGES,
+    PAGE_TO_MODE_TAB,
+    PAGE_TYPES,
+    WindowManager,
+)
 
 
 def test_every_page_can_be_opened(shell, qapp):
@@ -36,6 +42,51 @@ def test_navigation_passes_params_once(shell):
     shell.ctx.navigator.navigate(PageId.MASK_COMPARISON, **params)
     assert shell.current_page() is page
     assert calls == [params]
+
+
+def test_clicking_each_mode_tab_creates_page_and_enters_once(shell, qapp, monkeypatch):
+    shell.manager.page(PageId.DATA_PREPARATION)
+    calls = {page_id: 0 for page_id in PageId}
+    for page_id, page_type in PAGE_TYPES.items():
+        original = page_type.on_enter
+
+        def counted(page, params, *, _original=original, _page_id=page_id):
+            calls[_page_id] += 1
+            _original(page, params)
+
+        monkeypatch.setattr(page_type, "on_enter", counted)
+
+    for mode, pages in MODE_PAGES.items():
+        shell.manager.navigate(pages[0], {})
+        window = shell.manager.window(mode)
+        window.showNormal()
+        qapp.processEvents()
+        for index, page_id in enumerate(pages):
+            if index != window.tab_bar.currentIndex():
+                QTest.mouseClick(
+                    window.tab_bar,
+                    Qt.MouseButton.LeftButton,
+                    pos=window.tab_bar.tabRect(index).center(),
+                )
+                qapp.processEvents()
+            assert window.stack.currentWidget() is shell.manager.page(page_id)
+            assert shell.manager.current_page_id(mode) == page_id
+
+    assert calls == {page_id: 1 for page_id in PageId}
+
+
+def test_clicking_empty_mask_comparison_tab_shows_candidate_guidance(shell, qapp):
+    shell.navigate(PageId.CANDIDATES)
+    window = shell.manager.window(ModeId.COMPARISON)
+    QTest.mouseClick(
+        window.tab_bar,
+        Qt.MouseButton.LeftButton,
+        pos=window.tab_bar.tabRect(1).center(),
+    )
+    qapp.processEvents()
+    page = shell.page(PageId.MASK_COMPARISON)
+    assert page.placeholder.isVisible()
+    assert page.placeholder.text() == "候補一覧で比較する候補を選んでください"
 
 
 def test_cross_mode_navigation_selects_expected_window_and_tab(shell):

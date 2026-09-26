@@ -18,6 +18,8 @@ class ImageView(QGraphicsView):
         self.setScene(QGraphicsScene(self))
         self._pixmap_item: QGraphicsPixmapItem | None = None
         self._scale = 1.0
+        self._fit_on_resize = False
+        self._fitting = False
         self._syncing = False
         self._drag_position = None
         self.setBackgroundBrush(QBrush(QColor(Color.IMAGE_BG)))
@@ -47,8 +49,11 @@ class ImageView(QGraphicsView):
         if has_image:
             self._pixmap_item = self.scene().addPixmap(pixmap)
             self.scene().setSceneRect(self._pixmap_item.boundingRect())
+            self._fit_on_resize = True
             self.fit_image()
+            QTimer.singleShot(0, self._fit_if_pending)
         else:
+            self._fit_on_resize = False
             self._notify_sync()
         self._schedule_sync()
 
@@ -84,14 +89,32 @@ class ImageView(QGraphicsView):
 
     def fit_image(self) -> None:
         """画像全体を表示する。"""
-        if self._pixmap_item:
-            self.resetTransform()
-            self.fitInView(self._pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)
-            self._scale = self.transform().m11()
-            self._notify_sync()
+        if self._pixmap_item and not self._fitting:
+            self._fit_on_resize = True
+            self._fitting = True
+            try:
+                self.resetTransform()
+                self.fitInView(self._pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)
+                self._scale = self.transform().m11()
+                self._notify_sync()
+            finally:
+                self._fitting = False
+
+    def _fit_if_pending(self) -> None:
+        """表示後のレイアウトが確定してから全体表示を適用する。"""
+        if self._fit_on_resize and self._pixmap_item:
+            QTimer.singleShot(0, self._fit_if_pending)
+
+    def zoom_by(self, factor: float) -> None:
+        """表示倍率を指定比率で変更する。"""
+        self._fit_on_resize = False
+        self.scale(factor, factor)
+        self._scale *= factor
+        self._notify_sync()
 
     def wheelEvent(self, event: QWheelEvent) -> None:
         """カーソル位置を中心にズームする。"""
+        self._fit_on_resize = False
         factor = 1.2 if event.angleDelta().y() > 0 else 1 / 1.2
         self.scale(factor, factor)
         self._scale *= factor
@@ -99,6 +122,7 @@ class ImageView(QGraphicsView):
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
+            self._fit_on_resize = False
             self._drag_position = event.position().toPoint()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
         super().mousePressEvent(event)
@@ -127,6 +151,8 @@ class ImageView(QGraphicsView):
         self.placeholder.setGeometry(self.viewport().rect())
         self._position_overlay_labels()
         self._notify_sync()
+        if self._fit_on_resize and self._pixmap_item:
+            self.fit_image()
         self._schedule_sync()
 
     def _notify_sync(self) -> None:

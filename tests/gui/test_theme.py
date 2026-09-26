@@ -47,3 +47,22 @@ def test_mark_widgets_build_and_display_expected_labels(qtbot) -> None:
     assert count.name_label.text() == "学習"
     assert count.count_label.text() == "489"
     assert [label.text() for label in hints.findChildren(QLabel)] == ["Q", "学習", "W", "検証"]
+
+
+def test_key_hint_bar_keeps_labels_whole_and_help_visible_when_narrow(qtbot, qapp):
+    hints = KeyHintBar(
+        [("Q", "学習"), ("Space", "次の未振り分け"), ("Enter", "連続振り分け"), ("?", "キー一覧")]
+    )
+    qtbot.addWidget(hints)
+    hints.resize(280, hints.sizeHint().height())
+    hints.show()
+    qapp.processEvents()
+
+    assert hints._groups[-1].isVisible()
+    assert hints._groups[0].isVisible()
+    assert not hints._groups[2].isVisible()
+    for group in hints._groups:
+        if group.isVisible():
+            keycap, label = group.findChildren(QLabel)
+            assert keycap.width() >= keycap.sizeHint().width()
+            assert label.width() >= label.sizeHint().width()

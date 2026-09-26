@@ -146,6 +146,9 @@ class Backend(Protocol):
     def get_item_image(self, purpose: str, item_id: str, channel: str) -> np.ndarray:
         """画像項目の指定チャンネルを返す。"""
 
+    def get_item_thumbnail(self, item_id: str, size: tuple[int, int]) -> np.ndarray:
+        """指定サイズの小さいサムネイル画像を返す。"""
+
     def get_item_mask(self, purpose: str, item_id: str, revision: str) -> np.ndarray:
         """画像項目の指定マスク版を返す。"""
 

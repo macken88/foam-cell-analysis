@@ -268,3 +268,10 @@ def test_evaluation_can_be_started_and_completed():
     assert backend.get_candidate("RC-003").status == "candidate"
     assert evaluation.overall_map > 0
     assert len(backend.list_validation_items("val_v002", "分類A")) == 10
+
+
+def test_mock_thumbnail_is_generated_at_requested_small_dimensions():
+    backend = MockBackend()
+    image = backend.get_item_thumbnail("item_000001", (96, 72))
+    assert image.shape == (72, 96, 3)
+    assert image.dtype.name == "uint8"

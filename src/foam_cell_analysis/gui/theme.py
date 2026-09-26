@@ -14,6 +14,7 @@ class Color:
     RULE = "#D3D9DE"
     RULE_SOFT = "#E4E8EB"
     SELECTION = "#D9DFE5"
+    SELECTION_CHANGED = "#EDE3B8"
     TRAIN = "#2F5F9E"
     TRAIN_BG = "#E3EBF6"
     VAL = "#C2661B"

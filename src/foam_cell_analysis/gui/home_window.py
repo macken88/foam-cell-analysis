@@ -222,6 +222,7 @@ class HomeWindow(QMainWindow):
             self._saved_geometry = tuple(int(value) for value in saved_home)
         self._recent: deque[tuple[datetime, str]] = deque(maxlen=2)
         self._summary: HomeSummary | None = None
+        self._observed_jobs: set[int] = set()
         root = QWidget()
         layout = QVBoxLayout(root)
         layout.setContentsMargins(22, 16, 22, 14)
@@ -313,7 +314,7 @@ class HomeWindow(QMainWindow):
     def _show_shortcuts_info(self) -> None:
         from .keymap_dialog import KeymapDialog
 
-        KeymapDialog(self).exec()
+        KeymapDialog(self, self.ctx.shortcuts).exec()
 
     def _open_mode(self, mode: ModeId) -> None:
         page_id = {
@@ -321,10 +322,14 @@ class HomeWindow(QMainWindow):
             ModeId.TRAINING: PageId.TRAINING,
             ModeId.COMPARISON: PageId.CANDIDATES,
         }[ModeId(mode)]
-        self.manager.navigate(page_id)
+        self.manager.navigate(page_id, {"_preserve_current_tab": True})
 
     def _jobs_changed(self, count: int) -> None:
         self.job_count.setText(running_jobs_label(count))
+        for job in self.ctx.jobs.jobs():
+            if id(job) not in self._observed_jobs:
+                self._observed_jobs.add(id(job))
+                job.progress.connect(lambda *_args: self.refresh_summary())
         self.refresh_summary()
 
     def _status_message(self, message: str) -> None:

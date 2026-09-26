@@ -35,3 +35,7 @@ class BasePage(QWidget):
 
     def on_enter(self, params: dict) -> None:
         """ページが表示されるたびに呼び出す。"""
+
+    def refresh_on_activate(self) -> None:
+        """ウィンドウの再表示時に状態を保ちながらページを更新する。"""
+        self.on_enter({})

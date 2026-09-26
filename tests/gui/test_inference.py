@@ -6,7 +6,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("FOAM_MOCK_SPEED", "1000")
 
 import pytest
-from PySide6.QtCore import QEventLoop, QTimer
+from PySide6.QtCore import QEventLoop, Qt, QTimer
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from foam_cell_analysis.gui.context import AppContext, StatusBus
@@ -91,4 +92,15 @@ def test_cancel_marks_running_row_interrupted_and_keeps_pending_rows(qapp, mock_
     job.cancel()
 
     assert [entry.status for entry in page.inputs] == ["中断", "待機"]
+    page.close()
+
+
+def test_result_preview_mode_shortcut_changes_display_and_status(qapp, mock_backend):
+    page = make_page(qapp, mock_backend)
+    messages = []
+    page.ctx.status.message.connect(messages.append)
+    page.image_view.setFocus()
+    QTest.keyClick(page.image_view, Qt.Key.Key_M)
+    assert page.display_buttons["オーバーレイ"].isChecked()
+    assert messages[-1] == "表示形式: オーバーレイ"
     page.close()

@@ -139,9 +139,55 @@ class KeyHintBar(QWidget):
         from PySide6.QtWidgets import QHBoxLayout
 
         layout = QHBoxLayout(self)
+        self._layout = layout
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        layout.setSpacing(6)
+        self._groups: list[QWidget] = []
+        self.set_hints(hints)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def set_hints(self, hints: list[tuple[str, str]]) -> None:
+        """キー割り当て変更後にキー説明を作り直す。"""
+        while self._layout.count():
+            item = self._layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self._groups.clear()
         for key, description in hints:
-            layout.addWidget(KeyCap(key))
-            layout.addWidget(QLabel(description))
-        layout.addStretch(1)
+            group = QWidget(self)
+            group_layout = QHBoxLayout(group)
+            group_layout.setContentsMargins(0, 0, 0, 0)
+            group_layout.setSpacing(3)
+            keycap = KeyCap(key)
+            label = QLabel(description)
+            keycap.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            group_layout.addWidget(keycap)
+            group_layout.addWidget(label)
+            self._groups.append(group)
+            self._layout.addWidget(group)
+        self._layout.addStretch(1)
+        self._update_visible_groups()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_visible_groups()
+
+    def _update_visible_groups(self) -> None:
+        """幅に収まる先頭項目と末尾のキー一覧だけを表示する。"""
+        if not self._groups:
+            return
+        last_index = len(self._groups) - 1
+        available = self.contentsRect().width()
+        spacing = self._layout.spacing()
+        widths = [group.sizeHint().width() for group in self._groups]
+        visible = {last_index}
+        used = widths[last_index]
+        for index in range(last_index):
+            needed = widths[index] + spacing * (len(visible))
+            if used + needed > available:
+                break
+            visible.add(index)
+            used += needed
+        for index, group in enumerate(self._groups):
+            group.setVisible(index in visible)
