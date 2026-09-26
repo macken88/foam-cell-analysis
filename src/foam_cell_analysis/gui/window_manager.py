@@ -7,6 +7,7 @@ from PySide6.QtCore import QObject, QSettings, Signal
 from .context import AppContext
 from .mode_window import ModeWindow
 from .navigation import ModeId, PageId
+from .settings import app_settings
 
 PAGE_TO_MODE_TAB = {
     PageId.DATA_PREPARATION: (ModeId.DATA_PREPARATION, 0),
@@ -52,7 +53,7 @@ class WindowManager(QObject):
     def __init__(self, ctx: AppContext, settings: QSettings | None = None, parent=None) -> None:
         super().__init__(parent)
         self.ctx = ctx
-        self.settings = settings or QSettings("FoamCellAnalysis", "FoamCellAnalysis")
+        self.settings = settings or app_settings()
         self._windows: dict[ModeId, ModeWindow] = {}
         self._pages = {}
         self._current: dict[ModeId, PageId] = {}

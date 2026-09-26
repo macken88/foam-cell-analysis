@@ -15,6 +15,7 @@ from foam_cell_analysis.gui.context import AppContext, StatusBus
 from foam_cell_analysis.gui.home_window import HomeWindow
 from foam_cell_analysis.gui.jobs import JobManager
 from foam_cell_analysis.gui.navigation import Navigator
+from foam_cell_analysis.gui.settings import SETTINGS_FILE_ENV
 from foam_cell_analysis.gui.shortcuts import ShortcutMap
 from foam_cell_analysis.gui.window_manager import WindowManager
 from foam_cell_analysis.services.mock.backend import MockBackend
@@ -24,6 +25,12 @@ from foam_cell_analysis.services.mock.backend import MockBackend
 def qapp():
     """共有 QApplication を返す。"""
     return QApplication.instance() or QApplication([])
+
+
+@pytest.fixture(autouse=True)
+def isolated_app_settings(tmp_path, monkeypatch):
+    """テストごとに空の設定ファイルを使い、利用者の設定を読み書きしない。"""
+    monkeypatch.setenv(SETTINGS_FILE_ENV, str(tmp_path / "settings.ini"))
 
 
 @pytest.fixture(autouse=True)

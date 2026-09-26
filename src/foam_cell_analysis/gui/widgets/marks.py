@@ -195,7 +195,11 @@ class KeyHintBar(QWidget):
 
 
 class DisplayToggle(QWidget):
-    """原画像と設定済み表示を切り替える二択ボタン。"""
+    """原画像と設定済み表示を切り替える二択ボタン。
+
+    ボタンは名前ではなく固定の参照で持つ。共有設定の変更通知を受ける順番が
+    ページ側と前後しても、状態の判定が設定名の辞書引きに依存しないようにする。
+    """
 
     alternate_selected = Signal(bool)
 
@@ -207,39 +211,35 @@ class DisplayToggle(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        self.buttons = {}
-        for name in ("原画像", preference.value):
-            button = QPushButton(name)
+        self.raw_button = QPushButton("原画像")
+        self.alternate_button = QPushButton(preference.value)
+        for button in (self.raw_button, self.alternate_button):
             button.setCheckable(True)
             set_style(button, role="segment")
             self.group.addButton(button)
-            self.buttons[name] = button
             layout.addWidget(button)
-        self.buttons[preference.value].setChecked(True)
+        self.alternate_button.setChecked(True)
         self.group.buttonToggled.connect(self._selected)
         preference.changed.connect(self._preference_changed)
 
     @property
+    def buttons(self) -> dict[str, QPushButton]:
+        """表示名からボタンを引く辞書（表示名は現在のボタンの文字）。"""
+        return {button.text(): button for button in (self.raw_button, self.alternate_button)}
+
+    @property
     def is_alternate(self) -> bool:
         """設定表示が選ばれていれば True を返す。"""
-        return self.buttons[self.preference.value].isChecked()
+        return self.alternate_button.isChecked()
 
     def set_alternate(self, alternate: bool) -> None:
         """原画像または設定表示を選ぶ。"""
-        target = self.preference.value if alternate else "原画像"
-        self.buttons[target].setChecked(True)
+        (self.alternate_button if alternate else self.raw_button).setChecked(True)
 
     def _selected(self, button, checked: bool) -> None:
         if checked:
-            self.alternate_selected.emit(button.text() != "原画像")
+            self.alternate_selected.emit(button is self.alternate_button)
 
     def _preference_changed(self, name: str) -> None:
         """共有設定の変更をボタン名へ反映する。"""
-        old = next((key for key in self.buttons if key != "原画像"), None)
-        alternate = self.buttons[old].isChecked() if old else False
-        if old:
-            button = self.buttons.pop(old)
-            button.setText(name)
-            self.buttons[name] = button
-        if alternate:
-            self.buttons[name].setChecked(True)
+        self.alternate_button.setText(name)

@@ -12,7 +12,6 @@ from foam_cell_analysis.gui.context import AppContext, DisplayPreference, Status
 from foam_cell_analysis.gui.home_window import HomeWindow
 from foam_cell_analysis.gui.jobs import JobManager
 from foam_cell_analysis.gui.keymap_dialog import KeymapWindow
-from foam_cell_analysis.gui.modes.data_preparation import dialogs as data_dialogs
 from foam_cell_analysis.gui.modes.data_preparation.dialogs import (
     AutoTriageDialog,
     ContinuousTriageDialog,
@@ -141,8 +140,8 @@ def test_work_table_interactive_width_is_saved_and_restored(qapp, tmp_path):
     restored.close()
 
 
-def test_work_table_first_launch_sizes_data_columns_and_uses_slack(qapp, tmp_path):
-    """保存幅のない初回表示で内容幅を確保し、余白をフォルダ列に配る。"""
+def test_work_table_first_launch_sizes_data_columns_to_contents(qapp, tmp_path):
+    """保存幅のない初回表示で、各列が内容の幅を確保する。"""
     QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path))
     page = DataPreparationPage(make_context())
     page.resize(1440, 800)
@@ -152,9 +151,7 @@ def test_work_table_first_launch_sizes_data_columns_and_uses_slack(qapp, tmp_pat
     for column in range(1, page.model.columnCount()):
         assert page.table.columnWidth(column) >= header.sectionSizeHint(column)
     assert page.table.columnWidth(3) >= 96
-    assert sum(page.table.columnWidth(column) for column in range(page.model.columnCount())) >= (
-        page.table.viewport().width()
-    )
+    assert page.table.columnWidth(0) <= 240
     page.close()
 
 
@@ -179,11 +176,6 @@ def test_selected_auto_triage_overwrites_assigned_items_and_undoes(
     qapp, qtbot, monkeypatch, tmp_path
 ):
     """行クリック、Ctrl+D、選択中、実行ボタンの経路で上書きし Ctrl+Z で戻す。"""
-    monkeypatch.setattr(
-        data_dialogs,
-        "QSettings",
-        lambda *_args: QSettings(str(tmp_path / "auto-triage.ini"), QSettings.Format.IniFormat),
-    )
     backend = MockBackend()
     ctx = make_context(backend)
     page = DataPreparationPage(ctx)

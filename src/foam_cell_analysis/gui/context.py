@@ -8,6 +8,7 @@ from PySide6.QtCore import QObject, QSettings, Signal
 from ..services.backend import Backend
 from .jobs import JobManager
 from .navigation import Navigator
+from .settings import app_settings
 from .shortcuts import ShortcutMap
 
 DEFAULT_CHANNEL = "A"  # GUI は現時点で先頭チャンネルだけを使う。複数チャンネル対応時に拡張する。
@@ -36,7 +37,7 @@ class DisplayPreference(QObject):
 
     def __init__(self, settings: QSettings | None = None) -> None:
         super().__init__()
-        self.settings = settings or QSettings("FoamCellAnalysis", "FoamCellAnalysis")
+        self.settings = settings or app_settings()
         value = self.settings.value("display/alternate", "オーバーレイ")
         self._value = value if value in self.MODES else "オーバーレイ"
 

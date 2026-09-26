@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 
-from PySide6.QtCore import QByteArray, QEvent, QSettings, Qt, QTimer
+from PySide6.QtCore import QByteArray, QEvent, Qt, QTimer
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
 
 from ....services.models import DataItem, ImportCandidate
 from ...context import DEFAULT_CHANNEL, AppContext
+from ...settings import app_settings
 from ...theme import Color, numeric_font, set_style
 from ...widgets.image_convert import DisplayMode, array_to_pixmap, render
 from ...widgets.image_view import ImageView
@@ -365,7 +366,7 @@ class DataPreparationPage(BasePage):
         self.import_button.clicked.connect(self.import_data)
         self.auto_button.clicked.connect(self.auto_triage)
         self.finalize_button.clicked.connect(self.finalize)
-        settings = QSettings("FoamCellAnalysis", "FoamCellAnalysis")
+        settings = app_settings()
         saved_widths = settings.value("dataPreparation/columnWidths")
         self._has_saved_column_widths = bool(saved_widths)
         self._initial_column_widths_done = False
@@ -1063,7 +1064,7 @@ class DataPreparationPage(BasePage):
     def _save_column_widths(self, *_args) -> None:
         """作業表の利用者設定幅を保存する。"""
         if getattr(self, "_saving_column_widths", False):
-            QSettings("FoamCellAnalysis", "FoamCellAnalysis").setValue(
+            app_settings().setValue(
                 "dataPreparation/columnWidths",
                 self.table.horizontalHeader().saveState().toBase64().data().decode(),
             )

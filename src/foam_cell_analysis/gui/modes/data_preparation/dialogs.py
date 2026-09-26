@@ -2,7 +2,7 @@
 
 from collections import defaultdict
 
-from PySide6.QtCore import QEvent, QSettings, Qt, QTimer
+from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtGui import QColor, QKeyEvent
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 
 from ....services.models import DataItem, ImportCandidate
 from ...context import DEFAULT_CHANNEL
+from ...settings import app_settings
 from ...theme import Color, numeric_font, set_style
 from ...widgets.image_convert import DisplayMode, array_to_pixmap, render
 from ...widgets.image_view import ImageView
@@ -121,7 +122,7 @@ class ImportSettingsDialog(QDialog):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.table.resizeColumnsToContents()
         self.rows = []
-        settings = QSettings("FoamCellAnalysis", "FoamCellAnalysis")
+        settings = app_settings()
         for row, (folder, candidates) in enumerate(folders.items()):
             self.table.setItem(row, 0, QTableWidgetItem(folder))
             self.table.setItem(row, 1, QTableWidgetItem(str(len(candidates))))
@@ -159,7 +160,7 @@ class ImportSettingsDialog(QDialog):
         layout.addWidget(buttons)
 
     def _accept(self) -> None:
-        settings = QSettings("FoamCellAnalysis", "FoamCellAnalysis")
+        settings = app_settings()
         last = settings.value("dataPreparation/lastImport", {}) or {}
         for folder, usage, classification, quality in self.rows:
             values = {}
@@ -196,12 +197,7 @@ class AutoTriageDialog(QDialog):
         self.setMinimumSize(860, 520)
         self.items = items
         self.backend = backend
-        saved = (
-            QSettings("FoamCellAnalysis", "FoamCellAnalysis").value(
-                "dataPreparation/autoTriage", {}
-            )
-            or {}
-        )
+        saved = app_settings().value("dataPreparation/autoTriage", {}) or {}
         self.settings = {**saved, **(settings or {})}
         self.selected_ids = set(selected_ids or [])
         layout = QVBoxLayout(self)
@@ -287,9 +283,7 @@ class AutoTriageDialog(QDialog):
 
     def _accept(self) -> None:
         """次回起動用に前回の条件を保存する。"""
-        QSettings("FoamCellAnalysis", "FoamCellAnalysis").setValue(
-            "dataPreparation/autoTriage", self.values()
-        )
+        app_settings().setValue("dataPreparation/autoTriage", self.values())
         self.accept()
 
     def update_preview(self, *_args) -> None:
