@@ -3,7 +3,7 @@
 from unittest.mock import patch
 
 import pytest
-from PySide6.QtCore import QEvent, QPoint, Qt
+from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QDialog, QDialogButtonBox, QFileDialog, QMessageBox
 
@@ -713,3 +713,49 @@ def test_data_preparation_selection_change_fits_new_preview(shell, qapp):
     qapp.processEvents()
 
     assert page.image_view.zoom == pytest.approx(fitted_zoom)
+
+
+def test_multi_selection_survives_activation_and_reaches_auto_triage(shell, qapp):
+    """複数選択 → ウィンドウの前面化 → 自動振り分けで、選択した全件が対象になる。"""
+    from PySide6.QtWidgets import QApplication, QPushButton
+
+    from foam_cell_analysis.gui.modes.data_preparation.dialogs import AutoTriageDialog
+
+    shell.navigate(PageId.DATA_PREPARATION)
+    page = shell.page(PageId.DATA_PREPARATION)
+    window = shell.manager.window(ModeId.DATA_PREPARATION)
+    window.resize(1400, 900)
+    window.show()
+    qapp.processEvents()
+    viewport = page.table.viewport()
+    first = page.table.visualRect(page.model.index(3, 1)).center()
+    last = page.table.visualRect(page.model.index(10, 1)).center()
+    QTest.mouseClick(viewport, Qt.MouseButton.LeftButton, pos=first)
+    QTest.mouseClick(
+        viewport, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.ShiftModifier, pos=last
+    )
+    selected = list(page._selected_ids)
+    assert len(selected) == 8
+    QTest.qWait(550)
+    qapp.sendEvent(window, QEvent(QEvent.Type.WindowDeactivate))
+    qapp.sendEvent(window, QEvent(QEvent.Type.WindowActivate))
+    qapp.processEvents()
+    assert page._selected_ids == selected
+    assert len(page.table.selectionModel().selectedRows()) == 8
+    seen = {}
+
+    def run():
+        dialog = QApplication.activeModalWidget()
+        assert isinstance(dialog, AutoTriageDialog)
+        seen["label"] = dialog.target_selected.text()
+        QTest.mouseClick(dialog.target_selected, Qt.MouseButton.LeftButton)
+        dialog.ratio.setValue(100)
+        button = next(b for b in dialog.findChildren(QPushButton) if "振り分ける" in b.text())
+        QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+
+    QTimer.singleShot(50, run)
+    QTest.mouseClick(page.auto_button, Qt.MouseButton.LeftButton)
+    qapp.processEvents()
+    assert seen["label"] == "選択中（8件）"
+    usages = {item.item_id: item.usage for item in shell.ctx.backend.get_working_items()}
+    assert all(usages[item_id] == "val" for item_id in selected)

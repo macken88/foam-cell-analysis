@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 
-from PySide6.QtCore import QByteArray, QEvent, Qt, QTimer
+from PySide6.QtCore import QByteArray, QEvent, QItemSelection, QItemSelectionModel, Qt, QTimer
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -704,15 +704,40 @@ class DataPreparationPage(BasePage):
         self._selected_ids = [item_id for item_id in self._selected_ids if item_id in visible_ids]
         if not self._selected_ids and visible:
             self._selected_ids = [visible[0].item_id]
-        self._syncing_selection = True
-        self.table.clearSelection()
-        if self._selected_ids:
-            row = next(
-                index for index, item in enumerate(visible) if item.item_id == self._selected_ids[0]
-            )
-            self.table.selectRow(row)
-        self._syncing_selection = False
+        self._restore_table_selection()
         self._show_preview()
+
+    def _restore_table_selection(self) -> None:
+        """_selected_ids のすべての行を表で選び直す（複数選択を保つ）。
+
+        selectRow は拡張選択でも既存の選択を消すため、更新のたびに
+        選択が 1 件へ縮んでいた。QItemSelection でまとめて選ぶ。
+        """
+        visible = self.model.visible_items()
+        rows = {item.item_id: row for row, item in enumerate(visible)}
+        selection = QItemSelection()
+        for item_id in self._selected_ids:
+            row = rows.get(item_id)
+            if row is not None:
+                selection.select(
+                    self.model.index(row, 0),
+                    self.model.index(row, self.model.columnCount() - 1),
+                )
+        model = self.table.selectionModel()
+        self._syncing_selection = True
+        try:
+            model.select(selection, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+            first = rows.get(self._selected_ids[0]) if self._selected_ids else None
+            if first is not None:
+                model.setCurrentIndex(
+                    self.model.index(
+                        first,
+                        model.currentIndex().column() if model.currentIndex().isValid() else 0,
+                    ),
+                    QItemSelectionModel.SelectionFlag.NoUpdate,
+                )
+        finally:
+            self._syncing_selection = False
 
     def _select_only_row(self, row: int, item_id: str) -> None:
         """拡張選択状態でも対象行だけを選ぶ。"""
@@ -793,7 +818,7 @@ class DataPreparationPage(BasePage):
                 None,
             )
             if first:
-                self.table.selectRow(self.model.visible_items().index(first))
+                self._restore_table_selection()
                 self._show_preview()
             else:
                 self._sync_selection_to_visible()
