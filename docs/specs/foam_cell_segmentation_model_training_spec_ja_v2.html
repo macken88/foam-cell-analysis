@@ -450,7 +450,7 @@ Range       : -180 ～ +180 deg</pre>
     </p>
 </section>
 <section class="card">
-<h2>7. 交差検証（OOF）・チェックポイント</h2><h3>7.1 フォールドごとの学習</h3><p>各フォールドを順に検証側として学習し、検証間隔ごとにフォールド別mAPを記録する。各エポックのOOF mAPは全フォールドの検証予測を集約して求める。早期終了はフォールドごとに適用し、OOF曲線は全フォールドが到達した最後のエポックまでとする。</p><h3>7.2 共通エポックの選択と最終学習</h3><p>OOF mAPが最大となる1つのエポックを選択し、全フォールド共通で使う。選択エポック時点のOOF予測を保存する。その後、学習用データ全体を選択エポック数まで再学習してfinal.ptを必ず保存する。最終学習には検証部分がないためlossのみ記録する。</p><ul><li>save_every: フォールドごとの定期保存間隔。</li><li>validation_interval: 各フォールドの検証間隔。</li><li>best_metric / best_mode: OOF mAPによるエポック選択の指標と方向。</li><li>save_fold_models: フォールドごとのモデル保存を有効にする設定。</li></ul><pre>checkpoints/
+<h2>7. 交差検証（OOF）・チェックポイント</h2><h3>7.1 フォールドごとの学習</h3><p>各フォールドを順に検証側として学習し、検証間隔ごとにフォールド別mAPを記録する。各エポックのOOF mAPは全フォールドの検証予測を集約して求める。早期終了はフォールドごとに適用し、OOF曲線は全フォールドが到達した最後のエポックまでとする。</p><h3>7.2 共通エポックの選択と最終学習</h3><p>OOF mAPが最大となる1つのエポックを選択し、全フォールド共通で使う。選択エポック時点のOOF予測を保存する。その後、学習用データ全体を選択エポック数まで再学習してfinal.ptを必ず保存する。最終学習には検証部分がないためlossのみ記録する。</p><ul><li>save_every: フォールドごとの定期保存間隔。</li><li>validation_interval: 各フォールドの検証間隔。</li><li>best_metric: OOF mAP（oof_instance_map）を最大化して選択エポックを決める。</li><li>save_fold_models: フォールドごとのモデル保存を有効にする設定。</li></ul><pre>checkpoints/
 ├─ fold_1/epoch_010.pt
 ├─ fold_1/selected.pt
 ├─ ...
@@ -517,7 +517,7 @@ Range       : -180 ～ +180 deg</pre>
 <div class="form-section">
 <h4>途中保存モデル / 評価</h4>
 <div class="row"><div>保存間隔</div><div class="input">10エポック</div></div>
-<div class="row"><div>エポック選択の指標（OOF mAP）</div><div class="input select">インスタンス平均適合率（mAP）</div></div>
+<div class="row"><div>エポック選択の指標</div><div class="input">OOF 平均適合率（mAP）・最大</div></div>
 <div class="row"><div>検証間隔</div><div class="input">1エポック</div></div>
 </div>
 <div class="btnbar">
@@ -688,7 +688,7 @@ Range       : -180 ～ +180 deg</pre>
 </thead>
 <tbody>
 <tr><td>データセット版</td><td>dataset_version</td><td>学習に使用する確定済みデータセットの版。例：v004。</td><td>共通</td></tr>
-<tr><td>交差検証</td><td>cv</td><td>学習用・検証用にどの画像を割り当てるかを定義した分割ID。</td><td>共通</td></tr>
+<tr><td>交差検証</td><td>cv</td><td>K分割交差検証の設定群。分割数、画像分類による層別、取り込み元フォルダ単位で分割するかを定義する。</td><td>共通</td></tr>
 <tr><td>乱数シード</td><td>seed</td><td>データ分割や学習中の乱数を固定し、再現性を高めるための値。</td><td>共通</td></tr>
 <tr><td>画像分類</td><td>classification</td><td>特定分類のみで学習する場合の対象分類。全分類を対象とする設定も可能。</td><td>共通</td></tr>
 <tr><td>品質条件</td><td>quality_filter</td><td>学習対象に含めるデータ品質の条件。例：Goodのみ。</td><td>共通</td></tr>
@@ -853,9 +853,8 @@ model:
 checkpoint:
   save_every: 10
   validation_interval: 5
-  best_metric: instance_map
-  best_mode: max
-  save_fold_models: true</pre>
+  best_metric: oof_instance_map
+    save_fold_models: true</pre>
 <h3>Cellpose</h3>
 <pre>experiment:
   id: exp_0043
@@ -891,9 +890,8 @@ model:
 checkpoint:
   save_every: 10
   validation_interval: 5
-  best_metric: instance_map
-  best_mode: max
-  save_fold_models: true</pre>
+  best_metric: oof_instance_map
+    save_fold_models: true</pre>
 </section>
 <section class="card">
 <h2>16. 現時点の設計原則まとめ</h2>
@@ -908,9 +906,8 @@ checkpoint:
 checkpoint:
   save_every: 10
   validation_interval: 5
-  best_metric: instance_map
-  best_mode: max
-  save_fold_models: true</pre></section>
+  best_metric: oof_instance_map
+    save_fold_models: true</pre></section>
 </div>
 </body>
 </html>

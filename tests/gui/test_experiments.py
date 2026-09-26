@@ -123,6 +123,60 @@ def test_overview_has_empty_hint_and_two_column_selected_details(shell):
     assert page.overview_table.item(0, 0).text() == "実験群"
 
 
+def test_overview_translates_all_cv_config_keys_and_model_details_distinguish_sections(shell):
+    """概要の交差検証キーを日本語にし、Mask R-CNN の詳細区分を区別する。"""
+    from foam_cell_analysis.gui.widgets.form import CollapsibleSection
+
+    page = shell.page(PageId.EXPERIMENTS)
+    row = next(
+        row for row in range(page.table.rowCount()) if page.table.item(row, 1).text() == "exp_0042"
+    )
+    rect = page.table.visualItemRect(page.table.item(row, 1))
+    QTest.mouseClick(page.table.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
+    experiment = shell.ctx.backend.get_experiment("exp_0042")
+    experiment.oof_evaluation = shell.ctx.backend._oof_evaluation(experiment, 0.91)
+    page._current_changed()
+    oof_headers = [
+        page.oof_table.horizontalHeaderItem(column).text()
+        for column in range(page.oof_table.columnCount())
+    ]
+    assert "未分類" in oof_headers
+    assert int(page.oof_table.item(1, 1).text()) == len(experiment.used_item_ids)
+    labels = {
+        page.overview_table.item(row, 0).text() for row in range(page.overview_table.rowCount())
+    }
+    assert "画像分類で層別" in labels
+    assert "取り込み元フォルダ単位で分割" in labels
+    assert all("_" not in label and "." not in label for label in labels)
+    assert all(
+        page.overview_table.item(row, 0).text()
+        not in {"stratify_by_classification", "group_by_source_folder"}
+        for row in range(page.overview_table.rowCount())
+    )
+
+    training = shell.page(PageId.TRAINING)
+    sections = {
+        section.button.text()
+        for section in training.findChildren(CollapsibleSection)
+        if "詳細設定" in section.button.text()
+    }
+    assert "RPN 詳細設定 ▶" in sections
+    assert "ROI 詳細設定 ▶" in sections
+    assert "詳細設定 ▶" not in sections
+
+
+def test_seeded_selected_checkpoints_follow_training_date_order(shell):
+    """選択エポックのチェックポイントを CV 保存期間の時間軸に置く。"""
+    experiment = shell.ctx.backend.get_experiment("exp_0042")
+    selected = [item for item in experiment.checkpoints if item.name == "selected.pt"]
+    final = next(item for item in experiment.checkpoints if item.name == "final.pt")
+    fold_saves = [item for item in experiment.checkpoints if item.name.startswith("epoch_")]
+    assert selected and fold_saves
+    latest_cv_save = max(item.saved_at for item in fold_saves)
+    assert all(item.saved_at.date() == latest_cv_save.date() for item in selected)
+    assert max(item.saved_at for item in selected) < final.saved_at
+
+
 def test_experiment_tables_fit_contents_and_keep_manually_resized_columns(shell, qapp):
     """実験クリックで各表を内容幅にし、手動幅を選択・更新後も保つ。"""
     page = shell.page(PageId.EXPERIMENTS)

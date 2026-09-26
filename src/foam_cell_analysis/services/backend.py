@@ -174,6 +174,9 @@ class Backend(Protocol):
     def default_experiment_config(self, model_type: str) -> dict[str, Any]:
         """モデル種別の仕様準拠既定設定を返す。"""
 
+    def migrate_experiment_config(self, config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+        """旧形式の実験設定を現行形式へ移行する。"""
+
     def validate_experiment_config(self, config: dict[str, Any]) -> list[dict[str, str]]:
         """学習設定のエラーと警告を返す。"""
 

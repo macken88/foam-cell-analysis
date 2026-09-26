@@ -117,6 +117,97 @@ def test_seeded_candidates_show_inference_specific_oof_in_gui(shell):
     assert page.table.item(rows["RC-001"], 7).text() != page.table.item(rows["RC-003"], 7).text()
 
 
+def test_candidate_evaluation_counts_unclassified_images_and_preserves_qtest_selection(
+    shell, qapp, monkeypatch
+):
+    """評価・詳細保存の QTest 後も選択を保ち、OOF/検証件数に未分類を含める。"""
+    from PySide6.QtWidgets import QDialog, QDialogButtonBox
+
+    backend = shell.ctx.backend
+    experiment = backend.get_experiment("exp_0042")
+    train_items = backend._items_for_version(experiment.config.values["data"]["dataset_version"])
+    used_item_id = experiment.used_item_ids[0]
+    next(item for item in train_items if item.item_id == used_item_id).classification = None
+    val_items = backend._items_for_version("val_v003")
+    next(
+        item for item in val_items if item.usage == "val" and item.classification is not None
+    ).classification = None
+    candidate = backend.get_candidate("RC-001")
+    candidate.evaluations.clear()
+    candidate.oof_evaluation = backend._candidate_oof_evaluation(
+        experiment, candidate.inference_config_id
+    )
+    page = shell.page(PageId.CANDIDATES)
+    page.refresh()
+    row = next(
+        row
+        for row in range(page.table.rowCount())
+        if page.table.item(row, 1).text() == candidate.candidate_id
+    )
+    rect = page.table.visualItemRect(page.table.item(row, 0))
+    QTest.mouseClick(
+        page.table.viewport(),
+        Qt.MouseButton.LeftButton,
+        pos=rect.topLeft() + QPoint(12, rect.height() // 2),
+    )
+    assert page.buttons["evaluate"].isEnabled()
+    QTest.mouseClick(page.buttons["evaluate"], Qt.MouseButton.LeftButton)
+    for _ in range(1000):
+        qapp.processEvents()
+        if page.validation.currentText() in candidate.evaluations:
+            break
+        QTest.qWait(2)
+    row = next(
+        row
+        for row in range(page.table.rowCount())
+        if page.table.item(row, 1).text() == candidate.candidate_id
+    )
+    assert page.table.item(row, 0).checkState() == Qt.CheckState.Checked
+    assert page.table.item(page.table.currentRow(), 1).text() == candidate.candidate_id
+    assert page.buttons["detail"].isEnabled()
+    assert sum(count for _score, count in candidate.oof_evaluation.per_class.values()) == len(
+        experiment.used_item_ids
+    )
+    assert candidate.evaluations[page.validation.currentText()].per_class["未分類"][1] == 1
+    selected_scroll = page.table.verticalScrollBar().value()
+    page.refresh_on_activate()
+    assert page.table.item(row, 0).checkState() == Qt.CheckState.Checked
+    assert page.table.item(page.table.currentRow(), 1).text() == candidate.candidate_id
+    assert page.table.verticalScrollBar().value() == selected_scroll
+
+    observed = {}
+
+    def save_details(dialog):
+        dialog.show()
+        observed["headers"] = [
+            dialog.metrics.horizontalHeaderItem(column).text()
+            for column in range(dialog.metrics.columnCount())
+        ]
+        observed["counts"] = [dialog.metrics.item(row, 1).text() for row in (1, 3)]
+        assert "未分類" in observed["headers"]
+        assert observed["counts"] == ["30", "59"]
+        QTest.mouseClick(dialog.add_row, Qt.MouseButton.LeftButton)
+        dialog.results.item(0, 0).setText("diameter_delta")
+        dialog.results.item(0, 1).setText("1.2")
+        dialog.results.item(0, 2).setText("um")
+        QTest.mouseClick(
+            dialog.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Save),
+            Qt.MouseButton.LeftButton,
+        )
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(EvaluationDialog, "exec", save_details)
+    QTest.mouseClick(page.buttons["detail"], Qt.MouseButton.LeftButton)
+    row = next(
+        row
+        for row in range(page.table.rowCount())
+        if page.table.item(row, 1).text() == candidate.candidate_id
+    )
+    assert candidate.external_results[0].name == "diameter_delta"
+    assert page.table.item(row, 0).checkState() == Qt.CheckState.Checked
+    assert page.table.item(page.table.currentRow(), 1).text() == candidate.candidate_id
+
+
 def test_release_button_explains_missing_evaluation(qtbot):
     ctx = make_context()
     page = CandidatesPage(ctx)
@@ -155,7 +246,8 @@ def test_detail_evaluation_and_mask_export_dialogs(qtbot):
     qtbot.addWidget(evaluation)
     assert (evaluation.minimumWidth(), evaluation.minimumHeight()) == (800, 640)
     assert evaluation.metrics.rowCount() == 4
-    assert evaluation.metrics.columnCount() == 5
+    assert evaluation.metrics.columnCount() == 6
+    assert evaluation.metrics.horizontalHeaderItem(5).text() == "未分類"
     assert evaluation.metrics.item(0, 1).text() == "0.910"
     assert evaluation.metrics.height() <= 160
     assert all(

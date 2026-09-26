@@ -413,10 +413,8 @@ class ReleasedModelsPage(BasePage):
             return {"resnet50_fpn_v2": "ResNet-50 FPN v2", "resnet101_fpn": "ResNet-101 FPN"}.get(
                 str(value), str(value)
             )
-        if key.endswith(".best_metric") and value == "instance_map":
-            return "インスタンス平均適合率（mAP）"
-        if key.endswith(".best_mode"):
-            return "最大化" if value == "max" else "最小化" if value == "min" else str(value)
+        if key.endswith(".best_metric") and value == "oof_instance_map":
+            return "OOF 平均適合率（mAP）・最大"
         if value in {"good_only", "good_and_acceptable", "all"}:
             return {"good_only": "良のみ", "good_and_acceptable": "良・可", "all": "すべて"}[
                 str(value)

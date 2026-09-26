@@ -1,7 +1,7 @@
 """モデル学習ページと拡張プロファイルの画面テスト。"""
 
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QLabel, QLineEdit, QMessageBox
 
 from foam_cell_analysis.gui.modes.training.augmentation_dialog import AugmentationDialog
 from foam_cell_analysis.gui.navigation import PageId
@@ -199,6 +199,216 @@ def test_backend_warns_when_api_config_overrides_weight_normalization(mock_backe
     assert any(
         item["level"] == "warning" and "画像平均・標準偏差" in item["message"] for item in warnings
     )
+
+
+def test_qtest_final_training_uses_selected_epoch_for_first_run_and_retry(shell, qapp, monkeypatch):
+    """選択エポックを最終学習・進捗・再試行の終了条件に使う。"""
+    from PySide6.QtCore import Qt
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *_: QMessageBox.StandardButton.Yes)
+    page = shell.page(PageId.TRAINING)
+    page.fields["data.seed"].setValue(5)
+    page.fields["training.epochs"].setValue(100)
+    page.fields["checkpoint.validation_interval"].setValue(1)
+    QTest.mouseClick(page.start_button, Qt.MouseButton.LeftButton)
+    results = shell.page(PageId.EXPERIMENTS)
+    experiment = next(
+        item for item in shell.ctx.backend.list_experiments() if item.status == "running"
+    )
+    for _ in range(5000):
+        qapp.processEvents()
+        if experiment.phase == "final_training":
+            break
+        QTest.qWait(2)
+    assert experiment.phase == "final_training"
+    expected_steps = 5 * experiment.total_epochs + experiment.selected_epoch
+    first_job = shell.ctx.jobs.find(f"training:{experiment.experiment_id}")
+    assert first_job.total_steps == expected_steps
+    results.refresh()
+    assert (
+        results.table.item(
+            next(
+                row
+                for row in range(results.table.rowCount())
+                if results.table.item(row, 1).text() == experiment.experiment_id
+            ),
+            7,
+        )
+        .text()
+        .startswith("最終学習・epoch ")
+    )
+    assert (
+        results.table.item(
+            next(
+                row
+                for row in range(results.table.rowCount())
+                if results.table.item(row, 1).text() == experiment.experiment_id
+            ),
+            7,
+        )
+        .text()
+        .endswith(f"/{experiment.selected_epoch}")
+    )
+
+    results.table.setCurrentCell(
+        next(
+            row
+            for row in range(results.table.rowCount())
+            if results.table.item(row, 1).text() == experiment.experiment_id
+        ),
+        1,
+    )
+    results.action_map["stop"].trigger()
+    assert experiment.status == "stopped"
+    results.action_map["retry"].trigger()
+    for _ in range(5000):
+        qapp.processEvents()
+        if experiment.status == "completed":
+            break
+        QTest.qWait(2)
+    assert experiment.status == "completed"
+    assert experiment.final_history[-1].epoch == experiment.selected_epoch
+    assert len(experiment.final_history) == experiment.selected_epoch
+    final = next(item for item in experiment.checkpoints if item.name == "final.pt")
+    assert final.epoch == experiment.selected_epoch
+
+
+def test_epoch_selection_is_read_only_oof_map_maximum(shell, qapp, monkeypatch):
+    """学習フォームは OOF mAP 最大固定を表示し、設定へ旧方向キーを出さない。"""
+    from PySide6.QtCore import Qt
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *_: QMessageBox.StandardButton.Yes)
+    page = shell.page(PageId.TRAINING)
+    assert "checkpoint.best_mode" not in page.fields
+    selection_label = next(
+        label
+        for label in page.findChildren(QLabel)
+        if label.text() == "エポック選択の指標：OOF 平均適合率（mAP）・最大"
+    )
+    assert selection_label
+    assert "checkpoint.best_metric" not in page.fields
+    assert "best_metric: oof_instance_map" in page.yaml_preview.toPlainText()
+    assert "best_mode" not in page.yaml_preview.toPlainText()
+    page.fields["training.epochs"].setValue(3)
+    page.fields["checkpoint.validation_interval"].setValue(1)
+    QTest.mouseClick(page.start_button, Qt.MouseButton.LeftButton)
+    experiment_id = next(
+        item.experiment_id
+        for item in shell.ctx.backend.list_experiments()
+        if item.status == "running"
+    )
+    for _ in range(1000):
+        qapp.processEvents()
+        experiment = shell.ctx.backend.get_experiment(experiment_id)
+        if experiment.status == "completed":
+            break
+        QTest.qWait(2)
+    assert experiment.status == "completed"
+    assert experiment.config.values["checkpoint"]["best_metric"] == "oof_instance_map"
+    assert "best_mode" not in experiment.config.values["checkpoint"]
+    assert (
+        experiment.selected_epoch == max(experiment.oof_history, key=lambda point: point.map).epoch
+    )
+
+
+def test_legacy_draft_edit_and_copy_migrate_via_experiment_actions(shell, qapp):
+    """下書き編集と複製で旧キーを移行してからフォームを組み立てる。"""
+    from PySide6.QtCore import Qt
+
+    backend = shell.ctx.backend
+
+    def legacy_config():
+        config = backend.default_experiment_config("mask_rcnn")
+        config["data"].pop("cv")
+        config["data"]["split_id"] = "split_001"
+        config["checkpoint"].pop("save_fold_models")
+        config["checkpoint"]["save_best"] = True
+        config["checkpoint"]["save_last"] = True
+        return config
+
+    edited = backend.save_experiment_draft(legacy_config())
+    copied = backend.save_experiment_draft(legacy_config())
+
+    def store_legacy(experiment):
+        config = experiment.config.values
+        config["data"].pop("cv")
+        config["data"]["split_id"] = "split_001"
+        config["checkpoint"].pop("save_fold_models")
+        config["checkpoint"]["save_best"] = True
+        config["checkpoint"]["save_last"] = True
+
+    store_legacy(edited)
+    store_legacy(copied)
+    results = shell.page(PageId.EXPERIMENTS)
+    results.refresh()
+
+    def select(experiment_id):
+        row = next(
+            row
+            for row in range(results.table.rowCount())
+            if results.table.item(row, 1).text() == experiment_id
+        )
+        rect = results.table.visualItemRect(results.table.item(row, 1))
+        QTest.mouseClick(results.table.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
+        return row
+
+    row = select(edited.experiment_id)
+    results.table.setCurrentCell(row, 1)
+    results.action_map["edit"].trigger()
+    page = shell.page(PageId.TRAINING)
+    assert "split_id" not in page.config["data"]
+    assert page.config["data"]["cv"]["n_folds"] == 5
+    assert page.config["checkpoint"]["save_fold_models"] is True
+    assert page.normalization_reset_note.text().find("旧形式") >= 0
+    assert "split_001" not in page.yaml_preview.toPlainText()
+    assert "設定を入力してください" not in page.yaml_preview.toPlainText()
+    assert page._read_control("model.rescale", QLineEdit("auto")) == "auto"
+
+    shell.navigate(PageId.EXPERIMENTS)
+    row = select(copied.experiment_id)
+    results.table.setCurrentCell(row, 1)
+    QTest.mouseClick(results.button_map["copy"], Qt.MouseButton.LeftButton)
+    copied_page = shell.page(PageId.TRAINING)
+    assert "split_id" not in copied_page.config["data"]
+    assert copied_page.config["data"]["cv"]["n_folds"] == 5
+    assert copied_page.config["checkpoint"]["save_fold_models"] is True
+
+
+def test_legacy_stopped_experiment_migrates_before_qtest_retry(shell, qapp):
+    """再試行時にも旧設定を移行してから CV と学習を再開する。"""
+    from PySide6.QtCore import Qt
+
+    experiment = shell.ctx.backend.get_experiment("exp_0044")
+    legacy = experiment.config.values
+    legacy["data"].pop("cv", None)
+    legacy["data"]["split_id"] = "split_001"
+    legacy["checkpoint"].pop("save_fold_models", None)
+    legacy["checkpoint"]["save_best"] = True
+    legacy["checkpoint"]["save_last"] = True
+    legacy["training"]["epochs"] = 2
+    experiment.total_epochs = 2
+    experiment.status = "stopped"
+    results = shell.page(PageId.EXPERIMENTS)
+    results.refresh()
+    row = next(
+        row
+        for row in range(results.table.rowCount())
+        if results.table.item(row, 1).text() == experiment.experiment_id
+    )
+    rect = results.table.visualItemRect(results.table.item(row, 1))
+    QTest.mouseClick(results.table.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
+    results.table.setCurrentCell(row, 1)
+    results.action_map["retry"].trigger()
+
+    assert "split_id" not in experiment.config.values["data"]
+    assert experiment.config.values["data"]["cv"]["n_folds"] == 5
+    assert experiment.config.values["checkpoint"]["save_fold_models"] is True
+    for _ in range(1500):
+        qapp.processEvents()
+        if experiment.status == "completed":
+            break
+        QTest.qWait(2)
+    assert experiment.status == "completed"
 
 
 def test_used_augmentation_profile_is_saved_as_new_version(mock_backend):

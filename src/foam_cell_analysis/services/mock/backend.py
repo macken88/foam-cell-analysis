@@ -250,6 +250,7 @@ class MockBackend:
             else {}
         )
         checkpoints: list[Checkpoint] = []
+        latest_cv_save = self._now() - timedelta(days=1)
         if status == "completed":
             for fold, points in fold_histories.items():
                 checkpoints.extend(
@@ -269,10 +270,21 @@ class MockBackend:
             for fold, points in fold_histories.items():
                 checkpoints.append(
                     Checkpoint(
-                        "selected.pt", best_epoch, self._map_at(points, best_epoch), fold=fold
+                        "selected.pt",
+                        best_epoch,
+                        self._map_at(points, best_epoch),
+                        latest_cv_save + timedelta(seconds=fold),
+                        fold=fold,
                     )
                 )
-            checkpoints.append(Checkpoint("final.pt", best_epoch, None))
+            checkpoints.append(
+                Checkpoint(
+                    "final.pt",
+                    best_epoch,
+                    None,
+                    latest_cv_save + timedelta(seconds=len(fold_histories) + 1),
+                )
+            )
         runs = []
         if status != "draft":
             now = self._now()
@@ -379,7 +391,9 @@ class MockBackend:
             exp42.experiment_id,
             "final.pt",
             "infer_v005",
-            evaluations={"val_v003": self._evaluation(0.91)},
+            evaluations={
+                "val_v003": self._evaluation_for_items(0.91, self._items_for_version("val_v003"))
+            },
             oof_evaluation=self._candidate_oof_evaluation(exp42, "infer_v005"),
             oof_experiment_id=exp42.experiment_id,
             oof_epoch=exp42.selected_epoch,
@@ -392,7 +406,9 @@ class MockBackend:
             oof_evaluation=self._candidate_oof_evaluation(exp43, "infer_v006"),
             oof_experiment_id=exp43.experiment_id,
             oof_epoch=exp43.selected_epoch,
-            evaluations={"val_v003": self._evaluation(0.89)},
+            evaluations={
+                "val_v003": self._evaluation_for_items(0.89, self._items_for_version("val_v003"))
+            },
         )
         self.candidates["RC-003"] = Candidate(
             "RC-003",
@@ -440,6 +456,22 @@ class MockBackend:
         return Evaluation(
             score,
             {name: (score - index * 0.03, 10 + index) for index, name in enumerate(classes)},
+        )
+
+    def _evaluation_for_items(self, score: float, items: list[DataItem]) -> Evaluation:
+        """指定画像を数え、未分類を含む分類別評価を返す。"""
+        labels = [*self.classifications, "未分類"]
+        counts = {label: 0 for label in labels}
+        for item in items:
+            label = item.classification if item.classification in counts else "未分類"
+            counts[label] += 1
+        return Evaluation(
+            score,
+            {
+                label: (max(0.0, score - index * 0.03), count)
+                for index, (label, count) in enumerate(counts.items())
+                if count or label != "未分類"
+            },
         )
 
     def get_working_dataset(self, purpose: str = "train") -> WorkingDataset:
@@ -1090,8 +1122,7 @@ class MockBackend:
             "augmentation": {"profile": "aug_v003"},
             "checkpoint": {
                 "save_every": 10,
-                "best_metric": "instance_map",
-                "best_mode": "max",
+                "best_metric": "oof_instance_map",
                 "validation_interval": 5,
                 "save_fold_models": True,
             },
@@ -1143,6 +1174,34 @@ class MockBackend:
             raise ValueError(f"未対応のモデル種類です: {model_type}")
         common["model"] = model
         return common
+
+    def migrate_experiment_config(self, config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+        """旧設定キーを除き、現行既定値と固定の OOF 選択指標を適用する。"""
+        migrated = copy.deepcopy(config)
+        changed = False
+        data = migrated.setdefault("data", {})
+        if "split_id" in data:
+            del data["split_id"]
+            changed = True
+        model_type = migrated.get("model", {}).get("type", "mask_rcnn")
+        default_cv = self.default_experiment_config(model_type)["data"]["cv"]
+        current_cv = data.setdefault("cv", {})
+        for key, value in default_cv.items():
+            if key not in current_cv:
+                current_cv[key] = copy.deepcopy(value)
+                changed = True
+        checkpoint = migrated.setdefault("checkpoint", {})
+        for key in ("save_best", "save_last", "best_mode"):
+            if key in checkpoint:
+                del checkpoint[key]
+                changed = True
+        if "save_fold_models" not in checkpoint:
+            checkpoint["save_fold_models"] = True
+            changed = True
+        if checkpoint.get("best_metric") != "oof_instance_map":
+            checkpoint["best_metric"] = "oof_instance_map"
+            changed = True
+        return migrated, changed
 
     def validate_experiment_config(self, config: dict[str, Any]) -> list[dict[str, str]]:
         """入れ子設定を検証し、同一設定も警告する。"""
@@ -1255,7 +1314,7 @@ class MockBackend:
         self, config: dict[str, Any], experiment_id: str | None, status: str
     ) -> Experiment:
         """実験設定を新規作成または更新する。"""
-        saved_config = copy.deepcopy(config)
+        saved_config, _migrated = self.migrate_experiment_config(config)
         experiment_config = saved_config.setdefault("experiment", {})
         expid = experiment_id or experiment_config.get("id") or self.next_experiment_id()
         experiment_config["id"] = expid
@@ -1505,22 +1564,28 @@ class MockBackend:
         """実使用画像の分類別件数を持つ OOF 評価を返す。"""
         data_version = experiment.config.values["data"]["dataset_version"]
         items = {item.item_id: item for item in self._items_for_version(data_version)}
-        counts = {label: 0 for label in self.classifications}
+        labels = [*self.classifications, "未分類"]
+        counts = {label: 0 for label in labels}
         for item_id in experiment.used_item_ids:
             item = items.get(item_id)
-            if item and item.classification in counts:
-                counts[item.classification] += 1
+            classification = item.classification if item else None
+            label = classification if classification in counts else "未分類"
+            counts[label] += 1
         return Evaluation(
             score,
             {
                 label: (max(0.0, score - index * 0.03), count)
                 for index, (label, count) in enumerate(counts.items())
+                if count or label != "未分類"
             },
         )
 
     def retry_experiment(self, experiment_id: str) -> Experiment:
         """同一実験へ新しい試行を追加する。"""
         experiment = self.get_experiment(experiment_id)
+        migrated_config, _migrated = self.migrate_experiment_config(experiment.config.values)
+        experiment.config = ExperimentConfig(migrated_config)
+        experiment.total_epochs = int(migrated_config["training"]["epochs"])
         experiment.status = "running"
         experiment.phase = "cross_validation"
         experiment.current_epoch = 0
@@ -1621,9 +1686,12 @@ class MockBackend:
         self, experiment: Experiment, inference_config_id: str
     ) -> Evaluation:
         """保存済み OOF 結果を推論設定に応じて決定的に再評価する。"""
-        base = experiment.oof_evaluation or self._evaluation(
-            max((point.map or 0 for point in experiment.oof_history), default=0.0)
+        base_score = (
+            experiment.oof_evaluation.overall_map
+            if experiment.oof_evaluation
+            else max((point.map or 0 for point in experiment.oof_history), default=0.0)
         )
+        base = self._oof_evaluation(experiment, base_score)
         params = self.inference_configs[inference_config_id].params
         param_bytes = repr(sorted(params.items())).encode("utf-8")
         stable_jitter = (
@@ -1654,7 +1722,8 @@ class MockBackend:
         """全体・分類別評価値を記録して候補状態へ戻す。"""
         candidate = self.candidates[candidate_id]
         number = int(candidate_id[-3:])
-        evaluation = self._evaluation(0.86 + number % 10 / 100)
+        items = self._items_for_version(validation_version)
+        evaluation = self._evaluation_for_items(0.86 + number % 10 / 100, items)
         candidate.evaluations[validation_version] = evaluation
         candidate.status = "candidate"
         return evaluation

@@ -63,8 +63,6 @@ LABELS = {
     "profile": "プロファイル",
     "save_every": "保存間隔（エポック）",
     "save_fold_models": "各フォールドのモデルを保存",
-    "best_metric": "エポック選択の指標",
-    "best_mode": "判定方向",
     "validation_interval": "各フォールドの検証間隔",
     "type": "モデル種類",
     "input": "入力画像 / 前処理",
@@ -107,8 +105,6 @@ CHOICES = {
     "model.backbone": ("backbones", ""),
     "model.pretrained_model": ("cellpose_models", ""),
     "model.optimizer": ("optimizers", ""),
-    "checkpoint.best_metric": (["instance_map"], ""),
-    "checkpoint.best_mode": (["max", "min"], ""),
     "augmentation.profile": ("profiles", ""),
 }
 
@@ -312,7 +308,7 @@ class TrainingPage(BasePage):
             if isinstance(value, dict):
                 if key in {"rpn", "roi"}:
                     child = FormSection(LABELS[key])
-                    collapsible = CollapsibleSection("詳細設定", child)
+                    collapsible = CollapsibleSection(f"{key.upper()} 詳細設定", child)
                     self._add_values(child, value, path, widgets, top, model_name)
                     section.form.addRow(collapsible)
                 else:
@@ -328,6 +324,13 @@ class TrainingPage(BasePage):
                     section.form.addRow(child)
                 continue
             if path == "model.type":
+                continue
+            if path == "checkpoint.best_metric":
+                section.add_row(
+                    "",
+                    QLabel("エポック選択の指標：OOF 平均適合率（mAP）・最大"),
+                    path,
+                )
                 continue
             control = self._control(path, value)
             control.installEventFilter(self)
@@ -351,12 +354,6 @@ class TrainingPage(BasePage):
                     if path == "model.type"
                     else classification_label(item)
                     if path == "data.classification"
-                    else "OOF 平均適合率（mAP）"
-                    if path == "checkpoint.best_metric" and item == "instance_map"
-                    else "最大化"
-                    if path == "checkpoint.best_mode" and item == "max"
-                    else "最小化"
-                    if path == "checkpoint.best_mode" and item == "min"
                     else quality_filter_label(item)
                     if path == "data.quality_filter"
                     else "良のみ"
@@ -502,6 +499,8 @@ class TrainingPage(BasePage):
             mean, std = normalization_for_weights(result["model"].get("pretrained_weights", "coco"))
             result["model"]["input"]["image_mean"] = mean
             result["model"]["input"]["image_std"] = std
+        result.setdefault("checkpoint", {})["best_metric"] = "oof_instance_map"
+        result["checkpoint"].pop("best_mode", None)
         result["data"]["input_channels"] = [DEFAULT_CHANNEL]
         result["experiment"]["id"] = self._edit_id or self.experiment_id.text().strip()
         return result
@@ -525,7 +524,12 @@ class TrainingPage(BasePage):
                     self._parse_number(token.strip()) for token in text.split(",") if token.strip()
                 ]
             if isinstance(original, float) or original is None:
-                return None if not text else float(text)
+                if not text:
+                    return None
+                try:
+                    return float(text)
+                except ValueError:
+                    return text
             return text
         return None
 
@@ -694,6 +698,8 @@ class TrainingPage(BasePage):
                 self.ctx.backend.record_epoch(
                     experiment_id, phase_step, loss, map_value, phase_index + 1
                 )
+                if phase_index == folds - 1 and phase_step == epochs:
+                    job.total_steps = step + max(1, experiment.selected_epoch or epochs)
             else:
                 self.ctx.backend.record_epoch(experiment_id, phase_step, loss)
 
@@ -729,8 +735,7 @@ class TrainingPage(BasePage):
             return
         source = self.ctx.backend.get_experiment(copy_from or edit)
         self._edit_id = edit
-        self.config = copy.deepcopy(source.config.values)
-        self.normalization_reset_message = ""
+        self.config, migrated = self.ctx.backend.migrate_experiment_config(source.config.values)
         if self.config.get("model", {}).get("type") == "mask_rcnn":
             saved_input = self.config["model"].get("input", {})
             weights = self.config["model"].get("pretrained_weights", "coco")
@@ -745,6 +750,11 @@ class TrainingPage(BasePage):
                 )
             saved_input["image_mean"] = expected_mean
             saved_input["image_std"] = expected_std
+        if migrated:
+            migration_notice = "旧形式の設定を現在の形式に移行しました。"
+            self.normalization_reset_message = "\n".join(
+                filter(None, (self.normalization_reset_message, migration_notice))
+            )
         self.config["experiment"]["id"] = edit if edit else self.ctx.backend.next_experiment_id()
         self._configs_by_model.clear()
         self._build_form()

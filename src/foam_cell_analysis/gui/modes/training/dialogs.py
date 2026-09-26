@@ -144,10 +144,8 @@ class ExperimentCompareDialog(QDialog):
             return classification_label(str(value))
         if key == "data.quality_filter":
             return quality_filter_label(str(value))
-        if key == "checkpoint.best_metric" and value == "instance_map":
-            return "インスタンス平均適合率（mAP）"
-        if key == "checkpoint.best_mode":
-            return "最大化" if value == "max" else "最小化" if value == "min" else str(value)
+        if key == "checkpoint.best_metric" and value == "oof_instance_map":
+            return "OOF 平均適合率（mAP）・最大"
         if key == "model.pretrained_weights":
             return {"coco": "COCO", "imagenet": "ImageNet"}.get(str(value), str(value))
         if key == "model.backbone":

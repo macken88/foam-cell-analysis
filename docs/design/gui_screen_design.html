@@ -287,7 +287,7 @@ table.rev{font-size:.92rem}
 <tr><td>v2.3</td><td>2026-09-25</td><td>見た目の設計（2.6）を追加: 色（色はデータの意味にだけ使う）・フォント・部品の見た目。ホームを管理者の工程の流れとして表示（2.1）。フォルダパスは本文と同じ BIZ UDPゴシックで表示（レビューで決定）。画面モックを新しい見た目に更新し、表表示（4.3）、モデル学習〜本番推論（5〜10章）のモックを追加</td><td>改良案・未実装</td></tr>
 <tr><td>v2.4</td><td>2026-09-26</td><td>タブ切り替えの不具合修正、表示形式のショートカット、サムネイル表示を確定ダイアログへ移動。レビュー指摘の修正: 共有キー設定、既定キー操作、記号キー配列差の吸収、絞り込みと整合性表示、候補メニュー、推論中の二重実行防止、Excel 入出力、連続振り分け、確定サムネイルの件数・空表示、再表示時の状態更新</td><td>今回の対象を実装済み</td></tr>
 <tr><td>v2.5</td><td>2026-09-26</td><td>原画像と設定表示の二択、キー割り当て一覧、画像移動キー、列幅の保存、選択中の自動振り分け、単一チャンネル GUI、ラベルとコンボの間隔、版履歴サムネイル、確定不可理由の表示</td><td>実装済み</td></tr>
-<tr><td>v2.6</td><td>2026-09-26</td><td>学習をK分割交差検証・OOF評価・選択エポックでの全件最終学習へ変更。比較候補をfinal.ptに限定し、検証用mAPとOOF mAPを比較・リリースに追加。Mask R-CNN の画像平均・標準偏差を重みに応じて自動決定し読み取り専用表示。表の列幅を見出し・内容に合わせ、手動調整を保持</td><td>今回の仕様</td></tr>
+<tr><td>v2.6</td><td>2026-09-26</td><td>学習をK分割交差検証・OOF評価・選択エポックでの全件最終学習へ変更。比較候補をfinal.ptに限定し、検証用mAPとOOF mAPを比較・リリースに追加。Mask R-CNN の画像平均・標準偏差を重みに応じて自動決定し読み取り専用表示。表の列幅を見出し・内容に合わせ、手動調整を保持。エポック選択はOOF mAP最大に固定し、設定移行と候補選択保持を追加</td><td>今回の仕様</td></tr>
 </tbody></table></div>
 <nav><strong>目次</strong><ol class="toc"><li><a href="#sec1">1. ソース構成</a></li><li><a href="#sec2">2. アプリ全体の画面構成</a> <span class="badge">改良案</span><br><a href="#sec2-6">2.6 見た目の設計（色・フォント・部品）</a> <span class="badge">v2.3</span></li><li><a href="#sec3">3. 共通部品</a></li><li><a href="#sec4">4. データ準備（PageId.DATA_PREPARATION）</a> <span class="badge">改良案</span></li><li><a href="#sec5">5. モデル学習（PageId.TRAINING）</a></li><li><a href="#sec6">6. 実験一覧（PageId.EXPERIMENTS）</a></li><li><a href="#sec7">7. モデル比較・リリース（PageId.CANDIDATES）</a></li><li><a href="#sec8">8. マスク比較（PageId.MASK_COMPARISON）</a></li><li><a href="#sec9">9. リリース済みモデル・モデル振り分け（PageId.RELEASED_MODELS）</a></li><li><a href="#sec10">10. 本番推論（PageId.INFERENCE）</a></li><li><a href="#sec11">11. MockBackend</a></li><li><a href="#sec12">12. テスト（tests/gui/）</a></li></ol></nav>
 </header>
@@ -1082,7 +1082,7 @@ training:
      注記: 「セル確率閾値・フロー閾値はこの画面ではなく、モデル比較・リリースの推論設定で管理します」。</li>
 <li><strong>共通学習設定</strong>: エポック数、バッチサイズ、学習率、重み減衰、早期終了（有効/無効 + 待機エポック数）。</li>
 <li><strong>データ拡張</strong>: プロファイル（コンボ）、[プレビュー] [表示 / 編集…]。どちらもデータ拡張プロファイル編集ダイアログを開く（プレビューはプレビュー部分を強調するだけでよい）。</li>
-<li><strong>チェックポイント / OOF評価</strong>: 保存間隔（エポック）、エポック選択の指標（OOF mAP）（インスタンス平均適合率(mAP) 固定表示に近いコンボ）、判定方向（最大化 / 最小化）、検証間隔。</li>
+<li><strong>チェックポイント / OOF評価</strong>: 保存間隔（エポック）、エポック選択の指標は「OOF 平均適合率（mAP）・最大」の読み取り専用表示、検証間隔。</li>
 </ol>
 <p>各入力の <code>toolTip</code> に内部キーを設定する（例 <code>learning_rate</code>）。</p>
 <p>下部ボタン: [設定を検証] [下書き保存] [学習開始]
@@ -1323,14 +1323,14 @@ training:
 <div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span>リリース候補</span><span>マスク比較</span><span class="on">リリース済みモデル・振り分け</span></span><span class="spacer"></span></div>
 <div class="m-split" style="grid-template-columns:2fr 1fr">
 <div class="table-wrap"><table>
-<thead><tr><th>モデルID</th><th>モデル</th><th>候補</th><th>推論設定</th><th>検証用</th><th class="n">mAP</th><th>リリース日時</th><th>割り当て中</th></tr></thead>
+<thead><tr><th>モデルID</th><th>モデル</th><th>候補</th><th>推論設定</th><th>検証用</th><th class="n">検証用 mAP</th><th class="n">OOF mAP</th><th>リリース日時</th><th>割り当て中</th></tr></thead>
 <tbody>
-<tr class="sel"><td class="num">model_008</td><td>Mask R-CNN</td><td class="num">RC-001</td><td class="num">infer_v005</td><td class="num">val_v003</td><td class="n">0.913</td><td class="num">2026-09-25 10:12</td><td class="small">—</td></tr>
-<tr><td class="num">model_007</td><td>Mask R-CNN</td><td class="num">RC-000</td><td class="num">infer_v004</td><td class="num">val_v003</td><td class="n">0.884</td><td class="num">2026-09-10 16:40</td><td>分類A, 分類C</td></tr>
-<tr><td class="num">model_012</td><td>Cellpose</td><td class="num">RC-010</td><td class="num">infer_v006</td><td class="num">val_v002</td><td class="n">0.871</td><td class="num">2026-08-28 09:05</td><td>分類B</td></tr>
+<tr class="sel"><td class="num">model_008</td><td>Mask R-CNN</td><td class="num">RC-001</td><td class="num">infer_v005</td><td class="num">val_v003</td><td class="n">0.913</td><td class="n">0.901</td><td class="num">2026-09-25 10:12</td><td class="small">—</td></tr>
+<tr><td class="num">model_007</td><td>Mask R-CNN</td><td class="num">RC-000</td><td class="num">infer_v004</td><td class="num">val_v003</td><td class="n">0.884</td><td class="n">0.872</td><td class="num">2026-09-10 16:40</td><td>分類A, 分類C</td></tr>
+<tr><td class="num">model_012</td><td>Cellpose</td><td class="num">RC-010</td><td class="num">infer_v006</td><td class="num">val_v002</td><td class="n">0.871</td><td class="n">0.862</td><td class="num">2026-08-28 09:05</td><td>分類B</td></tr>
 </tbody></table></div>
 <div class="panel" style="font-size:.8rem;line-height:1.8"><p class="ptitle">model_008 の詳細</p>
-実験 <span class="num">exp_0042</span> ・ <span class="num">final.pt</span><br>評価 mAP <span class="num">0.913</span>（A <span class="num">0.93</span> / B <span class="num">0.85</span> / C <span class="num">0.90</span>）<br>コメント 分類A 本番用モデル<br>
+実験 <span class="num">exp_0042</span> ・ <span class="num">final.pt</span><br>検証用 mAP <span class="num">0.913</span> ・ OOF mAP <span class="num">0.901</span>（A <span class="num">0.93</span> / B <span class="num">0.85</span> / C <span class="num">0.90</span>）<br>コメント 分類A 本番用モデル<br>
 <span class="btn" style="margin-top:4px">設定を変えて新しいリリースを作る</span></div>
 </div>
 <p class="ptitle" style="margin-top:10px;border-bottom:1px solid var(--rule);padding-bottom:2px">モデル振り分け</p>
@@ -1347,7 +1347,7 @@ training:
 </div></div>
 
 <p><strong>上: リリース済みモデル一覧</strong>（読み取り専用）
-- 列: モデルID、モデル、候補、実験、final.pt、推論設定、検証用データセット、mAP、リリース日時、割り当て中の分類、コメント。
+- 列: モデルID、モデル、候補、実験、final.pt、推論設定、検証用データセット、検証用 mAP、OOF mAP、リリース日時、割り当て中の分類、コメント。
 - 選択すると右に詳細（仕様 11章の全項目: model_id, experiment_id, checkpoint, preprocessing_config, inference_config, validation_dataset, evaluation_result, released_at, comment）。
 - ボタン [設定を変えて新しいリリースを作る]: 元の実験・final.ptで候補追加へ遷移する（上書きしない原則の導線）。</p>
 <p><strong>下: モデル振り分け</strong>

@@ -23,7 +23,7 @@ class CollapsibleSection(QWidget):
     def __init__(self, title: str, content: QWidget | None = None, parent=None) -> None:
         super().__init__(parent)
         self.button = QToolButton()
-        self.button.setText("詳細設定 ▶")
+        self.button.setText(f"{title} ▶")
         self.button.setCheckable(True)
         self.content = content or QWidget()
         self.content.setVisible(False)

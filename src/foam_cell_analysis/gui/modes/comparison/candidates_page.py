@@ -182,7 +182,27 @@ class CandidatesPage(BasePage):
     def refresh(self, _value: str = "") -> None:
         """選択中の検証版で候補評価を再表示する。"""
         version, state = self.validation.currentText(), self.state_filter.currentText()
-        selected_ids = getattr(self, "_activation_selection", set())
+        selected_ids = getattr(
+            self,
+            "_activation_selection",
+            {
+                self.table.item(row, 1).text()
+                for row in range(self.table.rowCount())
+                if self.table.item(row, 0)
+                and self.table.item(row, 0).checkState() == Qt.CheckState.Checked
+                and self.table.item(row, 1)
+            },
+        )
+        current_id = getattr(self, "_activation_current_id", None)
+        if current_id is None and self.table.currentRow() >= 0:
+            current_item = self.table.item(self.table.currentRow(), 1)
+            current_id = current_item.text() if current_item else None
+        current_column = getattr(
+            self, "_activation_current_column", max(0, self.table.currentColumn())
+        )
+        scroll_value = getattr(
+            self, "_activation_scroll_value", self.table.verticalScrollBar().value()
+        )
         self.table.blockSignals(True)
         self.table.setRowCount(0)
         candidates = self.ctx.backend.list_candidates()
@@ -257,20 +277,18 @@ class CandidatesPage(BasePage):
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.table.setItem(row, col, item)
         self.table.blockSignals(False)
-        current_id = getattr(self, "_activation_current_id", None)
         if current_id:
             for row in range(self.table.rowCount()):
                 if self.table.item(row, 1).text() == current_id:
                     self.table.setCurrentCell(
                         row,
                         min(
-                            getattr(self, "_activation_current_column", 0),
+                            current_column,
                             self.table.columnCount() - 1,
                         ),
                     )
                     break
-        if hasattr(self, "_activation_scroll_value"):
-            self.table.verticalScrollBar().setValue(self._activation_scroll_value)
+        self.table.verticalScrollBar().setValue(scroll_value)
         fit_table_columns(self.table)
         self._update_buttons()
 

@@ -442,6 +442,11 @@ class ExperimentListPage(BasePage):
             f"選択エポック: {experiment.selected_epoch if experiment.selected_epoch else '—'}"
         )
         oof_eval = experiment.oof_evaluation
+        classifications = ["分類A", "分類B", "分類C"]
+        if oof_eval and "未分類" in oof_eval.per_class:
+            classifications.append("未分類")
+        self.oof_table.setColumnCount(2 + len(classifications))
+        self.oof_table.setHorizontalHeaderLabels(["OOF評価", "全体", *classifications])
         self.oof_table.setItem(0, 0, QTableWidgetItem("OOF mAP"))
         self.oof_table.setItem(1, 0, QTableWidgetItem("対象件数"))
         self.oof_table.setItem(
@@ -456,7 +461,7 @@ class ExperimentListPage(BasePage):
                 else "—"
             ),
         )
-        for column, classification in enumerate(("分類A", "分類B", "分類C"), start=2):
+        for column, classification in enumerate(classifications, start=2):
             score, count = (
                 oof_eval.per_class.get(classification, (None, 0)) if oof_eval else (None, 0)
             )
@@ -556,10 +561,8 @@ class ExperimentListPage(BasePage):
             return classification_label(str(value))
         if key == "data.quality_filter":
             return quality_filter_label(str(value))
-        if key == "checkpoint.best_metric" and value == "instance_map":
-            return "インスタンス平均適合率（mAP）"
-        if key == "checkpoint.best_mode":
-            return "最大化" if value == "max" else "最小化" if value == "min" else str(value)
+        if key == "checkpoint.best_metric" and value == "oof_instance_map":
+            return "OOF 平均適合率（mAP）・最大"
         if key == "model.pretrained_weights":
             return {"coco": "COCO", "imagenet": "ImageNet"}.get(str(value), str(value))
         if key == "model.backbone":
@@ -671,6 +674,8 @@ class ExperimentListPage(BasePage):
                 self.ctx.backend.record_epoch(
                     experiment_id, phase_step, loss, map_value, phase_index + 1
                 )
+                if phase_index == folds - 1 and phase_step == epochs:
+                    job.total_steps = step + max(1, experiment.selected_epoch or epochs)
             else:
                 self.ctx.backend.record_epoch(experiment_id, phase_step, loss)
 

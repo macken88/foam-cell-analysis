@@ -224,12 +224,14 @@ class EvaluationDialog(QDialog):
         self.setWindowTitle(f"詳細評価 - {candidate.candidate_id}")
         self.setMinimumSize(800, 640)
         self.resize(800, 640)
-        self.metrics = QTableWidget(4, 5)
-        self.metrics.setHorizontalHeaderLabels(["評価項目", "全体", "分類A", "分類B", "分類C"])
-        setup_table(self.metrics, stretch_column=4)
         evaluation = candidate.evaluations[validation]
         oof = candidate.oof_evaluation
-        classes = ["分類A", "分類B", "分類C"]
+        classes = list(dict.fromkeys(["分類A", "分類B", "分類C", "未分類"]))
+        if "未分類" not in evaluation.per_class and (oof is None or "未分類" not in oof.per_class):
+            classes.remove("未分類")
+        self.metrics = QTableWidget(4, 2 + len(classes))
+        self.metrics.setHorizontalHeaderLabels(["評価項目", "全体", *classes])
+        setup_table(self.metrics, stretch_column=self.metrics.columnCount() - 1)
         all_count = sum(value[1] for value in evaluation.per_class.values())
         oof_count = sum(value[1] for value in oof.per_class.values()) if oof else 0
         rows = [
