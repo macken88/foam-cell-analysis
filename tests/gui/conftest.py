@@ -35,6 +35,10 @@ def isolated_app_settings(tmp_path, monkeypatch):
     """
     monkeypatch.setenv(SETTINGS_FILE_ENV, str(tmp_path / "settings.ini"))
     monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    # 共有のサムネイル表示サイズも毎回作り直す（前のテストの段階を持ち越さない）
+    from foam_cell_analysis.gui.modes.data_preparation import finalize_thumbnails
+
+    monkeypatch.setattr(finalize_thumbnails, "_size_preference", None)
 
 
 @pytest.fixture(autouse=True)

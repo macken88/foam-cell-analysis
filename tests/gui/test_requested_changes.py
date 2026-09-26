@@ -18,6 +18,9 @@ from foam_cell_analysis.gui.modes.data_preparation.dialogs import (
     DatasetFinalizeDialog,
     ImportDialog,
 )
+from foam_cell_analysis.gui.modes.data_preparation.finalize_thumbnails import (
+    DatasetVersionThumbnailWindow,
+)
 from foam_cell_analysis.gui.modes.data_preparation.page import (
     DataPreparationPage,
     DatasetHistoryPage,
@@ -386,3 +389,36 @@ def test_display_toggle_ignores_arrow_keys_in_continuous_triage(qapp):
     assert before is True
     dialog.close()
     page.close()
+
+
+def test_thumbnail_size_has_three_levels_shared_and_saved(qapp, qtbot):
+    """表示サイズを小・中・大から選べ、開いている全サムネイルに反映・保存される。"""
+    from foam_cell_analysis.gui.modes.data_preparation import finalize_thumbnails as ft
+
+    ft._size_preference = None
+    backend = MockBackend()
+    version = backend.list_dataset_versions("train")[0]
+    window = DatasetVersionThumbnailWindow(None, backend, version)
+    window.show()
+    qapp.processEvents()
+    view = next(iter(window.views.values()))
+    model = view.model()
+    selector = window.findChildren(ft.ThumbnailSizeSelector)[0]
+    assert [selector.combo.itemText(i) for i in range(selector.combo.count())] == ["小", "中", "大"]
+    small_grid = view.gridSize()
+    selector.combo.showPopup()
+    QTest.keyClick(selector.combo.view(), Qt.Key.Key_Down)
+    QTest.keyClick(selector.combo.view(), Qt.Key.Key_Down)
+    QTest.keyClick(selector.combo.view(), Qt.Key.Key_Return)
+    qapp.processEvents()
+    assert model.thumbnail_size == (320, 240)
+    assert view.gridSize().width() > small_grid.width()
+    qtbot.waitUntil(lambda: model.image_for(model.items[0]) is not None, timeout=3000)
+    assert model.image_for(model.items[0]).shape[:2] == (240, 320)
+    dialog = DatasetFinalizeDialog(None, backend)
+    finalize_view = next(iter(dialog.thumbnail_views.values()))
+    assert finalize_view.model().thumbnail_size == (320, 240)
+    ft._size_preference = None
+    assert ft.thumbnail_size_preference().level == 2
+    dialog.close()
+    window.close()

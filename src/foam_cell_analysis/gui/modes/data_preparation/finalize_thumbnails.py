@@ -9,10 +9,12 @@ from threading import Lock
 from PySide6.QtCore import (
     QAbstractListModel,
     QModelIndex,
+    QObject,
     QRect,
     QSize,
     Qt,
     QTimer,
+    Signal,
 )
 from PySide6.QtGui import QColor, QImage, QPainter, QPen
 from PySide6.QtWidgets import (
@@ -30,11 +32,81 @@ from PySide6.QtWidgets import (
 
 from ....services.models import DataItem
 from ...context import DEFAULT_CHANNEL
+from ...settings import app_settings
 from ...theme import Color, body_font
 from ...widgets.image_convert import array_to_pixmap
 
 THUMBNAIL_SIZE = (160, 120)
 GRID_SIZE = (184, 150)
+# 表示サイズの段階（名前, サムネイル画像の大きさ）。先頭が既定。
+SIZE_LEVELS = (("小", (160, 120)), ("中", (240, 180)), ("大", (320, 240)))
+_SIZE_SETTING_KEY = "thumbnails/sizeLevel"
+
+
+def grid_size_for(thumbnail_size: tuple[int, int]) -> tuple[int, int]:
+    """サムネイル画像の大きさから、枠・バッジ・帯を含むタイルの大きさを返す。"""
+    return (thumbnail_size[0] + 24, thumbnail_size[1] + 30)
+
+
+class ThumbnailSizePreference(QObject):
+    """サムネイルの表示サイズ（アプリ全体で共通、設定に保存）。"""
+
+    changed = Signal(int)
+
+    def __init__(self) -> None:
+        super().__init__()
+        level = int(app_settings().value(_SIZE_SETTING_KEY, 0))
+        self.level = level if 0 <= level < len(SIZE_LEVELS) else 0
+
+    @property
+    def thumbnail_size(self) -> tuple[int, int]:
+        """現在の段階のサムネイル画像の大きさ。"""
+        return SIZE_LEVELS[self.level][1]
+
+    def set_level(self, level: int) -> None:
+        """段階を変え、保存して通知する。"""
+        if level == self.level or not 0 <= level < len(SIZE_LEVELS):
+            return
+        self.level = level
+        app_settings().setValue(_SIZE_SETTING_KEY, level)
+        self.changed.emit(level)
+
+
+_size_preference: ThumbnailSizePreference | None = None
+
+
+def thumbnail_size_preference() -> ThumbnailSizePreference:
+    """共有の表示サイズ設定を返す（初回に作る）。"""
+    global _size_preference
+    if _size_preference is None:
+        _size_preference = ThumbnailSizePreference()
+    return _size_preference
+
+
+class ThumbnailSizeSelector(QWidget):
+    """「表示サイズ [小 ▾]」の組。共有設定を変更し、変更に追従する。"""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.preference = thumbnail_size_preference()
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        layout.addWidget(QLabel("表示サイズ"))
+        self.combo = QComboBox()
+        self.combo.addItems([name for name, _size in SIZE_LEVELS])
+        self.combo.setCurrentIndex(self.preference.level)
+        self.combo.currentIndexChanged.connect(self.preference.set_level)
+        self.preference.changed.connect(self._preference_changed)
+        layout.addWidget(self.combo)
+
+    def _preference_changed(self, level: int) -> None:
+        if self.combo.currentIndex() != level:
+            self.combo.blockSignals(True)
+            self.combo.setCurrentIndex(level)
+            self.combo.blockSignals(False)
+
+
 _thumbnail_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="foam-thumbnail")
 _CACHE_LIMIT = 240
 _thumbnail_cache: OrderedDict[tuple[str, int, int], object] = OrderedDict()
@@ -76,6 +148,7 @@ class FinalizeThumbnailModel(QAbstractListModel):
         self._poll_timer.setInterval(30)
         self._poll_timer.timeout.connect(self._poll_results)
         self._wanted: set[str] = set()
+        self.thumbnail_size = thumbnail_size_preference().thumbnail_size
 
     def set_items(self, items: list[DataItem], errors: dict[str, str]) -> None:
         """絞り込みを適用した項目一覧へ切り替える。"""
@@ -127,10 +200,11 @@ class FinalizeThumbnailModel(QAbstractListModel):
         if self.view is None or not self.items or not self.view.isVisible():
             self._wanted.clear()
             return
-        columns = max(1, self.view.viewport().width() // GRID_SIZE[0])
-        first_line = self.view.verticalScrollBar().value() // GRID_SIZE[1]
+        grid = grid_size_for(self.thumbnail_size)
+        columns = max(1, self.view.viewport().width() // grid[0])
+        first_line = self.view.verticalScrollBar().value() // grid[1]
         top = first_line * columns
-        visible_lines = ceil(self.view.viewport().height() / GRID_SIZE[1])
+        visible_lines = ceil(self.view.viewport().height() / grid[1])
         bottom = min(len(self.items) - 1, top + visible_lines * columns - 1)
         start = max(0, top - 2)
         end = min(len(self.items), bottom + 6)
@@ -140,48 +214,54 @@ class FinalizeThumbnailModel(QAbstractListModel):
                 self._tasks.pop(item_id, None)
                 self._pending.discard(item_id)
         for item in self.items[start:end]:
-            key = (item.item_id, *THUMBNAIL_SIZE)
+            size = self.thumbnail_size
+            key = (item.item_id, *size)
             if _cache_get(key) is None and item.item_id not in self._pending:
                 self._pending.add(item.item_id)
                 future = _thumbnail_executor.submit(
-                    self.backend.get_item_thumbnail, item.item_id, THUMBNAIL_SIZE
+                    self.backend.get_item_thumbnail, item.item_id, size
                 )
                 future.add_done_callback(
-                    lambda result, key=item.item_id: self._queue_result(key, result)
+                    lambda result, key=item.item_id, size=size: self._queue_result(
+                        key, result, size
+                    )
                 )
                 self._tasks[item.item_id] = future
         if self._pending and not self._poll_timer.isActive():
             self._poll_timer.start()
 
-    def _queue_result(self, item_id: str, future: Future) -> None:
+    def _queue_result(self, item_id: str, future: Future, size: tuple[int, int]) -> None:
         """バックグラウンド結果をGUIスレッドへ渡す。"""
         try:
             image = future.result()
         except Exception:
             image = None
-        self._results.put((item_id, future, image))
+        self._results.put((item_id, future, image, size))
 
     def _poll_results(self) -> None:
         """ワーカ結果をGUIスレッドで受け取る。"""
         while True:
             try:
-                item_id, future, image = self._results.get_nowait()
+                item_id, future, image, size = self._results.get_nowait()
             except Empty:
                 break
             if self._tasks.get(item_id) is not future:
                 continue
-            self._finished(item_id, image)
+            self._finished(item_id, image, size)
         if not self._pending:
             self._poll_timer.stop()
 
-    def _finished(self, item_id: str, image) -> None:
+    def _finished(self, item_id: str, image, size: tuple[int, int]) -> None:
         self._pending.discard(item_id)
         self._tasks.pop(item_id, None)
         if item_id not in self._wanted:
             return
         if image is None:
             return
-        _cache_put((item_id, *THUMBNAIL_SIZE), image)
+        # 要求したときの大きさで保存する（途中で表示サイズが変わっても混ざらない）
+        _cache_put((item_id, *size), image)
+        if size != self.thumbnail_size:
+            return
         row = next((row for row, item in enumerate(self.items) if item.item_id == item_id), -1)
         if row >= 0:
             self.dataChanged.emit(
@@ -190,7 +270,20 @@ class FinalizeThumbnailModel(QAbstractListModel):
 
     def image_for(self, item: DataItem):
         """キャッシュ済みの小画像を返す。"""
-        return _cache_get((item.item_id, *THUMBNAIL_SIZE))
+        return _cache_get((item.item_id, *self.thumbnail_size))
+
+    def set_thumbnail_size(self, size: tuple[int, int]) -> None:
+        """表示サイズを変え、表示範囲の画像を新しい大きさで要求し直す。"""
+        if size == self.thumbnail_size:
+            return
+        self.thumbnail_size = size
+        for item_id, future in tuple(self._tasks.items()):
+            if future.cancel():
+                self._tasks.pop(item_id, None)
+        self._pending.clear()
+        if self.items:
+            self.dataChanged.emit(self.index(0, 0), self.index(len(self.items) - 1, 0))
+        self.request_visible()
 
 
 class FinalizeThumbnailView(QListView):
@@ -203,9 +296,20 @@ class FinalizeThumbnailView(QListView):
         self.setResizeMode(QListView.ResizeMode.Adjust)
         self.setMovement(QListView.Movement.Static)
         self.setWrapping(True)
-        self.setGridSize(QSize(*GRID_SIZE))
+        self.size_preference = thumbnail_size_preference()
+        self.setGridSize(QSize(*grid_size_for(self.size_preference.thumbnail_size)))
         self.setUniformItemSizes(True)
         self.setSelectionMode(QListView.SelectionMode.SingleSelection)
+        self.size_preference.changed.connect(self._size_changed)
+
+    def _size_changed(self, _level: int) -> None:
+        """共有の表示サイズの変更をタイルと画像の大きさへ反映する。"""
+        size = self.size_preference.thumbnail_size
+        self.setGridSize(QSize(*grid_size_for(size)))
+        model = self.model()
+        if isinstance(model, FinalizeThumbnailModel):
+            model.set_thumbnail_size(size)
+        self.doItemsLayout()
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -218,7 +322,9 @@ class FinalizeThumbnailDelegate(QStyledItemDelegate):
     """用途、分類、品質、変更状態をサムネイルに重ねる。"""
 
     def sizeHint(self, option, index) -> QSize:
-        return QSize(*GRID_SIZE)
+        model = index.model()
+        size = getattr(model, "thumbnail_size", THUMBNAIL_SIZE)
+        return QSize(*grid_size_for(size))
 
     def paint(self, painter: QPainter, option, index) -> None:
         item = index.data(Qt.ItemDataRole.UserRole)
@@ -332,6 +438,8 @@ class DatasetVersionThumbnailWindow(QDialog):
             filters.addSpacing(14)
             filters.addWidget(QLabel("品質"))
             filters.addWidget(quality)
+            filters.addSpacing(14)
+            filters.addWidget(ThumbnailSizeSelector())
             filters.addStretch(1)
             filters.addWidget(count)
             page_layout.addLayout(filters)

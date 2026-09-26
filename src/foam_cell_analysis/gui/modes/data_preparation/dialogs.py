@@ -40,6 +40,7 @@ from .finalize_thumbnails import (
     FinalizeThumbnailModel,
     FinalizeThumbnailView,
     ThumbnailPreviewDialog,
+    ThumbnailSizeSelector,
 )
 
 
@@ -452,7 +453,13 @@ class DatasetFinalizeDialog(QDialog):
         thumbnail_layout.addWidget(
             QLabel("今回の版に入る画像を用途ごとに確認できます。画像をクリックすると拡大します。")
         )
-        thumbnail_layout.addWidget(self.thumbnail_filter)
+        thumbnail_controls = QHBoxLayout()
+        thumbnail_controls.addWidget(self.thumbnail_filter)
+        thumbnail_controls.addSpacing(14)
+        self.thumbnail_size_selector = ThumbnailSizeSelector()
+        thumbnail_controls.addWidget(self.thumbnail_size_selector)
+        thumbnail_controls.addStretch(1)
+        thumbnail_layout.addLayout(thumbnail_controls)
         self.thumbnail_tabs = QTabWidget()
         self.thumbnail_models = {}
         self.thumbnail_views = {}
