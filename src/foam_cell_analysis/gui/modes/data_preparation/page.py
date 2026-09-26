@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 
-from PySide6.QtCore import QByteArray, QEvent, QSettings, Qt
+from PySide6.QtCore import QByteArray, QEvent, QSettings, Qt, QTimer
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -295,7 +295,6 @@ class DataPreparationPage(BasePage):
         self.table.setItemDelegateForColumn(
             5, ValueComboDelegate(["未設定", "良", "可", "不良"], self.table)
         )
-        self.table.resizeColumnsToContents()
         self.model.edit_requested.connect(self._table_edit_requested)
         self.splitter.addWidget(self.table)
         self.preview_panel = QWidget()
@@ -367,16 +366,39 @@ class DataPreparationPage(BasePage):
         self.auto_button.clicked.connect(self.auto_triage)
         self.finalize_button.clicked.connect(self.finalize)
         settings = QSettings("FoamCellAnalysis", "FoamCellAnalysis")
-        if settings.value("dataPreparation/columnWidths"):
-            self.table.horizontalHeader().restoreState(
-                QByteArray.fromBase64(settings.value("dataPreparation/columnWidths").encode())
-            )
+        saved_widths = settings.value("dataPreparation/columnWidths")
+        self._has_saved_column_widths = bool(saved_widths)
+        self._initial_column_widths_done = False
+        if saved_widths:
+            self.table.horizontalHeader().restoreState(QByteArray.fromBase64(saved_widths.encode()))
+            if any(
+                self.table.columnWidth(column) < 24 for column in range(self.model.columnCount())
+            ):
+                self._has_saved_column_widths = False
         self._saving_column_widths = True
         self.table.horizontalHeader().sectionResized.connect(self._save_column_widths)
         self.refresh()
+        QTimer.singleShot(0, self._initialize_column_widths)
         self.shortcuts.changed.connect(self._shortcuts_changed)
         self.ctx.display.changed.connect(self._display_preference_changed)
         self._shortcuts_changed()
+
+    def _initialize_column_widths(self) -> None:
+        """初回表示で内容に合わせて列幅を決める。
+
+        余白を特定の列へ足すと、ウィンドウが後から狭くなったときに
+        ほかの列が画面外へ押し出されるため、内容幅だけで決める。
+        """
+        if self._initial_column_widths_done or not self.isVisible():
+            return
+        self._initial_column_widths_done = True
+        if not self._has_saved_column_widths:
+            header = self.table.horizontalHeader()
+            self._saving_column_widths = False
+            self.table.resizeColumnsToContents()
+            header.resizeSection(0, min(header.sectionSize(0), 240))
+            header.resizeSection(3, max(header.sectionSize(3), 96))
+            self._saving_column_widths = True
 
     def _make_menus(self) -> None:
         excel = QMenu(self)

@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -160,6 +161,7 @@ class AugmentationDialog(QDialog):
                 chance.setSingleStep(0.05)
                 chance.setDecimals(2)
                 chance.setValue(setting.probability)
+                chance.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
                 chance.setToolTip(f"{key}.probability")
                 minimum = self._range_editor(setting.range_min)
                 maximum = self._range_editor(setting.range_max)
@@ -290,6 +292,7 @@ class AugmentationDialog(QDialog):
         widget.setRange(-10000.0, 10000.0)
         widget.setDecimals(3)
         widget.setValue(value)
+        widget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         return widget
 
     def _move_order(self, offset: int) -> None:

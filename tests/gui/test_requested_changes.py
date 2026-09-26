@@ -6,7 +6,7 @@ from time import perf_counter
 
 from PySide6.QtCore import QSettings, Qt, QTimer
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QHeaderView
+from PySide6.QtWidgets import QApplication, QHeaderView, QSizePolicy
 
 from foam_cell_analysis.gui.context import AppContext, DisplayPreference, StatusBus
 from foam_cell_analysis.gui.home_window import HomeWindow
@@ -26,6 +26,7 @@ from foam_cell_analysis.gui.modes.data_preparation.page import (
 from foam_cell_analysis.gui.modes.inference.page import InferencePage
 from foam_cell_analysis.gui.modes.training.page import TrainingPage
 from foam_cell_analysis.gui.navigation import Navigator
+from foam_cell_analysis.gui.theme import numeric_font
 from foam_cell_analysis.gui.widgets.marks import DisplayToggle
 from foam_cell_analysis.gui.window_manager import WindowManager
 from foam_cell_analysis.services.mock.backend import MockBackend
@@ -140,6 +141,40 @@ def test_work_table_interactive_width_is_saved_and_restored(qapp, tmp_path):
     restored.close()
 
 
+def test_work_table_first_launch_sizes_data_columns_and_uses_slack(qapp, tmp_path):
+    """保存幅のない初回表示で内容幅を確保し、余白をフォルダ列に配る。"""
+    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path))
+    page = DataPreparationPage(make_context())
+    page.resize(1440, 800)
+    page.show()
+    qapp.processEvents()
+    header = page.table.horizontalHeader()
+    for column in range(1, page.model.columnCount()):
+        assert page.table.columnWidth(column) >= header.sectionSizeHint(column)
+    assert page.table.columnWidth(3) >= 96
+    assert sum(page.table.columnWidth(column) for column in range(page.model.columnCount())) >= (
+        page.table.viewport().width()
+    )
+    page.close()
+
+
+def test_work_table_ignores_extremely_narrow_saved_width(qapp, tmp_path):
+    """24px 未満を含む保存幅は初回内容幅へ戻す。"""
+    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path))
+    page = DataPreparationPage(make_context())
+    page.show()
+    qapp.processEvents()
+    page.table.horizontalHeader().resizeSection(1, 10)
+    page._save_column_widths()
+    page.close()
+    restored = DataPreparationPage(make_context())
+    restored.resize(1440, 800)
+    restored.show()
+    qapp.processEvents()
+    assert restored.table.columnWidth(1) >= restored.table.horizontalHeader().sectionSizeHint(1)
+    restored.close()
+
+
 def test_selected_auto_triage_overwrites_assigned_items_and_undoes(
     qapp, qtbot, monkeypatch, tmp_path
 ):
@@ -161,8 +196,13 @@ def test_selected_auto_triage_overwrites_assigned_items_and_undoes(
         assert isinstance(dialog, AutoTriageDialog)
         QTest.mouseClick(dialog.target_selected, Qt.MouseButton.LeftButton)
         dialog.ratio.setValue(100)
-        assert dialog.preview.item(0, 1).text().endswith("→ 0")
-        assert dialog.preview.item(0, 2).text().endswith("→ 1")
+        row = next(
+            index
+            for index in range(dialog.preview.rowCount())
+            if dialog.preview.item(index, 0).text() == (item.classification or "未設定")
+        )
+        assert dialog.preview.item(row, 1).text().endswith("→ 0")
+        assert dialog.preview.item(row, 2).text().endswith("→ 1")
         QTest.mouseClick(dialog.apply_button, Qt.MouseButton.LeftButton)
 
     QTimer.singleShot(0, choose_and_run)
@@ -171,6 +211,24 @@ def test_selected_auto_triage_overwrites_assigned_items_and_undoes(
     page.undo_stack.undo()
     assert item.usage == "train"
     page.close()
+
+
+def test_auto_triage_numeric_controls_and_preview_order(qapp):
+    """数値欄を内容幅に保ち、分類定義順と数値セル書式を使う。"""
+    backend = MockBackend()
+    dialog = AutoTriageDialog(None, backend.get_working_items(), backend=backend)
+    assert dialog.ratio.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Fixed
+    assert dialog.seed.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Fixed
+    classes = [dialog.preview.item(row, 0).text() for row in range(dialog.preview.rowCount())]
+    expected = [name for name in backend.classifications if name in classes]
+    if "未設定" in classes:
+        expected.append("未設定")
+    assert classes == expected
+    if dialog.preview.rowCount():
+        cell = dialog.preview.item(0, 1)
+        assert cell.textAlignment() & Qt.AlignmentFlag.AlignRight
+        assert cell.font().family() == numeric_font().family()
+    dialog.close()
 
 
 def test_single_channel_gui_and_continuous_triage_mouse_actions(qapp, qtbot):

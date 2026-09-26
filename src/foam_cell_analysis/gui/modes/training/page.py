@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QSplitter,
     QStackedWidget,
@@ -363,6 +364,8 @@ class TrainingPage(BasePage):
         else:
             control = QLineEdit("" if value is None else str(value))
         control.setToolTip(path)
+        if isinstance(control, QSpinBox | QDoubleSpinBox):
+            control.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         return control
 
     def _bind_signals(self) -> None:

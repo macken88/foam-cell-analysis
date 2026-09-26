@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QPushButton,
     QRadioButton,
+    QSizePolicy,
     QSpinBox,
     QStackedWidget,
     QTableWidget,
@@ -224,6 +225,7 @@ class AutoTriageDialog(QDialog):
         self.ratio.setSuffix(" %")
         self.ratio.setValue(int(self.settings.get("validation_ratio", 20)))
         self.ratio.setFont(numeric_font())
+        self.ratio.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.by_folder = QCheckBox("取り込み元フォルダごと")
         self.by_folder.setChecked(bool(self.settings.get("by_folder", False)))
         self.stratify = QCheckBox("画像分類ごとに割合をそろえる")
@@ -233,6 +235,8 @@ class AutoTriageDialog(QDialog):
         self.seed = QSpinBox()
         self.seed.setRange(0, 2_000_000_000)
         self.seed.setValue(int(self.settings.get("seed", 42)))
+        self.seed.setFont(numeric_font())
+        self.seed.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         form.addRow("検証の割合", self.ratio)
         form.addRow("振り分け単位", self.by_folder)
         form.addRow("層化", self.stratify)
@@ -311,7 +315,14 @@ class AutoTriageDialog(QDialog):
             if self.backend
             else {}
         )
-        for row, (classification, values) in enumerate(by_class.items()):
+        classification_order = [*self.backend.classifications, "未設定"] if self.backend else []
+        ordered_classes = [
+            (name, by_class[name]) for name in classification_order if name in by_class
+        ]
+        ordered_classes.extend(
+            (name, values) for name, values in by_class.items() if name not in classification_order
+        )
+        for row, (classification, values) in enumerate(ordered_classes):
             train_after = (
                 sum(assignments.get(item.item_id) == "train" for item in values)
                 if assignments
@@ -347,7 +358,13 @@ class AutoTriageDialog(QDialog):
                 f"{after_ratio:.1f}%",
             )
             for col, value in enumerate(vals):
-                self.preview.setItem(row, col, QTableWidgetItem(value))
+                cell = QTableWidgetItem(value)
+                if col > 0:
+                    cell.setTextAlignment(
+                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                    )
+                    cell.setFont(numeric_font())
+                self.preview.setItem(row, col, cell)
             if abs(after_ratio - ratio) > 10:
                 self.preview.item(row, 3).setBackground(QColor(Color.CHANGED))
         result = (

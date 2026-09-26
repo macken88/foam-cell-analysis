@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QRadioButton,
+    QSizePolicy,
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
@@ -141,6 +142,7 @@ class CandidateDialog(QDialog):
                 widget.setRange(-10.0, 10.0)
                 widget.setSingleStep(0.05)
                 widget.setValue(default)
+            widget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             self.fields[key] = widget
             self.params_form.addRow(label, widget)
 
