@@ -292,6 +292,7 @@ table.rev{font-size:.92rem}
 <tr><td>v2.6</td><td>2026-09-26</td><td>学習をK分割交差検証・OOF評価・選択エポックでの全件最終学習へ変更。学習キュー（設定編集・順次実行・失敗後の継続）と待機実験の管理を追加。比較候補をfinal.ptに限定し、検証用mAPとOOF mAPを比較・リリースに追加。再試行の試行履歴保持、同一実験IDでの予約と候補・リリースの試行固定を追記。Mask R-CNN の画像平均・標準偏差を重みに応じて自動決定</td><td>実装済み</td></tr>
 <tr><td>v2.7</td><td>2026-09-27</td><td>設計書を現在の実装だけに整理（改良案はローカル資料 <code>docs/tasks/ui-improvement-plan.html</code> へ分離）。各節の見出しにリンク用の id を付与。末尾に重複して置かれていた交差検証・OOF の説明を 5〜8 章へ統合。モックで無効の主ボタンを灰色で描く</td><td>文書の整理</td></tr>
 <tr><td>v2.8</td><td>2026-09-27</td><td>メニューバーと主な操作の配置、データ準備の2行フィルター・複合条件・選択と現在行の保持・狭幅レイアウト、既定列と任意列の保存、状態印、件数表示、プレビュー情報と一括変更枠、学習設定のカード型要約・YAML 開閉・独立した2列・見出しとデータ拡張操作の改善</td><td>実装済み</td></tr>
+<tr><td>v2.9</td><td>2026-09-28</td><td>学習キュー編集終了時のフォーム・YAML・スクロール・操作状態の復元、編集中の操作抑止、列切替時のフォーカス保持、YAML 行の完全パス強調、交差検証の層別・フォルダ単位を要約に表示</td><td>実装済み</td></tr>
 </tbody></table></div>
 <nav><strong>目次</strong><ol class="toc"><li><a href="#sec1">1. ソース構成</a></li><li><a href="#sec2">2. アプリ全体の画面構成</a> <br><a href="#sec2-6">2.6 見た目の設計（色・フォント・部品）</a> <span class="badge">v2.3</span></li><li><a href="#sec3">3. 共通部品</a></li><li><a href="#sec4">4. データ準備（PageId.DATA_PREPARATION）</a> </li><li><a href="#sec5">5. モデル学習（PageId.TRAINING）</a></li><li><a href="#sec6">6. 実験一覧（PageId.EXPERIMENTS）</a></li><li><a href="#sec7">7. モデル比較・リリース（PageId.CANDIDATES）</a></li><li><a href="#sec8">8. マスク比較（PageId.MASK_COMPARISON）</a></li><li><a href="#sec9">9. リリース済みモデル・モデル振り分け（PageId.RELEASED_MODELS）</a></li><li><a href="#sec10">10. 本番推論（PageId.INFERENCE）</a></li><li><a href="#sec11">11. MockBackend</a></li><li><a href="#sec12">12. テスト（tests/gui/）</a></li></ol></nav>
 </header>
@@ -1025,10 +1026,10 @@ table.rev{font-size:.92rem}
 <h2>5. モデル学習（<code>PageId.TRAINING</code>）</h2>
 <p>仕様: モデル学習モード仕様 3〜7章、9〜10章、14章。</p>
 <h3 id="sec5-1">5.1 レイアウト</h3>
-<p>フォーム上部に、白い背景・枠・左側のアクセント線を持つカードで、データセット版・画像分類・品質条件と見込み件数、交差検証の分割数と各分割の検証件数、モデルと事前学習済み重み、エポック数・バッチサイズ・学習率を要約する。入力変更に追従して更新する。設定検証に警告またはエラーがあれば要約の右側に件数を示し、選ぶと検証結果を開く。設定変更時は古い検証結果を消す。</p>
+<p>フォーム上部に、白い背景・枠・左側のアクセント線を持つカードで、データセット版・画像分類・品質条件と見込み件数、交差検証の分割数・有効な層別とフォルダ単位の条件・各分割の検証件数、モデルと事前学習済み重み、エポック数・バッチサイズ・学習率を要約する。入力変更に追従して更新する。設定検証に警告またはエラーがあれば要約の右側に件数を示し、選ぶと検証結果を開く。設定変更時は古い検証結果を消す。</p>
 <div class="mock"><div class="mock-title">モデル学習 — 学習設定（実装）</div><div class="mock-body">
 <div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span class="on">学習設定</span><span>学習キュー</span><span>実験一覧</span></span></div>
-<div class="v27-summary"><span>データ <span class="num">train_v003</span>・全分類・すべて・学習 <b class="num">515</b> 件</span><span>交差検証 <span class="num">5</span> 分割・各検証 約 <span class="num">103</span> 件</span><span>モデル Mask R-CNN（COCO）</span><span>学習 <span class="num">100</span> エポック・バッチ <span class="num">8</span>・学習率 <span class="num">0.0001</span></span><span class="spacer"></span><span class="btn">設定プレビュー（YAML）</span></div>
+<div class="v27-summary"><span>データ <span class="num">train_v003</span>・全分類・すべて・学習 <b class="num">515</b> 件</span><span>交差検証 <span class="num">5</span> 分割・層別・フォルダ単位・各検証 約 <span class="num">103</span> 件</span><span>モデル Mask R-CNN（COCO）</span><span>学習 <span class="num">100</span> エポック・バッチ <span class="num">8</span>・学習率 <span class="num">0.0001</span></span><span class="spacer"></span><span class="btn">設定プレビュー（YAML）</span></div>
 <div class="v27-form2"><div><p class="v27-h">実験</p><div class="row"><span>実験群</span><span class="sel-combo">foam_study ▾</span></div><div class="row"><span>実験識別子</span><span class="input ro num">exp_0046</span></div><div class="row"><span>説明</span><span class="input"></span></div><p class="v27-h">データセット・交差検証</p><div class="row"><span>データセット版</span><span class="sel-combo num">train_v003 ▾</span></div><div class="row"><span>画像分類 / 品質条件</span><span class="sel-combo">全分類 ▾　すべて ▾</span></div><div class="row"><span>分割数・条件・乱数シード</span><span class="input num">5</span>　☑ 画像分類で層別　☑ 取り込み元フォルダ単位</div><p class="small">交差検証は学習用版だけを使い、検証用版は含めない</p><p class="v27-h">共通学習設定</p><div class="row"><span>エポック / バッチ</span><span class="input num">100</span>　<span class="input num">8</span></div><div class="row"><span>学習率</span><span class="input num">0.0001</span></div></div>
 <div><p class="v27-h">モデル種類・固有設定</p><div class="row"><span>モデル種類</span><span class="sel-combo">Mask R-CNN ▾</span></div><div class="row"><span>事前学習済み重み</span><span class="sel-combo">COCO ▾</span></div><div class="row"><span>画像平均・標準偏差</span><span class="small">重みから自動決定</span></div><div class="row"><span>アンカーサイズ</span><span class="input num">32, 64, 128, 256, 512</span></div><div class="row"><span>アンカー縦横比</span><span class="input num">0.5, 1.0, 2.0</span></div><p class="small">▶ RPN 詳細設定　▶ ROI 詳細設定</p><p class="v27-h">データ拡張</p><div class="row"><span>プロファイル</span><span class="sel-combo num">aug_v003 ▾</span> <span class="btn">プロファイルをプレビュー</span> <span class="btn">表示 / 編集…</span></div><p class="v27-h">途中保存モデル / 評価</p><div class="row"><span>保存間隔 / 検証間隔</span><span class="input num">10</span>　<span class="input num">5</span> エポック</div><div class="row"><span>エポックの選び方</span><span class="small">OOF mAP 最大</span></div></div></div>
 <div class="v27-actions"><span class="btn">設定を検証</span><span class="btn">下書き保存</span><span class="v27-gap"></span><span class="btn">キューに追加</span><span class="btn primary">学習開始</span></div></div></div>
@@ -1038,7 +1039,7 @@ table.rev{font-size:.92rem}
 <li>見出しは theme の色・書体で本文より大きく太くし、罫線と本文行間の約 2 倍の上余白を付ける。</li>
 <li>モデル固有設定、データ拡張、途中保存モデル / 評価は常時表示する。RPN と ROI の詳細設定だけ折りたたむ。アンカーサイズ・縦横比は編集可能。読み取り専用表示は画像平均・標準偏差と OOF mAP 最大で選ぶエポックだけ。</li>
 <li>左右の列は独立した縦積みで上から並べ、交差検証の注記は交差検証設定の直下に置く。データ拡張のプレビュー・編集ボタンはプロファイル選択欄の横に内容幅で置く。</li>
-<li>下部の操作は「設定を検証・下書き保存」と「キューに追加・学習開始」の 2 群に分け、主ボタンは「学習開始」だけにする。キュー編集中は「キューに保存」「キャンセル」と編集帯を表示する。</li>
+<li>下部の操作は「設定を検証・下書き保存」と「キューに追加・学習開始」の 2 群に分け、主ボタンは「学習開始」だけにする。キュー編集中は「キューに保存」「キャンセル」と編集帯を表示し、検証・キュー追加・学習開始・新規実験のメニュー操作を無効にして理由を示す。保存またはキャンセルで編集前のフォーム値、モデル種類、YAML の開閉、スクロール位置、操作状態を戻す。</li>
 </ul>
 <p>フォーム項目と動作:</p>
 <ol>

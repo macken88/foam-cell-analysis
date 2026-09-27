@@ -9,6 +9,7 @@ from typing import Any
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -137,7 +138,7 @@ class TrainingPage(BasePage):
         self._edit_id: str | None = None
         self._queue_edit_id: str | None = None
         self._queue_edit_unavailable = False
-        self._pre_queue_edit: tuple[dict[str, Any], str | None] | None = None
+        self._pre_queue_edit: dict[str, Any] | None = None
         splitter = QSplitter(Qt.Orientation.Horizontal)
         self.preview_splitter = splitter
         self.content_layout.addWidget(splitter, 1)
@@ -183,7 +184,7 @@ class TrainingPage(BasePage):
         self.form_layout.addWidget(self.right_column_widget, 1)
         self.form_root_layout.addWidget(self.form_columns)
         self._form_widgets: list[tuple[QWidget, int]] = []
-        self._two_columns = False
+        self._two_columns: bool | None = None
         scroll.setWidget(form_host)
         self.form_host = form_host
         scroll.installEventFilter(self)
@@ -260,6 +261,8 @@ class TrainingPage(BasePage):
             ctx.queue_controller.changed.connect(self._sync_queue_edit_state)
 
     def _new_experiment(self):
+        if self._queue_edit_id:
+            return
         self.on_enter({})
 
     def menu_actions(self):
@@ -277,6 +280,7 @@ class TrainingPage(BasePage):
 
     def _build_form(self) -> None:
         """共通フォームとモデル別スタックを組み立てる。"""
+        self._two_columns = None
         self.fields.clear()
         self._model_widgets.clear()
         for layout in (self.left_column, self.right_column):
@@ -409,16 +413,66 @@ class TrainingPage(BasePage):
             return
         width = available_width if available_width is not None else self.scroll.width()
         two_columns = not self.preview_action.isChecked() and width >= 1100
+        if self._two_columns is not None and two_columns == self._two_columns:
+            return
+        focus_widget = QApplication.focusWidget()
+        if focus_widget is not None and not (
+            focus_widget is self.form_host or self.form_host.isAncestorOf(focus_widget)
+        ):
+            focus_widget = None
+        cursor_widget = focus_widget
+        if cursor_widget is not None and not hasattr(cursor_widget, "cursorPosition"):
+            editor = getattr(cursor_widget, "lineEdit", None)
+            cursor_widget = editor() if callable(editor) else None
+        cursor_position = (
+            cursor_widget.cursorPosition()
+            if cursor_widget is not None and hasattr(cursor_widget, "cursorPosition")
+            else None
+        )
+        selection_start = (
+            cursor_widget.selectionStart()
+            if cursor_widget is not None and hasattr(cursor_widget, "selectionStart")
+            else -1
+        )
+        selection_length = (
+            len(cursor_widget.selectedText())
+            if cursor_widget is not None and hasattr(cursor_widget, "selectedText")
+            else 0
+        )
+        focus_path = self._config_path_for_widget(focus_widget)
         for layout in (self.left_column, self.right_column):
             while layout.count():
                 layout.takeAt(0)
         for widget, preferred_column in self._form_widgets:
             if two_columns:
-                (self.left_column if preferred_column == 0 else self.right_column).addWidget(widget)
+                target_layout = self.left_column if preferred_column == 0 else self.right_column
             else:
-                self.left_column.addWidget(widget)
+                target_layout = self.left_column
+            target_parent = target_layout.parentWidget()
+            if widget.parentWidget() is not target_parent:
+                widget.setParent(target_parent)
+            target_layout.addWidget(widget)
+            widget.show()
         self.right_column_widget.setVisible(two_columns)
         self._two_columns = two_columns
+        self.form_layout.activate()
+        if focus_widget is not None and focus_widget.isEnabled():
+            focus_widget.setFocus(Qt.FocusReason.OtherFocusReason)
+            if cursor_position is not None and cursor_widget is not None:
+                cursor_widget.setCursorPosition(cursor_position)
+                if selection_start >= 0 and selection_length:
+                    cursor_widget.setSelection(selection_start, selection_length)
+            if focus_path:
+                self._highlight_yaml_path(focus_path)
+
+    def _config_path_for_widget(self, widget: QWidget | None) -> str:
+        if widget is None:
+            return ""
+        while widget is not None and widget is not self.form_host:
+            if widget.toolTip():
+                return widget.toolTip()
+            widget = widget.parentWidget()
+        return ""
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -460,7 +514,25 @@ class TrainingPage(BasePage):
             )
         fields = [
             ("データ", f"{dataset}・{classification}・{quality}・学習 {train} 件"),
-            ("交差検証", f"{folds} 分割・各検証 約 {per_fold} 件"),
+            (
+                "交差検証",
+                "・".join(
+                    [
+                        f"{folds} 分割",
+                        *(
+                            ["層別"]
+                            if data.get("cv", {}).get("stratify_by_classification", False)
+                            else []
+                        ),
+                        *(
+                            ["フォルダ単位"]
+                            if data.get("cv", {}).get("group_by_source_folder", False)
+                            else []
+                        ),
+                        f"各検証 約 {per_fold} 件",
+                    ]
+                ),
+            ),
             ("モデル", f"{model_type_label(model['type'])}（{model_spec}）"),
             (
                 "学習",
@@ -552,6 +624,8 @@ class TrainingPage(BasePage):
                 continue
             control = self._control(path, value)
             control.installEventFilter(self)
+            for child in control.findChildren(QWidget):
+                child.installEventFilter(self)
             widgets[path] = control
             label = config_key_label(path)
             if label == path:
@@ -672,25 +746,38 @@ class TrainingPage(BasePage):
         """フォーカス中の設定に対応する YAML 行を強調する。"""
         if watched is self.scroll and event.type() == QEvent.Type.Resize:
             self._update_form_columns(self.scroll.width())
-        if event.type() == QEvent.Type.FocusIn and watched.toolTip():
-            self._highlight_yaml_path(watched.toolTip())
+        if event.type() == QEvent.Type.FocusIn:
+            path = self._config_path_for_widget(watched)
+            if path:
+                self._highlight_yaml_path(path)
         return super().eventFilter(watched, event)
 
     def _highlight_yaml_path(self, path: str) -> None:
         """設定キーに対応する YAML の行へ CHANGED 色を付ける。"""
-        leaf = path.rsplit(".", 1)[-1]
+        parts = path.split(".")
+        parent_keys: list[tuple[int, str]] = []
         block = self.yaml_preview.document().firstBlock()
         while block.isValid():
-            if block.text().lstrip().startswith(f"{leaf}:"):
-                selection = QTextEdit.ExtraSelection()
-                selection.cursor = self.yaml_preview.textCursor()
-                selection.cursor.setPosition(block.position())
-                selection.cursor.movePosition(
-                    selection.cursor.MoveOperation.EndOfBlock, selection.cursor.MoveMode.KeepAnchor
-                )
-                selection.format.setBackground(QColor(Color.CHANGED))
-                self.yaml_preview.setExtraSelections([selection])
-                return
+            line = block.text()
+            stripped = line.lstrip()
+            if ":" in stripped:
+                indent = len(line) - len(stripped)
+                key, _separator, _value = stripped.partition(":")
+                while parent_keys and parent_keys[-1][0] >= indent:
+                    parent_keys.pop()
+                current_path = [name for _level, name in parent_keys] + [key.strip()]
+                if current_path == parts:
+                    selection = QTextEdit.ExtraSelection()
+                    selection.cursor = self.yaml_preview.textCursor()
+                    selection.cursor.setPosition(block.position())
+                    selection.cursor.movePosition(
+                        selection.cursor.MoveOperation.EndOfBlock,
+                        selection.cursor.MoveMode.KeepAnchor,
+                    )
+                    selection.format.setBackground(QColor(Color.CHANGED))
+                    self.yaml_preview.setExtraSelections([selection])
+                    return
+                parent_keys.append((indent, key.strip()))
             block = block.next()
         self.yaml_preview.setExtraSelections([])
 
@@ -839,6 +926,8 @@ class TrainingPage(BasePage):
 
     def validate_config(self) -> list[dict[str, str]]:
         """Backend 検証結果をダイアログに表示する。"""
+        if self._queue_edit_id:
+            return []
         self.config = self._collect_config()
         results = self.ctx.backend.validate_experiment_config(self.config)
         self._validation_results = results
@@ -863,6 +952,8 @@ class TrainingPage(BasePage):
 
     def save_draft(self) -> str:
         """下書きを保存し、実験 ID を保持する。"""
+        if self._queue_edit_id:
+            return ""
         self.config = self._collect_config()
         if self._has_non_draft_id(self.config["experiment"]["id"]):
             QMessageBox.warning(self, "下書き保存", "下書き以外の実験識別子は使用できません。")
@@ -887,9 +978,8 @@ class TrainingPage(BasePage):
                 QMessageBox.warning(self, "キューに保存できません", str(error))
                 self._sync_queue_edit_state()
                 return
-            self._queue_edit_id = None
-            self._queue_edit_unavailable = False
             self.ctx.status.show_message(f"キューの {expid} を保存しました")
+            self._restore_before_queue_edit()
             self.ctx.navigator.navigate(PageId.TRAINING_QUEUE, select=expid)
         else:
             self.save_draft()
@@ -900,8 +990,7 @@ class TrainingPage(BasePage):
                 self._restore_before_queue_edit()
                 self.ctx.navigator.navigate(PageId.TRAINING)
                 return
-            self._queue_edit_id = None
-            self._queue_edit_unavailable = False
+            self._restore_before_queue_edit()
             self.ctx.navigator.navigate(PageId.TRAINING_QUEUE)
 
     def _sync_queue_edit_state(self, *_args) -> None:
@@ -921,28 +1010,153 @@ class TrainingPage(BasePage):
             message = f"{self._queue_edit_id} は実行を開始したため、編集を保存できません"
         self.queue_edit_banner.setText(message)
         self.save_button.setEnabled(False)
+        self.training_actions["save"].setEnabled(False)
         self.cancel_queue_edit_button.setText("閉じる")
 
     def _restore_before_queue_edit(self) -> None:
         """詳細編集前の学習設定を表示へ戻す。"""
+        snapshot = self._pre_queue_edit
         self._queue_edit_id = None
         self._queue_edit_unavailable = False
         self.save_button.setEnabled(True)
+        self.training_actions["save"].setEnabled(True)
         self.training_actions["save"].setText("下書き保存")
         self.cancel_queue_edit_button.setText("キャンセル")
-        if self._pre_queue_edit is not None:
-            self.config, self._edit_id = copy.deepcopy(self._pre_queue_edit)
+        self._set_queue_edit_actions(False)
+        if snapshot is not None:
+            self.config = copy.deepcopy(snapshot["config"])
+            self._edit_id = snapshot["edit_id"]
             self._pre_queue_edit = None
-            self._configs_by_model.clear()
-            self._build_form()
+            self._apply_config_to_form(self.config)
+            self._configs_by_model = copy.deepcopy(snapshot["configs_by_model"])
             self.experiment_id.setText(self.config["experiment"].get("id") or "")
+            self.preview_action.setChecked(snapshot["yaml_visible"])
             self._refresh_yaml()
+            self.scroll.verticalScrollBar().setValue(snapshot["scroll_value"])
+            for name, state in snapshot["actions"].items():
+                action = self.training_actions[name]
+                action.setEnabled(state["enabled"])
+                action.setToolTip(state["tooltip"])
+                action.setStatusTip(state["status_tip"])
+            self.training_actions["save"].setText(snapshot["save_action_text"])
+            self.save_button.setEnabled(snapshot["save_button_enabled"])
+            self.cancel_queue_edit_button.setText(snapshot["cancel_button_text"])
+            focus_path = snapshot["focus_path"]
+            if focus_path:
+                focus_widget = next(
+                    (
+                        widget
+                        for widget in self.fields.values()
+                        if self._config_path_for_widget(widget) == focus_path
+                    ),
+                    None,
+                )
+                if focus_widget is None:
+                    focus_widget = next(
+                        (
+                            widget
+                            for group in self._model_widgets.values()
+                            for widget in group.values()
+                            if self._config_path_for_widget(widget) == focus_path
+                        ),
+                        None,
+                    )
+                if focus_widget is not None:
+                    focus_widget.setFocus(Qt.FocusReason.OtherFocusReason)
+                    cursor_position = snapshot["cursor_position"]
+                    if cursor_position is not None and hasattr(focus_widget, "setCursorPosition"):
+                        focus_widget.setCursorPosition(cursor_position)
+                    self._highlight_yaml_path(focus_path)
         self.queue_edit_banner.hide()
         self.validate_button.setVisible(True)
         self.queue_button.setVisible(True)
         self.start_button.setVisible(True)
         self.cancel_queue_edit_button.hide()
-        self.refresh_next_identifier()
+        if snapshot is None:
+            self.refresh_next_identifier()
+
+    def _capture_queue_edit_snapshot(self) -> dict[str, Any]:
+        focus_widget = QApplication.focusWidget()
+        if focus_widget is not None and not (
+            focus_widget is self.form_host or self.form_host.isAncestorOf(focus_widget)
+        ):
+            focus_widget = None
+        cursor_widget = focus_widget
+        if cursor_widget is not None and not hasattr(cursor_widget, "cursorPosition"):
+            editor = getattr(cursor_widget, "lineEdit", None)
+            cursor_widget = editor() if callable(editor) else None
+        cursor_position = (
+            cursor_widget.cursorPosition()
+            if cursor_widget is not None and hasattr(cursor_widget, "cursorPosition")
+            else None
+        )
+        return {
+            "config": copy.deepcopy(self._collect_config()),
+            "edit_id": self._edit_id,
+            "configs_by_model": copy.deepcopy(self._configs_by_model),
+            "yaml_visible": self.preview_action.isChecked(),
+            "scroll_value": self.scroll.verticalScrollBar().value(),
+            "focus_path": self._config_path_for_widget(focus_widget),
+            "cursor_position": cursor_position,
+            "actions": {
+                name: {
+                    "enabled": action.isEnabled(),
+                    "tooltip": action.toolTip(),
+                    "status_tip": action.statusTip(),
+                }
+                for name, action in self.training_actions.items()
+            },
+            "save_action_text": self.training_actions["save"].text(),
+            "save_button_enabled": self.save_button.isEnabled(),
+            "cancel_button_text": self.cancel_queue_edit_button.text(),
+        }
+
+    def _apply_config_to_form(self, config: dict[str, Any]) -> None:
+        """既存の入力部品を保ち、指定設定をフォームへ反映する。"""
+        model_type = config["model"]["type"]
+        self.model_type.blockSignals(True)
+        self.model_type.setCurrentIndex(max(0, self.model_type.findData(model_type)))
+        self.model_type.blockSignals(False)
+        self._active_model = model_type
+        self._update_model_stack()
+        self.study.setCurrentText(config["experiment"].get("study_id", "foam_study"))
+        self.description_edit.setText(config["experiment"].get("description", ""))
+        self.experiment_id.setText(config["experiment"].get("id", ""))
+        widgets = dict(self.fields)
+        widgets.update(self._model_widgets.get(model_type, {}))
+        for path, widget in widgets.items():
+            value: Any = config
+            for part in path.split("."):
+                value = value.get(part) if isinstance(value, dict) else None
+            if value is None:
+                continue
+            widget.blockSignals(True)
+            if isinstance(widget, QComboBox):
+                index = widget.findData(value)
+                if index >= 0:
+                    widget.setCurrentIndex(index)
+            elif isinstance(widget, QCheckBox):
+                widget.setChecked(bool(value))
+            elif isinstance(widget, QSpinBox | QDoubleSpinBox):
+                widget.setValue(value)
+            elif isinstance(widget, QLineEdit):
+                widget.setText(
+                    ", ".join(map(str, value)) if isinstance(value, list) else str(value)
+                )
+            widget.blockSignals(False)
+        self._clear_validation_results()
+        self._update_estimate()
+        self._update_summary()
+        self._update_normalization_note()
+        self._refresh_yaml()
+
+    def _set_queue_edit_actions(self, editing: bool) -> None:
+        message = "キューの行を編集中です。『キューに保存』か『キャンセル』で終えてください"
+        for name in ("validate", "queue", "start", "new"):
+            action = self.training_actions[name]
+            action.setEnabled(not editing)
+            action.setToolTip(message if editing else "")
+            action.setStatusTip(message if editing else "")
 
     def refresh_next_identifier(self) -> None:
         """既存実験やキュー追加と衝突しない次の識別子を表示する。"""
@@ -963,6 +1177,8 @@ class TrainingPage(BasePage):
 
     def start_training(self, confirm: bool = True) -> str | None:
         """学習を登録してジョブを開始し、実験一覧へ移る。"""
+        if self._queue_edit_id:
+            return None
         self.config = self._collect_config()
         results = self.ctx.backend.validate_experiment_config(self.config)
         errors = [item for item in results if item["level"] == "error"]
@@ -1071,6 +1287,8 @@ class TrainingPage(BasePage):
 
     def enqueue_config(self) -> str | None:
         """現在の設定を検証してキュー末尾へ登録する。"""
+        if self._queue_edit_id:
+            return None
         if self._edit_id:
             QMessageBox.warning(
                 self, "キューに追加", "編集中のキュー項目は「キューに保存」で更新してください。"
@@ -1099,11 +1317,12 @@ class TrainingPage(BasePage):
         edit = params.get("edit")
         queue_edit = params.get("edit_queue")
         if queue_edit:
-            self._pre_queue_edit = (copy.deepcopy(self._collect_config()), self._edit_id)
+            self._pre_queue_edit = self._capture_queue_edit_snapshot()
             self._queue_edit_unavailable = False
         elif self._queue_edit_id:
             self._restore_before_queue_edit()
         self._queue_edit_id = queue_edit
+        self._set_queue_edit_actions(bool(queue_edit))
         self.save_button.setEnabled(True)
         self.training_actions["save"].setText("キューに保存" if queue_edit else "下書き保存")
         self.cancel_queue_edit_button.setText("キャンセル")
@@ -1117,8 +1336,7 @@ class TrainingPage(BasePage):
             self.config["experiment"]["id"] = queue_edit
             self._edit_id = None
             self._configs_by_model.clear()
-            self._build_form()
-            self.experiment_id.setText(queue_edit)
+            self._apply_config_to_form(self.config)
             banner = getattr(self, "queue_edit_banner", None)
             if banner is None:
                 banner = QLabel()
