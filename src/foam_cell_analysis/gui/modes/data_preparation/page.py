@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
@@ -317,6 +318,8 @@ class DataPreparationPage(BasePage):
         self.model = DataPreparationTableModel(self)
         self._selected_ids: list[str] = []
         self._syncing_selection = False
+        self._selection_invalidated = False
+        self._current_item_id: str | None = None
         root = self.content_layout
         root.setSpacing(6)
         self.base_label = QLabel()
@@ -452,7 +455,7 @@ class DataPreparationPage(BasePage):
         set_style(self.preview_details, role="note")
         preview.addWidget(self.preview_details)
         self.image_view = ImageView()
-        self.image_view.setMinimumWidth(300)
+        self.image_view.setMinimumWidth(155)
         self.display_toggle = DisplayToggle(ctx.display)
         self.display_toggle.alternate_selected.connect(self._show_preview)
         preview.addWidget(self.display_toggle)
@@ -466,7 +469,11 @@ class DataPreparationPage(BasePage):
         edits_layout.setContentsMargins(10, 8, 10, 8)
         self.selection_note = QLabel("選択中の 0 件を変更")
         edits_layout.addWidget(self.selection_note)
-        edits = QHBoxLayout()
+        edits = QGridLayout()
+        edits.setHorizontalSpacing(8)
+        edits.setVerticalSpacing(4)
+        self._edit_grid_layout = edits
+        self._edit_pair_layouts = []
         self.usage_combo = QComboBox()
         for key, label in USAGE_TEXT.items():
             self.usage_combo.addItem(label, key)
@@ -488,34 +495,41 @@ class DataPreparationPage(BasePage):
                 lambda _index, control=combo: self._edit_selection(control)
             )
         self.edit_combos = {}
-        for label, combo in (
-            ("用途", self.usage_combo),
-            ("分類", self.class_combo),
-            ("品質", self.quality_combo),
-            ("マスク", self.mask_combo),
+        for position, (label, combo) in enumerate(
+            (
+                ("用途", self.usage_combo),
+                ("分類", self.class_combo),
+                ("品質", self.quality_combo),
+                ("マスク", self.mask_combo),
+            )
         ):
             pair = QHBoxLayout()
             pair.setSpacing(6)
             pair.addWidget(QLabel(label))
             pair.addWidget(combo)
-            edits.addLayout(pair)
+            self._edit_pair_layouts.append(pair)
+            edits.addLayout(pair, 0, position)
             self.edit_combos[label] = combo
         edits_layout.addLayout(edits)
         preview.addWidget(edits_box)
         self.splitter.addWidget(self.preview_panel)
         self.splitter.setStretchFactor(0, 3)
         self.splitter.setStretchFactor(1, 2)
-        self.splitter.setSizes([900, 588])
+        self.preview_panel.setMinimumWidth(220)
+        self.splitter.setSizes([1050, 438])
         root.addWidget(self.splitter, 1)
         self._make_menus()
         self.table.selectionModel().selectionChanged.connect(
             lambda *_: self._selection_changed(self.table)
         )
+        self.table.selectionModel().currentChanged.connect(self._current_changed)
         self.table.installEventFilter(self)
         self.table.viewport().installEventFilter(self)
         self._install_filter_shortcuts()
         self.image_view.installEventFilter(self)
         self.image_view.viewport().installEventFilter(self)
+        self.preview_panel.installEventFilter(self)
+        self._layout_preview_edits()
         bind_button_action(self.import_button, self.menu_action_map["import"])
         bind_button_action(self.auto_button, self.menu_action_map["auto_triage"])
         bind_button_action(self.finalize_button, self.menu_action_map["finalize"])
@@ -565,6 +579,7 @@ class DataPreparationPage(BasePage):
             self._saving_column_widths = False
             fit_table_columns(self.table)
             header.resizeSection(0, 34)
+            header.resizeSection(1, max(header.sectionSizeHint(1), header.sectionSize(1) - 6))
             header.resizeSection(3, max(header.sectionSize(3), 96))
             self._saving_column_widths = True
 
@@ -616,8 +631,6 @@ class DataPreparationPage(BasePage):
             ("export_excel", self.export_excel),
             ("import_excel", self.import_excel),
             ("finalize", self.finalize),
-            ("undo", self.undo_stack.undo),
-            ("redo", self.undo_stack.redo),
             ("search", self.search.setFocus),
         ):
             shortcut = QAction(self)
@@ -637,12 +650,21 @@ class DataPreparationPage(BasePage):
             action = QAction(self)
             action.setShortcut(QKeySequence(self.shortcuts[name]))
             self._shortcut_actions[name] = action
-        self._shortcut_actions["select_all"] = self._add_key_action(
-            "select_all", lambda: self.table.selectAll()
-        )
-        self._shortcut_actions["clear_selection"] = self._add_key_action(
-            "clear_selection", self._clear_selection_or_filter
-        )
+        self._scoped_shortcuts = []
+        for name, callback, targets in (
+            ("undo", self.undo_stack.undo, (self.table, self.image_view)),
+            ("redo", self.undo_stack.redo, (self.table, self.image_view)),
+            ("select_all", self.table.selectAll, (self.table,)),
+            ("clear_selection", self._clear_selection_or_filter, (self.table,)),
+        ):
+            action = QAction(self)
+            action.triggered.connect(callback)
+            self._shortcut_actions[name] = action
+            for target in targets:
+                shortcut = QShortcut(QKeySequence(self.shortcuts[name]), target)
+                shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+                shortcut.activated.connect(callback)
+                self._scoped_shortcuts.append(shortcut)
         labels = {
             "import": "画像を取り込む…",
             "auto_triage": "自動振り分け…",
@@ -784,10 +806,6 @@ class DataPreparationPage(BasePage):
             action = QAction(f"{label}\t{self.shortcuts.display_key(self.shortcuts[key])}", self)
             action.triggered.connect(callback)
             self.image_actions[key] = action
-        for key, label in (("changed", "変更あり"),):
-            action = QAction(label, self)
-            action.triggered.connect(lambda _checked=False, value=key: self._filter_usage(value))
-            self.filter_menu.addAction(action)
         self.context_menu = QMenu(self)
         for action in (
             self.usage_menu.menuAction(),
@@ -972,7 +990,17 @@ class DataPreparationPage(BasePage):
     def _shortcuts_changed(self) -> None:
         """共有キー変更を画面の操作・表示へ反映する。"""
         for name, action in self._shortcut_actions.items():
-            action.setShortcut(QKeySequence(self.shortcuts[name]))
+            action.setShortcut(
+                QKeySequence(self.shortcuts[name])
+                if name not in {"undo", "redo", "select_all", "clear_selection"}
+                else QKeySequence()
+            )
+        for shortcut, name in zip(
+            self._scoped_shortcuts,
+            ("undo", "undo", "redo", "redo", "select_all", "clear_selection"),
+            strict=True,
+        ):
+            shortcut.setKey(QKeySequence(self.shortcuts[name]))
         for name in self.shortcuts.mapping:
             if name in self.menu_action_map:
                 label = self.menu_action_map[name].text().split("\t", 1)[0]
@@ -1064,6 +1092,10 @@ class DataPreparationPage(BasePage):
             for index in self.table.selectionModel().selectedRows()
             if (item := self.model.item_at(index.row())) is not None
         ]
+        if ids:
+            self._selection_invalidated = False
+        elif self._selected_ids:
+            self._selection_invalidated = True
         self._selected_ids = ids
         self.selection_note.setText(f"選択中の {len(ids)} 件を変更")
         self.set_menu_action_enabled(self.mask_revision_action, bool(ids))
@@ -1077,6 +1109,12 @@ class DataPreparationPage(BasePage):
             action.setToolTip("作業中データの行を選ぶと使えます" if not ids else "")
         self._show_preview()
         self._syncing_selection = False
+
+    def _current_changed(self, current, _previous) -> None:
+        if self._syncing_selection or not current.isValid():
+            return
+        item = self.model.item_at(current.row())
+        self._current_item_id = item.item_id if item else None
 
     def _edit_selection(self, control) -> None:
         if not self._selected_ids or control.currentIndex() < 0:
@@ -1166,8 +1204,11 @@ class DataPreparationPage(BasePage):
             "excluded": {"excluded"},
         }
         self.model.usages = mapping[name]
+        selected_before = self._selected_ids[:]
+        current_before = self._current_item_id
         self.refresh_views()
-        self._sync_selection_to_visible()
+        self._selected_ids = selected_before
+        self._sync_selection_to_visible(current_before)
         for key in ("all", "unassigned", "train", "val", "excluded"):
             self.chips[key].setChecked(key == name)
         self._sync_filter_menu()
@@ -1175,15 +1216,21 @@ class DataPreparationPage(BasePage):
     def _set_error_filter(self, enabled: bool) -> None:
         self.model.errors_only = enabled
         self.error_filter.setChecked(enabled)
+        selected_before = self._selected_ids[:]
+        current_before = self._current_item_id
         self.refresh_views()
-        self._sync_selection_to_visible()
+        self._selected_ids = selected_before
+        self._sync_selection_to_visible(current_before)
         self._sync_filter_menu()
 
     def _set_changed_filter(self, enabled: bool) -> None:
         self.model.changed_only = enabled
         self.changed_filter.setChecked(enabled)
+        selected_before = self._selected_ids[:]
+        current_before = self._current_item_id
         self.refresh_views()
-        self._sync_selection_to_visible()
+        self._selected_ids = selected_before
+        self._sync_selection_to_visible(current_before)
         self._sync_filter_menu()
 
     def _classification_filter_changed(self) -> None:
@@ -1207,8 +1254,12 @@ class DataPreparationPage(BasePage):
         self.filter_all_classes_action.blockSignals(True)
         self.filter_all_classes_action.setChecked(not selected)
         self.filter_all_classes_action.blockSignals(False)
+        selected_before = self._selected_ids[:]
+        current_before = self._current_item_id
+        selected_before = self._selected_ids[:]
         self.refresh_views()
-        self._sync_selection_to_visible()
+        self._selected_ids = selected_before
+        self._sync_selection_to_visible(current_before)
         self._sync_filter_menu()
 
     def _sync_filter_menu(self) -> None:
@@ -1251,22 +1302,42 @@ class DataPreparationPage(BasePage):
 
     def _source_changed(self, index: int) -> None:
         self.model.source_folder = self.source_combo.currentData()
+        selected_before = self._selected_ids[:]
+        current_before = self._current_item_id
         self.refresh_views()
-        self._sync_selection_to_visible()
+        self._selected_ids = selected_before
+        self._sync_selection_to_visible(current_before)
 
     def _search_changed(self, text: str) -> None:
         self.model.query = text
+        selected_before = self._selected_ids[:]
+        current_before = self._current_item_id
         self.refresh_views()
-        self._sync_selection_to_visible()
+        self._selected_ids = selected_before
+        self._sync_selection_to_visible(current_before)
 
-    def _sync_selection_to_visible(self) -> None:
+    def _sync_selection_to_visible(self, current_id: str | None = None) -> None:
         """絞り込み後に選択とプレビューを表示行だけへそろえる。"""
         visible = self.model.visible_items()
         visible_ids = {item.item_id for item in visible}
-        self._selected_ids = [item_id for item_id in self._selected_ids if item_id in visible_ids]
-        if not self._selected_ids and visible:
+        scroll_value = self.table.verticalScrollBar().value()
+        if current_id is not None:
+            self._current_item_id = current_id
+        previous_ids = self._selected_ids[:]
+        self._selected_ids = [item_id for item_id in previous_ids if item_id in visible_ids]
+        if previous_ids and not self._selected_ids:
+            self._selection_invalidated = True
+        elif self._selected_ids:
+            self._selection_invalidated = False
+        if (
+            not self._selected_ids
+            and visible
+            and not self._selection_invalidated
+            and not previous_ids
+        ):
             self._selected_ids = [visible[0].item_id]
         self._restore_table_selection()
+        self.table.verticalScrollBar().setValue(scroll_value)
         self._show_preview()
 
     def _restore_table_selection(self) -> None:
@@ -1289,15 +1360,24 @@ class DataPreparationPage(BasePage):
         self._syncing_selection = True
         try:
             model.select(selection, QItemSelectionModel.SelectionFlag.ClearAndSelect)
-            first = rows.get(self._selected_ids[0]) if self._selected_ids else None
-            if first is not None:
+            selected_ids = set(self._selected_ids)
+            current_id = self._current_item_id
+            current_row = rows.get(current_id) if current_id in selected_ids else None
+            if current_row is None and self._selected_ids:
+                current_id = self._selected_ids[0]
+                current_row = rows.get(current_id)
+            if current_row is not None:
                 model.setCurrentIndex(
                     self.model.index(
-                        first,
+                        current_row,
                         model.currentIndex().column() if model.currentIndex().isValid() else 0,
                     ),
                     QItemSelectionModel.SelectionFlag.NoUpdate,
                 )
+                self._current_item_id = current_id
+            elif not self._selected_ids:
+                model.clearCurrentIndex()
+                self._current_item_id = None
         finally:
             self._syncing_selection = False
         self.selection_note.setText(f"選択中の {len(self._selected_ids)} 件を変更")
@@ -1308,6 +1388,7 @@ class DataPreparationPage(BasePage):
         self.table.clearSelection()
         self.table.selectRow(row)
         self._selected_ids = [item_id]
+        self._selection_invalidated = False
         self._syncing_selection = False
 
     def refresh_views(self) -> None:
@@ -1319,6 +1400,8 @@ class DataPreparationPage(BasePage):
     def refresh(
         self, item_ids: list[str] | None = None, *, filter_membership_changed: bool = False
     ) -> None:
+        scroll_value = self.table.verticalScrollBar().value()
+        previous_ids = self._selected_ids[:]
         self._refresh_classification_menu()
         self._refresh_filter_classification_menu()
         self.items = self.ctx.backend.get_working_items()
@@ -1385,22 +1468,22 @@ class DataPreparationPage(BasePage):
         set_style(self.finalize_error_button, usage="error")
         self.finalize_error_button.setVisible(bool(errors))
         self._sync_filter_menu()
-        if not self._selected_ids and self.model.visible_items():
+        visible_ids = {item.item_id for item in self.model.visible_items()}
+        self._selected_ids = [item_id for item_id in self._selected_ids if item_id in visible_ids]
+        if previous_ids and not self._selected_ids:
+            self._selection_invalidated = True
+        elif self._selected_ids:
+            self._selection_invalidated = False
+        if (
+            not self._selected_ids
+            and self.model.visible_items()
+            and not self._selection_invalidated
+            and not previous_ids
+        ):
             self._selected_ids = [self.model.visible_items()[0].item_id]
-        if self._selected_ids:
-            first = next(
-                (
-                    item
-                    for item in self.model.visible_items()
-                    if item.item_id == self._selected_ids[0]
-                ),
-                None,
-            )
-            if first:
-                self._restore_table_selection()
-                self._show_preview()
-            else:
-                self._sync_selection_to_visible()
+        self._restore_table_selection()
+        self._show_preview()
+        self.table.verticalScrollBar().setValue(scroll_value)
         self.set_menu_action_enabled(self.mask_revision_action, bool(self._selected_ids))
         self.set_menu_action_enabled(
             self.archive_action, bool(self.ctx.backend.list_dataset_versions())
@@ -1691,6 +1774,9 @@ class DataPreparationPage(BasePage):
             )
 
     def eventFilter(self, watched, event) -> bool:
+        if watched is self.preview_panel and event.type() == QEvent.Type.Resize:
+            self._layout_preview_edits(event.size().width())
+            return super().eventFilter(watched, event)
         if event.type() == QEvent.Type.KeyPress and watched in (
             self.table,
             self.table.viewport(),
@@ -1763,6 +1849,15 @@ class DataPreparationPage(BasePage):
                             )
                         return True
         return super().eventFilter(watched, event)
+
+    def _layout_preview_edits(self, width: int | None = None) -> None:
+        if not hasattr(self, "_edit_grid_layout"):
+            return
+        available = width if width is not None else self.preview_panel.width()
+        per_row = 2 if available < 420 else 4
+        for index, pair in enumerate(self._edit_pair_layouts):
+            self._edit_grid_layout.removeItem(pair)
+            self._edit_grid_layout.addLayout(pair, index // per_row, index % per_row)
 
     def select_next_unassigned(self, direction: int = 1) -> None:
         """次または前の未振り分け画像へ選択を移す。"""

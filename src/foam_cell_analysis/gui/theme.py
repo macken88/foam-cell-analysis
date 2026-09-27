@@ -91,6 +91,7 @@ def build_stylesheet() -> str:
         f"border: 1px solid {c.CONTROL_RULE}; border-radius: 3px; "
         "min-height: 28px; padding: 0 12px; }",
         f"QPushButton:hover {{ background: {c.IDLE_BG}; }}",
+        f"QPushButton#trainingPreviewButton:checked {{ background: {c.IDLE_BG}; }}",
         f"QPushButton:disabled {{ color: {c.DISABLED}; border-color: {c.RULE_SOFT}; }}",
         f"QPushButton[role='filterToggle']:checked[usage='error'] "
         f"{{ background: {c.ERROR_BG}; color: {c.ERROR}; border-color: {c.ERROR}; }}",
@@ -127,8 +128,16 @@ def build_stylesheet() -> str:
         f"QComboBox[state='changed'] {{ background: {c.CHANGED}; }}",
         f"QGroupBox {{ border: 0; border-top: 1px solid {c.RULE}; "
         "margin-top: 12px; padding-top: 8px; }",
+        "QGroupBox[trainingSection='true'] { margin-top: 22px; padding-top: 8px; }",
         f"QGroupBox::title {{ subcontrol-origin: margin; left: 0; "
         f"padding-right: 6px; color: {c.GRAPHITE}; }}",
+        "QGroupBox[trainingSection='true']::title { font-size: 11pt; font-weight: 600; }",
+        f"QLabel[role='sectionHeading'] {{ color: {c.GRAPHITE}; "
+        f"font-family: '{body_font(12).family()}'; font-size: 12pt; font-weight: 700; }}",
+        f"QFrame[role='sectionHeadingRule'] {{ background: {c.RULE}; "
+        "max-height: 1px; border: 0; }",
+        f"QFrame#trainingSummaryCard {{ background: {c.SLIDE}; border: 1px solid {c.RULE}; "
+        f"border-left: 4px solid {c.GRAPHITE}; }}",
         f"QStatusBar {{ background: {c.STATUS_BG}; color: {c.SLATE}; }}",
         f"QFrame#pipelinePanel {{ background: {c.SLIDE}; border: 1px solid {c.RULE}; }}",
         "QFrame#pipelineStage { background: transparent; border: 0; }",

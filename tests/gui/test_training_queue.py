@@ -86,6 +86,11 @@ def test_queue_row_opens_training_editor_save_and_cancel(shell):
     queue.edit_row(0)
     editor = shell.page(PageId.TRAINING)
     assert editor.queue_edit_banner.text() == f"キューの {queued.experiment_id} を編集中"
+    assert editor.training_actions["save"].text() == "キューに保存"
+    assert editor.cancel_queue_edit_button.text() == "キャンセル"
+    assert editor.validate_button.isHidden()
+    assert editor.queue_button.isHidden()
+    assert editor.start_button.isHidden()
     editor.fields["training.epochs"].setValue(7)
     editor._save_button_clicked()
     assert backend.get_experiment(queued.experiment_id).config.values["training"]["epochs"] == 7
@@ -141,6 +146,10 @@ def test_queue_failure_does_not_block_following_item(shell):
         QTest.qWait(100)
         statuses = [backend.get_experiment(item.experiment_id).status for item in entries]
     assert statuses == ["failed", "completed"]
+    for _ in range(100):
+        if not shell.ctx.queue_controller.executing:
+            break
+        QTest.qWait(10)
     assert not shell.ctx.queue_controller.executing
     failed_id = entries[0].experiment_id
     queue.clear_finished()

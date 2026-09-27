@@ -1,6 +1,14 @@
 """フォーム用の共通セクション。"""
 
-from PySide6.QtWidgets import QFormLayout, QGroupBox, QToolButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QFormLayout,
+    QFrame,
+    QGroupBox,
+    QLabel,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 
 class FormSection(QGroupBox):
@@ -8,7 +16,32 @@ class FormSection(QGroupBox):
 
     def __init__(self, title: str, parent=None) -> None:
         super().__init__(title, parent)
-        self.form = QFormLayout(self)
+        self._section_title = title
+        super().setTitle("")
+        self.section_layout = QVBoxLayout(self)
+        self.section_layout.setContentsMargins(0, 0, 0, 0)
+        self.heading_label = QLabel(title, self)
+        self.heading_label.setProperty("role", "sectionHeading")
+        self.heading_rule = QFrame(self)
+        self.heading_rule.setFrameShape(QFrame.Shape.HLine)
+        self.heading_rule.setProperty("role", "sectionHeadingRule")
+        self.heading_label.hide()
+        self.heading_rule.hide()
+        self.section_layout.addWidget(self.heading_label)
+        self.section_layout.addWidget(self.heading_rule)
+        self.form = QFormLayout()
+        self.section_layout.addLayout(self.form)
+
+    def title(self) -> str:
+        return self._section_title
+
+    def setTitle(self, title: str) -> None:
+        self._section_title = title
+        self.heading_label.setText(title)
+
+    def set_prominent_heading(self, enabled: bool = True) -> None:
+        self.heading_label.setVisible(enabled)
+        self.heading_rule.setVisible(enabled)
 
     def add_row(self, label: str, widget: QWidget, tooltip: str = "") -> None:
         """入力欄を追加し、内部キーをツールチップに設定する。"""

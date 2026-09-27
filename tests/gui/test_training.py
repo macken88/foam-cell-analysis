@@ -2,6 +2,7 @@
 
 import copy
 
+from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QLabel, QLineEdit, QMessageBox
 
@@ -455,3 +456,132 @@ def test_used_augmentation_profile_is_saved_as_new_version(mock_backend):
         == original_probability
     )
     assert "exp_0042" in mock_backend.get_augmentation_profile("aug_v003").used_by_experiments
+
+
+def test_training_summary_tracks_dataset_cv_model_and_epochs(shell, qapp):
+    page = shell.page(PageId.TRAINING)
+    assert hasattr(page, "summary_label")
+    assert page.summary_label.text().find("データ") >= 0
+    dataset = page.fields["data.dataset_version"]
+    dataset.setCurrentIndex(min(1, dataset.count() - 1))
+    folds = page.fields["data.cv.n_folds"]
+    folds.setValue(folds.value() + 1)
+    epochs = page.fields["training.epochs"]
+    epochs.setValue(epochs.value() + 1)
+    page.model_type.setCurrentIndex(1)
+    qapp.processEvents()
+    assert dataset.currentText() in page.summary_label.text()
+    assert f"{folds.value()} 分割" in page.summary_label.text()
+    assert f"{epochs.value()} エポック" in page.summary_label.text()
+    assert "Cellpose" in page.summary_label.text()
+
+
+def test_training_yaml_preview_toggles_and_persists(shell, qapp):
+    from foam_cell_analysis.gui.settings import app_settings
+
+    page = shell.page(PageId.TRAINING)
+    assert page.preview_panel.isHidden()
+    QTest.mouseClick(page.preview_button, Qt.MouseButton.LeftButton)
+    assert not page.preview_panel.isHidden()
+    assert page.preview_action.isChecked()
+    assert page.preview_button.isChecked()
+    page.preview_action.setChecked(False)
+    assert page.preview_panel.isHidden()
+    assert not page.preview_button.isChecked()
+    assert app_settings().value("training/yamlPreview", False, type=bool) is False
+
+
+def test_training_layout_reflows_without_rebuilding_controls(shell, qapp):
+    page = shell.page(PageId.TRAINING)
+    page.preview_action.setChecked(False)
+    epochs = page.fields["training.epochs"]
+    epochs.setValue(37)
+    config_before = page._collect_config()
+    yaml_before = page.yaml_preview.toPlainText()
+    page._update_form_columns(1200)
+    assert page._two_columns
+    scroll = page.scroll.verticalScrollBar()
+    scroll.setValue(min(40, scroll.maximum()))
+    scroll_position = scroll.value()
+    epochs.setFocus()
+    page._update_form_columns(800)
+    qapp.processEvents()
+    assert not page._two_columns
+    assert page.fields["training.epochs"] is epochs
+    assert epochs.value() == 37
+    assert page.focusWidget() is epochs
+    assert scroll.value() == scroll_position
+    assert page._collect_config() == config_before
+    assert page.yaml_preview.toPlainText() == yaml_before
+
+
+def test_training_anchor_fields_remain_editable_and_sync_yaml(shell, qapp):
+    page = shell.page(PageId.TRAINING)
+    page.preview_action.setChecked(True)
+    sizes = page._model_widgets["mask_rcnn"]["model.anchors.sizes"]
+    assert isinstance(sizes, QLineEdit)
+    sizes.setText("16, 32, 64")
+    qapp.processEvents()
+    assert "sizes:\n    - 16\n    - 32\n    - 64" in page.yaml_preview.toPlainText()
+
+
+def test_training_validation_warning_is_clickable_and_clears_after_edit(shell, monkeypatch):
+    page = shell.page(PageId.TRAINING)
+    dialogs = []
+    monkeypatch.setattr(
+        "foam_cell_analysis.gui.modes.training.page.QMessageBox.information",
+        lambda _parent, title, text: dialogs.append((title, text)),
+    )
+    warning = {"level": "warning", "message": "確認用の警告"}
+    error = {"level": "error", "message": "確認用のエラー"}
+    results = [warning, error]
+    monkeypatch.setattr(shell.ctx.backend, "validate_experiment_config", lambda _config: results)
+
+    assert page.validate_config() == results
+    assert not page.validation_result_button.isHidden()
+    assert page.validation_result_button.text() == "⚠ 警告 1 件　⚠ エラー 1 件"
+    dialogs.clear()
+    QTest.mouseClick(page.validation_result_button, Qt.MouseButton.LeftButton)
+    assert dialogs == [("設定の検証", "warning: 確認用の警告\nerror: 確認用のエラー")]
+
+    page.fields["training.epochs"].setValue(page.fields["training.epochs"].value() + 1)
+    assert page.validation_result_button.isHidden()
+    assert page._validation_results == []
+
+
+def test_training_yaml_preview_menu_state_persists_and_restores(shell, qapp):
+    from foam_cell_analysis.gui.modes.training.page import TrainingPage
+    from foam_cell_analysis.gui.settings import app_settings
+
+    page = shell.page(PageId.TRAINING)
+    page.preview_action.trigger()
+    assert page.preview_action.isChecked()
+    assert app_settings().value("training/yamlPreview", False, type=bool)
+    restored = TrainingPage(shell.ctx)
+    assert restored.preview_action.isChecked()
+    assert not restored.preview_panel.isHidden()
+
+
+def test_training_only_rpn_and_roi_details_are_collapsible(shell):
+    from foam_cell_analysis.gui.widgets.form import CollapsibleSection, FormSection
+
+    page = shell.page(PageId.TRAINING)
+    labels = [section.title for section in page.findChildren(CollapsibleSection)]
+    assert labels == ["RPN 詳細設定", "ROI 詳細設定"]
+    assert not page.model_stack.isHidden()
+    assert page.fields["augmentation.profile"] is not None
+    assert page.fields["checkpoint.validation_interval"] is not None
+    assert any(
+        isinstance(widget, FormSection) and widget.title() == "途中保存モデル / 評価"
+        for widget, _column in page._form_widgets
+    )
+
+
+def test_training_action_groups_have_only_start_as_primary(shell):
+    page = shell.page(PageId.TRAINING)
+    assert page.validate_button.parentWidget() is page.validation_actions
+    assert page.save_button.parentWidget() is page.validation_actions
+    assert page.queue_button.parentWidget() is page.execution_actions
+    assert page.start_button.parentWidget() is page.execution_actions
+    assert page.start_button.property("primary") is True
+    assert page.validate_button.property("primary") is not True

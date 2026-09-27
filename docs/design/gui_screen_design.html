@@ -291,7 +291,7 @@ table.rev{font-size:.92rem}
 <tr><td>v2.5</td><td>2026-09-26</td><td>原画像と設定表示の二択、キー割り当て一覧、画像移動キー、列幅の保存、選択中の自動振り分け、単一チャンネル GUI、ラベルとコンボの間隔、版履歴サムネイル、確定不可理由の表示</td><td>実装済み</td></tr>
 <tr><td>v2.6</td><td>2026-09-26</td><td>学習をK分割交差検証・OOF評価・選択エポックでの全件最終学習へ変更。学習キュー（設定編集・順次実行・失敗後の継続）と待機実験の管理を追加。比較候補をfinal.ptに限定し、検証用mAPとOOF mAPを比較・リリースに追加。再試行の試行履歴保持、同一実験IDでの予約と候補・リリースの試行固定を追記。Mask R-CNN の画像平均・標準偏差を重みに応じて自動決定</td><td>実装済み</td></tr>
 <tr><td>v2.7</td><td>2026-09-27</td><td>設計書を現在の実装だけに整理（改良案はローカル資料 <code>docs/tasks/ui-improvement-plan.html</code> へ分離）。各節の見出しにリンク用の id を付与。末尾に重複して置かれていた交差検証・OOF の説明を 5〜8 章へ統合。モックで無効の主ボタンを灰色で描く</td><td>文書の整理</td></tr>
-<tr><td>v2.8</td><td>2026-09-27</td><td>メニューバーと主な操作の配置、データ準備の2行フィルター・複合条件、既定列と任意列の保存、状態印、件数表示、プレビュー情報と一括変更枠</td><td>実装済み</td></tr>
+<tr><td>v2.8</td><td>2026-09-27</td><td>メニューバーと主な操作の配置、データ準備の2行フィルター・複合条件・選択と現在行の保持・狭幅レイアウト、既定列と任意列の保存、状態印、件数表示、プレビュー情報と一括変更枠、学習設定のカード型要約・YAML 開閉・独立した2列・見出しとデータ拡張操作の改善</td><td>実装済み</td></tr>
 </tbody></table></div>
 <nav><strong>目次</strong><ol class="toc"><li><a href="#sec1">1. ソース構成</a></li><li><a href="#sec2">2. アプリ全体の画面構成</a> <br><a href="#sec2-6">2.6 見た目の設計（色・フォント・部品）</a> <span class="badge">v2.3</span></li><li><a href="#sec3">3. 共通部品</a></li><li><a href="#sec4">4. データ準備（PageId.DATA_PREPARATION）</a> </li><li><a href="#sec5">5. モデル学習（PageId.TRAINING）</a></li><li><a href="#sec6">6. 実験一覧（PageId.EXPERIMENTS）</a></li><li><a href="#sec7">7. モデル比較・リリース（PageId.CANDIDATES）</a></li><li><a href="#sec8">8. マスク比較（PageId.MASK_COMPARISON）</a></li><li><a href="#sec9">9. リリース済みモデル・モデル振り分け（PageId.RELEASED_MODELS）</a></li><li><a href="#sec10">10. 本番推論（PageId.INFERENCE）</a></li><li><a href="#sec11">11. MockBackend</a></li><li><a href="#sec12">12. テスト（tests/gui/）</a></li></ol></nav>
 </header>
@@ -697,11 +697,11 @@ table.rev{font-size:.92rem}
 
 <ul>
 <li><strong>メニューとタブ右端</strong>: 取り込み・自動振り分け・Excel 入出力・連続振り分け・マスク版取り込み・アーカイブはメニューバーから実行する。タブ行の右端にベース版、エラー件数とエラー行へ絞り込む操作、主ボタン「確定…」を置く。版履歴では「サムネイルで確認…」を表上部の右端に置く。</li>
-<li><strong>絞り込み</strong>: 1行目の用途ボタンは単一選択。2行目の「⚠ エラー」「変更あり」と画像分類（件数付き複数選択）、取り込み元、検索は AND で組み合わせる。用途は <code>Alt</code>+<code>1</code>〜<code>5</code>、エラーは <code>Alt</code>+<code>6</code> で切り替える。表示件数は条件に合わせて更新する。</li>
+<li><strong>絞り込み</strong>: 1行目の用途ボタンは単一選択。2行目の「⚠ エラー」「変更あり」と画像分類（件数付き複数選択）、取り込み元、検索は AND で組み合わせる。用途は <code>Alt</code>+<code>1</code>〜<code>5</code>、エラーは <code>Alt</code>+<code>6</code> で切り替える。表示件数は条件に合わせて更新する。絞り込みや用途変更で選択行がすべて表示から外れた場合は選択 0 件とし、別の先頭行を選ばない。</li>
 <li><strong>取り込み元の絞り込み（▾）</strong>: 画像ごとに記録している取り込み元フォルダ（仕様8章「元ディレクトリからの相対パス」）で絞り込む。「あるフォルダの画像だけを見直す」ときに使う。フォルダを管理する機能ではなく、絞り込みの条件の1つにすぎない。</li>
 <li><strong>中央</strong>: 作業中データは表だけを表示する。画像の一覧確認は確定ダイアログに置く。</li>
 <li><strong>表（左）</strong>: 上部に「全件数 件中 表示件数 件を表示」と「表示する列 ▾」を置く。既定列は状態の印・元ファイル名・用途・画像分類・品質。識別子・取り込み元フォルダ・マスク版は任意表示とし、表示状態を設定へ保存する。</li>
-<li><strong>プレビュー（右）</strong>: 選択中の元ファイル名を大きく表示し、下に識別子・取り込み元・マスク版を小さく表示する。原画像と設定表示を二択で切り替える。一括変更コンボは「選択中の N 件を変更」の枠にまとめる。</li>
+<li><strong>プレビュー（右）</strong>: 選択中の元ファイル名を大きく表示し、下に識別子・取り込み元・マスク版を小さく表示する。原画像と設定表示を二択で切り替える。一括変更コンボは「選択中の N 件を変更」の枠にまとめ、狭い幅では 2 行に折り返す。表または画像プレビューを操作中は現在行・スクロール位置を保ち、入力部品にフォーカスがある間は表操作用の編集ショートカットを実行しない。</li>
 <li><strong>表の列幅</strong>: 幅は設定に保存し、列の表示・非表示と組み合わせて次回復元する。古い列幅設定は無視し、既定幅で表示する。ファイル名列を伸ばして余白を抑える。</li>
 <li><strong>確定不可の理由</strong>: 整合性エラー件数をタブ行の確定ボタン左に表示する。押すとエラーのある行だけに絞り込む。</li>
 </ul>
@@ -1025,77 +1025,31 @@ table.rev{font-size:.92rem}
 <h2>5. モデル学習（<code>PageId.TRAINING</code>）</h2>
 <p>仕様: モデル学習モード仕様 3〜7章、9〜10章、14章。</p>
 <h3 id="sec5-1">5.1 レイアウト</h3>
-<div class="mock"><div class="mock-title">モデル学習 — 気泡インスタンスセグメンテーション</div>
-<div class="mock-body">
-<div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span class="on">学習設定</span><span>学習キュー</span><span>実験一覧</span></span><span class="spacer"></span></div>
-<div class="m-split" style="grid-template-columns:7fr 3fr">
-<div class="panel">
-<p class="ptitle" style="border-bottom:1px solid var(--rule);padding-bottom:2px">実験</p>
-<div class="row"><span>実験群</span><span class="sel-combo" style="max-width:260px">入力画像サイズ比較 ▾</span></div>
-<div class="row"><span>実験識別子</span><span class="input ro num" style="max-width:140px">exp_0047</span></div>
-<p class="ptitle" style="border-bottom:1px solid var(--rule);padding-bottom:2px;margin-top:10px">データセット</p>
-<div class="row"><span>データセット版</span><span class="sel-combo num" style="max-width:160px">train_v004 ▾</span></div>
-<div class="row"><span>画像分類 / 品質条件</span><span><span class="sel-combo">分類A ▾</span>　<span class="sel-combo">良・可 ▾</span></span></div>
-<div class="row"><span>見込み使用データ数</span><span>学習 <span class="num"><b>412</b></span> 件 / 交差検証（OOF） <span class="num"><b>103</b></span> 件</span></div>
-<p class="ptitle" style="border-bottom:1px solid var(--rule);padding-bottom:2px;margin-top:10px">共通学習設定</p>
-<div class="row"><span>エポック数 / バッチサイズ</span><span><span class="input num">100</span>　<span class="input num">8</span></span></div>
-<div class="row"><span>学習率</span><span class="input focus num" style="max-width:140px">0.0001</span></div>
-<div class="row"><span>早期終了</span><span>☑ 有効　待機 <span class="input num">15</span> エポック</span></div>
-<p class="small" style="margin:6px 0 0">▶ モデル（Mask R-CNN）　▶ データ拡張（aug_v003）　▶ チェックポイント / OOF評価</p>
-<div class="row"><span>画像平均・標準偏差</span><span class="small">事前学習済み重みから自動決定　<span class="num">0.485, 0.456, 0.406 / 0.229, 0.224, 0.225</span></span></div>
-<div class="btns"><span class="btn">設定を検証</span><span class="btn">下書き保存</span><span class="btn">キューに追加</span><span class="btn primary">学習開始</span></div>
-</div>
-<div class="panel" style="font-family:Consolas,monospace;font-size:.78rem;line-height:1.55;white-space:pre;overflow:hidden"><span style="font-family:'BIZ UDPGothic',sans-serif" class="ptitle">設定プレビュー（YAML・読み取り専用）</span>
-experiment_id: exp_0047
-dataset:
-  version: train_v004
-  image_class: A
-  quality: [good, fair]
-  channels: [A]
-training:
-  epochs: 100
-  batch_size: 8
-  <span style="background:var(--changed)">learning_rate: 0.0001</span>
-  early_stopping:
-    enabled: true
-    patience: 15</div>
-</div>
-<div class="status"><span>準備完了</span><span>実行中ジョブ <span class="num">1</span></span><span>自動保存 <span class="num">10:42:08</span></span></div>
-</div></div>
+<p>フォーム上部に、白い背景・枠・左側のアクセント線を持つカードで、データセット版・画像分類・品質条件と見込み件数、交差検証の分割数と各分割の検証件数、モデルと事前学習済み重み、エポック数・バッチサイズ・学習率を要約する。入力変更に追従して更新する。設定検証に警告またはエラーがあれば要約の右側に件数を示し、選ぶと検証結果を開く。設定変更時は古い検証結果を消す。</p>
+<div class="mock"><div class="mock-title">モデル学習 — 学習設定（実装）</div><div class="mock-body">
+<div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span class="on">学習設定</span><span>学習キュー</span><span>実験一覧</span></span></div>
+<div class="v27-summary"><span>データ <span class="num">train_v003</span>・全分類・すべて・学習 <b class="num">515</b> 件</span><span>交差検証 <span class="num">5</span> 分割・各検証 約 <span class="num">103</span> 件</span><span>モデル Mask R-CNN（COCO）</span><span>学習 <span class="num">100</span> エポック・バッチ <span class="num">8</span>・学習率 <span class="num">0.0001</span></span><span class="spacer"></span><span class="btn">設定プレビュー（YAML）</span></div>
+<div class="v27-form2"><div><p class="v27-h">実験</p><div class="row"><span>実験群</span><span class="sel-combo">foam_study ▾</span></div><div class="row"><span>実験識別子</span><span class="input ro num">exp_0046</span></div><div class="row"><span>説明</span><span class="input"></span></div><p class="v27-h">データセット・交差検証</p><div class="row"><span>データセット版</span><span class="sel-combo num">train_v003 ▾</span></div><div class="row"><span>画像分類 / 品質条件</span><span class="sel-combo">全分類 ▾　すべて ▾</span></div><div class="row"><span>分割数・条件・乱数シード</span><span class="input num">5</span>　☑ 画像分類で層別　☑ 取り込み元フォルダ単位</div><p class="small">交差検証は学習用版だけを使い、検証用版は含めない</p><p class="v27-h">共通学習設定</p><div class="row"><span>エポック / バッチ</span><span class="input num">100</span>　<span class="input num">8</span></div><div class="row"><span>学習率</span><span class="input num">0.0001</span></div></div>
+<div><p class="v27-h">モデル種類・固有設定</p><div class="row"><span>モデル種類</span><span class="sel-combo">Mask R-CNN ▾</span></div><div class="row"><span>事前学習済み重み</span><span class="sel-combo">COCO ▾</span></div><div class="row"><span>画像平均・標準偏差</span><span class="small">重みから自動決定</span></div><div class="row"><span>アンカーサイズ</span><span class="input num">32, 64, 128, 256, 512</span></div><div class="row"><span>アンカー縦横比</span><span class="input num">0.5, 1.0, 2.0</span></div><p class="small">▶ RPN 詳細設定　▶ ROI 詳細設定</p><p class="v27-h">データ拡張</p><div class="row"><span>プロファイル</span><span class="sel-combo num">aug_v003 ▾</span> <span class="btn">プロファイルをプレビュー</span> <span class="btn">表示 / 編集…</span></div><p class="v27-h">途中保存モデル / 評価</p><div class="row"><span>保存間隔 / 検証間隔</span><span class="input num">10</span>　<span class="input num">5</span> エポック</div><div class="row"><span>エポックの選び方</span><span class="small">OOF mAP 最大</span></div></div></div>
+<div class="v27-actions"><span class="btn">設定を検証</span><span class="btn">下書き保存</span><span class="v27-gap"></span><span class="btn">キューに追加</span><span class="btn primary">学習開始</span></div></div></div>
 <ul>
-<li>フォームのセクションは、見出しの文字と罫線1本で区切る（角丸の枠で囲まない。2.6.4）。長いフォームなので、あまり使わないセクションは折りたたんで開始する。</li>
-<li>フォームでフォーカス中の項目に対応する YAML の行を「変更あり」色で示し、日本語の項目名と英語の内部キーの対応を目で追えるようにする。</li>
-<li>見込み使用データ数は数字を太くし、条件を変えるたびに更新する。</li>
+<li>YAML プレビューは既定で閉じる。要約のボタンまたは「表示」メニューから開閉し、状態を <code>app_settings()</code> に保存する。開くと右側に表示し、フォーカス中の項目に対応する行を強調する。</li>
+<li>プレビューが閉じていてフォーム幅が約 1100px 以上なら 2 列にする。左列は実験・データセット（交差検証を含む）・共通学習設定、右列はモデル固有設定・データ拡張・途中保存モデル / 評価。幅が狭い場合と YAML 表示中は 1 列にする。切替時も入力値・フォーカス・スクロール位置を保つ。</li>
+<li>見出しは theme の色・書体で本文より大きく太くし、罫線と本文行間の約 2 倍の上余白を付ける。</li>
+<li>モデル固有設定、データ拡張、途中保存モデル / 評価は常時表示する。RPN と ROI の詳細設定だけ折りたたむ。アンカーサイズ・縦横比は編集可能。読み取り専用表示は画像平均・標準偏差と OOF mAP 最大で選ぶエポックだけ。</li>
+<li>左右の列は独立した縦積みで上から並べ、交差検証の注記は交差検証設定の直下に置く。データ拡張のプレビュー・編集ボタンはプロファイル選択欄の横に内容幅で置く。</li>
+<li>下部の操作は「設定を検証・下書き保存」と「キューに追加・学習開始」の 2 群に分け、主ボタンは「学習開始」だけにする。キュー編集中は「キューに保存」「キャンセル」と編集帯を表示する。</li>
 </ul>
-<p>左にフォーム（<code>QScrollArea</code>）、右に「設定プレビュー（YAML）」を置く（<code>QSplitter</code> 7:3）。
-右は仕様 15章の形式の YAML を読み取り専用で表示し、フォームの変更に即時追従する。これで日本語表示と英語内部キーの対応を確認できる。</p>
-<p>フォームのセクション（上から）:</p>
+<p>フォーム項目と動作:</p>
 <ol>
-<li><strong>実験</strong>: 実験群（編集可能コンボ。既存の実験群 + 新規入力）、実験識別子（自動採番・読み取り専用、例 exp_0045）、説明。</li>
-<li><strong>データセット</strong>
-   - データセット版: 学習用の確定済み版のみ（train_v001…）。
-   - 交差検証: 分割数（2〜10、既定5）、画像分類で層別、取り込み元フォルダ単位で分割。注記は検証用データセット（val版）を学習・交差検証に使わないこと。
-   - 画像分類: 全分類 / 分類A / 分類B / 分類C。
-   - 品質条件: すべて / 良のみ / 良・可。
-   - 入力は GUI では最初のチャンネル A に固定する（Backend の channels データは複数値を保持可能）。
-   - 乱数シード（分割・学習）。
-   - 見込み使用データ数（ラベル）: 「学習用 515 件（5 分割・各分割の検証 約103件）。交差検証後、515件すべてで最終学習」。条件変更で再計算する（モック計算でよい）。</li>
-<li><strong>モデル</strong>: モデル種類（Mask R-CNN / Cellpose）。選択に応じて下の固有設定を <code>QStackedWidget</code> で切り替える。
-   - Mask R-CNN（仕様 14.2）: 事前学習済み重み、バックボーン、学習するバックボーン層数、入力画像の短辺サイズ、入力画像の最大辺サイズ。画像平均・標準偏差は重みから自動決定し、numeric_font の読み取り専用表示とする。COCO / ImageNet は同じ ImageNet 値を使い、YAML・実験記録には保存する。
-     折りたたみ「詳細設定」に RPN（アンカーサイズ、アンカー縦横比、RPN前景/背景IoU閾値、RPNバッチ数/画像、RPN正例割合、RPN NMS閾値、pre/post NMS top N）と ROI（Box前景/背景IoU閾値、ROIバッチ数/画像、ROI正例割合）。
-   - Cellpose（仕様 14.3）: 事前学習済みモデル、最適化手法、正規化、スケール変動幅、リスケール、学習パッチサイズ、1エポック当たり画像数、最小マスク数、クラス重み。
-     注記: 「セル確率閾値・フロー閾値はこの画面ではなく、モデル比較・リリースの推論設定で管理します」。</li>
-<li><strong>共通学習設定</strong>: エポック数、バッチサイズ、学習率、重み減衰、早期終了（有効/無効 + 待機エポック数）。</li>
-<li><strong>データ拡張</strong>: プロファイル（コンボ）、[プレビュー] [表示 / 編集…]。どちらもデータ拡張プロファイル編集ダイアログを開く（プレビューはプレビュー部分を強調するだけでよい）。</li>
-<li><strong>チェックポイント / OOF評価</strong>: 保存間隔（エポック）、エポック選択の指標は「OOF 平均適合率（mAP）・最大」の読み取り専用表示、検証間隔。</li>
+<li><strong>実験</strong>: 実験群（既存値から選択または入力）、実験識別子（自動採番・読み取り専用）、説明。</li>
+<li><strong>データセット</strong>: 確定済み学習版、交差検証（分割数 2〜10、画像分類による層別、取り込み元フォルダ単位の分割、乱数シード）、画像分類、品質条件。GUI の入力チャンネルは A に固定する。検証用データセットは学習・交差検証に使わない。要約には見込み件数と各分割の検証件数を表示する。</li>
+<li><strong>モデル</strong>: Mask R-CNN / Cellpose を切り替える。Mask R-CNN は事前学習済み重み、バックボーン、学習層数、入力画像サイズ、重みから自動決定する画像平均・標準偏差、編集可能なアンカーサイズ・縦横比、RPN / ROI 詳細設定を持つ。Cellpose は事前学習済みモデル、最適化手法、正規化、スケール変動幅、リスケール、パッチサイズ、1 エポック当たり画像数、最小マスク数、クラス重みを持つ。セル確率閾値・フロー閾値はモデル比較・リリースの推論設定で管理する。</li>
+<li><strong>共通学習設定</strong>: エポック数、バッチサイズ、学習率、重み減衰、早期終了（有効 / 無効・待機エポック数）。</li>
+<li><strong>データ拡張</strong>: プロファイルを選択し、プレビューまたは表示 / 編集からプロファイル編集ダイアログを開く。</li>
+<li><strong>途中保存モデル / 評価</strong>: 保存間隔、検証間隔、各フォールドのモデル保存。選択エポックの指標は OOF 平均適合率（mAP）最大で、読み取り専用表示する。</li>
 </ol>
-<p>各入力の <code>toolTip</code> に内部キーを設定する（例 <code>learning_rate</code>）。</p>
-<p>下部ボタン: [設定を検証] [下書き保存] [学習開始]
-- 設定を検証: 結果ダイアログに OK/警告/エラーを一覧表示する。モックのルール例: バッチサイズ &gt; 16 で警告（GPUメモリ）、データセット版未選択でエラー、同一設定の実験がすでにあれば「同一設定の実験 exp_xxxx があります」と警告。
-- 下書き保存: 実験一覧に状態「下書き」で追加（または更新）する。
-- 学習開始: 検証でエラーがあれば開始しない。確認ダイアログの後、実験を「実行中」で登録し、FakeJob で学習を模擬して、実験一覧へ遷移（<code>select=exp_id</code>）。
-  - 学習の模擬: エポックが進むごとに loss/mAP を生成し、保存間隔ごとに 各フォールドに epoch_NNN.pt と選択エポックのモデルを保存し、CV後に全件で再学習して final.pt を保存する。既定の速度で 20 秒程度で完了する。
-- <code>on_enter(copy_from=exp_id)</code> のときは、その実験の設定をフォームへ読み込み、新しい実験識別子を採番する。</p>
+<p>入力のツールチップには設定キーを持たせる。YAML は入力に即時追従する。設定検証は OK / 警告 / エラーをダイアログに示し、エラーがある設定は学習開始・キュー登録を止める。下書き保存は実験一覧へ保存し、学習開始は確認後に学習を登録して実験一覧へ移る。複製・下書き編集・キュー編集では読み込んだ設定をフォームと要約に表示する。</p>
 <h3 id="sec5-2">5.2 データ拡張プロファイル編集ダイアログ</h3>
 <p>仕様 6章・11章。サイズ 1100×750 程度。</p>
 <pre><code>┌ プロファイル ─────────────────────────────┐ ┌ プレビュー ───────────────────┐

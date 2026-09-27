@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDoubleSpinBox,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -37,7 +38,8 @@ from ...labels import (
     training_choice_label,
 )
 from ...navigation import PageId
-from ...theme import Color, mono_font, numeric_font, set_style
+from ...settings import app_settings
+from ...theme import Color, body_font, mono_font, numeric_font, set_style
 from ...widgets.form import CollapsibleSection, FormSection
 from ...widgets.page_base import BasePage
 from ...widgets.table import bind_button_action, mark_primary
@@ -47,7 +49,7 @@ LABELS = {
     "data": "データセット",
     "model": "モデル固有設定",
     "training": "共通学習設定",
-    "checkpoint": "チェックポイント / OOF評価",
+    "checkpoint": "途中保存モデル / 評価",
     "augmentation": "データ拡張",
     "dataset_version": "データセット版",
     "cv": "交差検証",
@@ -137,14 +139,54 @@ class TrainingPage(BasePage):
         self._queue_edit_unavailable = False
         self._pre_queue_edit: tuple[dict[str, Any], str | None] | None = None
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.preview_splitter = splitter
         self.content_layout.addWidget(splitter, 1)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        self.scroll = scroll
         form_host = QWidget()
-        self.form_layout = QVBoxLayout(form_host)
-        self.form_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.form_root_layout = QVBoxLayout(form_host)
+        self.form_root_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.form_root_layout.setSpacing(16)
+        self.summary_row = QFrame()
+        self.summary_row.setObjectName("trainingSummaryCard")
+        self.summary_row.setProperty("role", "trainingSummary")
+        summary_layout = QHBoxLayout(self.summary_row)
+        summary_layout.setContentsMargins(12, 8, 12, 8)
+        self.summary_label = QLabel()
+        self.summary_label.setObjectName("trainingSummary")
+        self.summary_label.setTextFormat(Qt.TextFormat.RichText)
+        self.summary_label.setWordWrap(True)
+        summary_layout.addWidget(self.summary_label, 1)
+        self.validation_result_button = QPushButton()
+        self.validation_result_button.hide()
+        self.validation_result_button.clicked.connect(self._show_validation_results)
+        summary_layout.addWidget(self.validation_result_button)
+        self.preview_button = QPushButton("設定プレビュー（YAML）")
+        self.preview_button.setObjectName("trainingPreviewButton")
+        self.preview_button.setCheckable(True)
+        summary_layout.addWidget(self.preview_button)
+        self.form_root_layout.addWidget(self.summary_row)
+        self.form_columns = QWidget()
+        self.form_layout = QHBoxLayout(self.form_columns)
+        self.form_layout.setContentsMargins(0, 0, 0, 0)
+        self.form_layout.setSpacing(22)
+        self.left_column_widget = QWidget(self.form_columns)
+        self.left_column = QVBoxLayout(self.left_column_widget)
+        self.left_column.setContentsMargins(0, 0, 0, 0)
+        self.left_column.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.right_column_widget = QWidget(self.form_columns)
+        self.right_column = QVBoxLayout(self.right_column_widget)
+        self.right_column.setContentsMargins(0, 0, 0, 0)
+        self.right_column.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.form_layout.addWidget(self.left_column_widget, 1)
+        self.form_layout.addWidget(self.right_column_widget, 1)
+        self.form_root_layout.addWidget(self.form_columns)
+        self._form_widgets: list[tuple[QWidget, int]] = []
+        self._two_columns = False
         scroll.setWidget(form_host)
         self.form_host = form_host
+        scroll.installEventFilter(self)
         splitter.addWidget(scroll)
         self.preview_panel = QWidget()
         preview_layout = QVBoxLayout(self.preview_panel)
@@ -155,8 +197,11 @@ class TrainingPage(BasePage):
         set_style(self.yaml_preview, role="panel")
         preview_layout.addWidget(self.yaml_preview, 1)
         splitter.addWidget(self.preview_panel)
-        splitter.setSizes([720, 310])
-        self._build_form()
+        splitter.setSizes(
+            [1000, 0]
+            if not app_settings().value("training/yamlPreview", False, type=bool)
+            else [720, 310]
+        )
         buttons = QHBoxLayout()
         self.validate_button = QPushButton("設定を検証")
         self.save_button = QPushButton("下書き保存")
@@ -178,8 +223,14 @@ class TrainingPage(BasePage):
         self.training_actions["new"].triggered.connect(self._new_experiment)
         self.preview_action = QAction("設定プレビュー（YAML）", self)
         self.preview_action.setCheckable(True)
-        self.preview_action.setChecked(True)
-        self.preview_action.toggled.connect(self.preview_panel.setVisible)
+        self.preview_action.setChecked(
+            app_settings().value("training/yamlPreview", False, type=bool)
+        )
+        self.preview_action.toggled.connect(self._set_yaml_preview_visible)
+        self.preview_action.toggled.connect(self.preview_button.setChecked)
+        self.preview_button.setChecked(self.preview_action.isChecked())
+        self.preview_button.clicked.connect(self.preview_action.toggle)
+        self.preview_panel.setVisible(self.preview_action.isChecked())
         self.augmentation_action = QAction("データ拡張プロファイルの編集…", self)
         self.augmentation_action.triggered.connect(self.open_augmentation_dialog)
         bind_button_action(self.validate_button, self.training_actions["validate"])
@@ -187,13 +238,22 @@ class TrainingPage(BasePage):
         bind_button_action(self.queue_button, self.training_actions["queue"])
         bind_button_action(self.start_button, self.training_actions["start"])
         mark_primary(self.start_button)
+        self._build_form()
         self.cancel_queue_edit_button.clicked.connect(self._cancel_queue_edit)
+        self.validation_actions = QWidget()
+        validation_actions_layout = QHBoxLayout(self.validation_actions)
+        validation_actions_layout.setContentsMargins(0, 0, 0, 0)
+        validation_actions_layout.addWidget(self.validate_button)
+        validation_actions_layout.addWidget(self.save_button)
+        self.execution_actions = QWidget()
+        execution_actions_layout = QHBoxLayout(self.execution_actions)
+        execution_actions_layout.setContentsMargins(0, 0, 0, 0)
+        execution_actions_layout.addWidget(self.queue_button)
+        execution_actions_layout.addWidget(self.cancel_queue_edit_button)
+        execution_actions_layout.addWidget(self.start_button)
+        buttons.addWidget(self.validation_actions)
         buttons.addStretch(1)
-        buttons.addWidget(self.validate_button)
-        buttons.addWidget(self.save_button)
-        buttons.addWidget(self.queue_button)
-        buttons.addWidget(self.cancel_queue_edit_button)
-        buttons.addWidget(self.start_button)
+        buttons.addWidget(self.execution_actions)
         self.content_layout.addLayout(buttons)
         self._refresh_yaml()
         if ctx.queue_controller is not None:
@@ -219,10 +279,13 @@ class TrainingPage(BasePage):
         """共通フォームとモデル別スタックを組み立てる。"""
         self.fields.clear()
         self._model_widgets.clear()
-        while self.form_layout.count():
-            item = self.form_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        for layout in (self.left_column, self.right_column):
+            while layout.count():
+                item = layout.takeAt(0)
+                if item.widget():
+                    item.widget().setParent(None)
+                    item.widget().deleteLater()
+        self._form_widgets.clear()
         experiment = FormSection("実験")
         self.study = QComboBox()
         self.study.setEditable(True)
@@ -241,24 +304,22 @@ class TrainingPage(BasePage):
         experiment.add_row("実験群", self.study, "experiment.study_id")
         experiment.add_row("実験識別子", self.experiment_id, "experiment.id")
         experiment.add_row("説明", self.description_edit, "experiment.description")
-        self.form_layout.addWidget(experiment)
+        self._add_form_widget(experiment, 0)
 
         section, widgets = self._make_section("data", self.config["data"], "data")
         self.fields.update(widgets)
-        self.form_layout.addWidget(section)
         self.dataset_note = QLabel(
             "交差検証は学習用データセットの中だけで分割します。"
             "検証用データセット（val 版）は学習にも交差検証にも使いません。"
         )
         set_style(self.dataset_note, role="note")
-        self.form_layout.addWidget(self.dataset_note)
+        cv_section = widgets["data.cv.n_folds"].parentWidget()
+        cv_section.form.addRow(self.dataset_note)
+        self._add_form_widget(section, 0)
         self.estimate_label = QLabel()
-        self.estimate_label.setTextFormat(Qt.TextFormat.RichText)
-        set_style(self.estimate_label, state="warning")
-        self.form_layout.addWidget(self.estimate_label)
         self.used_items_note = QLabel("実使用データ一覧は学習開始時に確定し、実験に保存されます。")
         set_style(self.used_items_note, role="note")
-        self.form_layout.addWidget(self.used_items_note)
+        self._add_form_widget(self.used_items_note, 0)
 
         self.model_type = QComboBox()
         self.model_type.addItem("Mask R-CNN", "mask_rcnn")
@@ -268,7 +329,7 @@ class TrainingPage(BasePage):
         self.model_type.setToolTip("model.type")
         model_switch = FormSection("モデル")
         model_switch.add_row("モデル種類", self.model_type, "model.type")
-        self.form_layout.addWidget(model_switch)
+        self._add_form_widget(model_switch, 1)
         self.model_stack = QStackedWidget()
         for model_name in ("mask_rcnn", "cellpose"):
             section, model_widgets = self._make_section(
@@ -282,43 +343,150 @@ class TrainingPage(BasePage):
             section.setTitle(
                 "Mask R-CNN 固有設定" if model_name == "mask_rcnn" else "Cellpose 固有設定"
             )
+            self._promote_section_heading(section)
             self._model_fields[model_name] = section
             self._model_widgets[model_name] = model_widgets
             self.model_stack.addWidget(section)
-        self.model_section = CollapsibleSection("モデル固有設定", self.model_stack)
-        self.model_section.button.setText("モデル固有設定 ▶")
-        self.form_layout.addWidget(self.model_section)
+        self._add_form_widget(self.model_stack, 1)
         self.model_note = QLabel()
         set_style(self.model_note, role="note")
-        self.form_layout.addWidget(self.model_note)
+        self._add_form_widget(self.model_note, 1)
         self.normalization_reset_note = QLabel()
         set_style(self.normalization_reset_note, role="note")
         self.normalization_reset_note.setWordWrap(True)
-        self.form_layout.addWidget(self.normalization_reset_note)
+        self._add_form_widget(self.normalization_reset_note, 1)
 
         for key in ("training", "augmentation", "checkpoint"):
             section, widgets = self._make_section(key, self.config[key], key)
             self.fields.update(widgets)
-            if key in {"augmentation", "checkpoint"}:
-                collapsible = CollapsibleSection(section.title(), section)
-                collapsible.button.setText(f"{section.title()} ▶")
-                self.form_layout.addWidget(collapsible)
-            else:
-                self.form_layout.addWidget(section)
+            self._add_form_widget(section, 0 if key == "training" else 1)
             if key == "augmentation":
-                profile_buttons = QHBoxLayout()
                 self.profile_preview_button = QPushButton("プロファイルをプレビュー")
                 self.profile_edit_button = QPushButton("表示 / 編集…")
+                for button in (self.profile_preview_button, self.profile_edit_button):
+                    button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
                 self.profile_preview_button.clicked.connect(self.open_augmentation_dialog)
                 self.profile_edit_button.clicked.connect(self.open_augmentation_dialog)
-                profile_buttons.addWidget(self.profile_preview_button)
-                profile_buttons.addWidget(self.profile_edit_button)
-                section.form.addRow(profile_buttons)
+                profile_label = QLabel("プロファイル")
+                profile = widgets["augmentation.profile"]
+                row, _role = section.form.getWidgetPosition(profile)
+                old_row = section.form.takeRow(row)
+                if old_row.labelItem and old_row.labelItem.widget():
+                    old_label = old_row.labelItem.widget()
+                    old_label.setParent(None)
+                    profile_label.deleteLater()
+                    profile_label = old_label
+                profile_row = QHBoxLayout()
+                profile_row.addWidget(profile, 1)
+                profile_row.addWidget(self.profile_preview_button)
+                profile_row.addWidget(self.profile_edit_button)
+                profile_row.addStretch(1)
+                section.form.addRow(profile_label, profile_row)
         self._bind_signals()
         if isinstance(self.fields.get("data.cv.n_folds"), QSpinBox):
             self.fields["data.cv.n_folds"].setRange(2, 10)
         self._update_model_stack()
         self._update_estimate()
+        self._update_summary()
+        self._update_form_columns()
+
+    def _add_form_widget(self, widget: QWidget, column: int) -> None:
+        if isinstance(widget, FormSection):
+            widget.setProperty("trainingSection", True)
+            self._promote_section_heading(widget)
+        self._form_widgets.append((widget, column))
+
+    @staticmethod
+    def _promote_section_heading(section: FormSection) -> None:
+        section.setProperty("trainingSection", True)
+        section.set_prominent_heading()
+        font = body_font(12)
+        font.setBold(True)
+        section.heading_label.setFont(font)
+
+    def _update_form_columns(self, available_width: int | None = None) -> None:
+        if not hasattr(self, "form_layout"):
+            return
+        width = available_width if available_width is not None else self.scroll.width()
+        two_columns = not self.preview_action.isChecked() and width >= 1100
+        for layout in (self.left_column, self.right_column):
+            while layout.count():
+                layout.takeAt(0)
+        for widget, preferred_column in self._form_widgets:
+            if two_columns:
+                (self.left_column if preferred_column == 0 else self.right_column).addWidget(widget)
+            else:
+                self.left_column.addWidget(widget)
+        self.right_column_widget.setVisible(two_columns)
+        self._two_columns = two_columns
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_form_columns()
+
+    def _set_yaml_preview_visible(self, visible: bool) -> None:
+        self.preview_panel.setVisible(visible)
+        app_settings().setValue("training/yamlPreview", visible)
+        self.preview_splitter.setSizes([720, 310] if visible else [max(1, self.width()), 0])
+        self._update_form_columns()
+
+    def _update_summary(self) -> None:
+        if not hasattr(self, "summary_label") or not hasattr(self, "model_type"):
+            return
+        config = self._collect_config()
+        data = config["data"]
+        model = config["model"]
+        train, per_fold = self.ctx.backend.estimate_training_items(
+            data.get("dataset_version"),
+            data.get("classification", "all"),
+            data.get("quality_filter", "all"),
+            data.get("cv", {}).get("n_folds", 5),
+        )
+        folds = data.get("cv", {}).get("n_folds", 5)
+        dataset = data.get("dataset_version") or "未選択"
+        classification = training_choice_label(
+            "data.classification", str(data.get("classification", "all"))
+        )
+        quality = training_choice_label(
+            "data.quality_filter", str(data.get("quality_filter", "all"))
+        )
+        if model["type"] == "mask_rcnn":
+            model_spec = training_choice_label(
+                "model.pretrained_weights", str(model.get("pretrained_weights", "coco"))
+            )
+        else:
+            model_spec = training_choice_label(
+                "model.pretrained_model", str(model.get("pretrained_model", "cpsam"))
+            )
+        fields = [
+            ("データ", f"{dataset}・{classification}・{quality}・学習 {train} 件"),
+            ("交差検証", f"{folds} 分割・各検証 約 {per_fold} 件"),
+            ("モデル", f"{model_type_label(model['type'])}（{model_spec}）"),
+            (
+                "学習",
+                f"{config['training']['epochs']} エポック・"
+                f"バッチ {config['training']['batch_size']}・"
+                f"学習率 {config['training']['learning_rate']}",
+            ),
+        ]
+        num_family = numeric_font().family()
+        self.summary_label.setText(
+            "　│　".join(
+                f"<b style='color:{Color.SLATE}'>{title}</b> "
+                f"<span style='font-family:{num_family}'>{value}</span>"
+                for title, value in fields
+            )
+        )
+
+    def _clear_validation_results(self) -> None:
+        self._validation_results = []
+        self.validation_result_button.hide()
+
+    def _show_validation_results(self) -> None:
+        if not getattr(self, "_validation_results", None):
+            return
+        text = "\n".join(f"{item['level']}: {item['message']}" for item in self._validation_results)
+        QMessageBox.information(self, "設定の検証", text)
 
     def _make_section(
         self, top: str, data: dict[str, Any], prefix: str, model_name: str | None = None
@@ -437,8 +605,8 @@ class TrainingPage(BasePage):
     def _bind_signals(self) -> None:
         """変更時にプレビューと件数を更新する。"""
         self.model_type.currentIndexChanged.connect(self._switch_model)
-        self.study.currentTextChanged.connect(self._refresh_yaml)
-        self.description_edit.textChanged.connect(self._refresh_yaml)
+        self.study.currentTextChanged.connect(self._on_config_changed)
+        self.description_edit.textChanged.connect(self._on_config_changed)
         for widget in [
             *self.fields.values(),
             *self._model_widgets.get("mask_rcnn", {}).values(),
@@ -468,6 +636,7 @@ class TrainingPage(BasePage):
         for section in ("experiment", "data", "training", "augmentation", "checkpoint"):
             self.config[section] = copy.deepcopy(previous[section])
         self._active_model = model_type
+        self._clear_validation_results()
         self._build_form()
         self._refresh_yaml()
 
@@ -482,7 +651,9 @@ class TrainingPage(BasePage):
             self._update_normalization_note()
 
     def _on_config_changed(self, *_args) -> None:
+        self._clear_validation_results()
         self._update_estimate()
+        self._update_summary()
         if hasattr(self, "model_normalization_note"):
             self._update_normalization_note()
         self._refresh_yaml()
@@ -499,6 +670,8 @@ class TrainingPage(BasePage):
 
     def eventFilter(self, watched, event) -> bool:
         """フォーカス中の設定に対応する YAML 行を強調する。"""
+        if watched is self.scroll and event.type() == QEvent.Type.Resize:
+            self._update_form_columns(self.scroll.width())
         if event.type() == QEvent.Type.FocusIn and watched.toolTip():
             self._highlight_yaml_path(watched.toolTip())
         return super().eventFilter(watched, event)
@@ -668,6 +841,19 @@ class TrainingPage(BasePage):
         """Backend 検証結果をダイアログに表示する。"""
         self.config = self._collect_config()
         results = self.ctx.backend.validate_experiment_config(self.config)
+        self._validation_results = results
+        warnings = sum(item["level"] == "warning" for item in results)
+        errors = sum(item["level"] == "error" for item in results)
+        if warnings or errors:
+            parts = []
+            if warnings:
+                parts.append(f"⚠ 警告 {warnings} 件")
+            if errors:
+                parts.append(f"⚠ エラー {errors} 件")
+            self.validation_result_button.setText("　".join(parts))
+            self.validation_result_button.show()
+        else:
+            self.validation_result_button.hide()
         text = (
             "\n".join(f"{item['level']}: {item['message']}" for item in results)
             or "OK: 設定に問題はありません"
