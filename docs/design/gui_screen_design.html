@@ -317,7 +317,7 @@ table.rev{font-size:.92rem}
 <tr><td>v2.3</td><td>2026-09-25</td><td>見た目の設計（2.6）を追加: 色（色はデータの意味にだけ使う）・フォント・部品の見た目。ホームを管理者の工程の流れとして表示（2.1）。フォルダパスは本文と同じ BIZ UDPゴシックで表示（レビューで決定）。画面モックを新しい見た目に更新し、表表示（4.3）、モデル学習〜本番推論（5〜10章）のモックを追加</td><td>改良案・未実装</td></tr>
 <tr><td>v2.4</td><td>2026-09-26</td><td>タブ切り替えの不具合修正、表示形式のショートカット、サムネイル表示を確定ダイアログへ移動。レビュー指摘の修正: 共有キー設定、既定キー操作、記号キー配列差の吸収、絞り込みと整合性表示、候補メニュー、推論中の二重実行防止、Excel 入出力、連続振り分け、確定サムネイルの件数・空表示、再表示時の状態更新</td><td>今回の対象を実装済み</td></tr>
 <tr><td>v2.5</td><td>2026-09-26</td><td>原画像と設定表示の二択、キー割り当て一覧、画像移動キー、列幅の保存、選択中の自動振り分け、単一チャンネル GUI、ラベルとコンボの間隔、版履歴サムネイル、確定不可理由の表示</td><td>実装済み</td></tr>
-<tr><td>v2.7</td><td>2026-09-27</td><td>見やすさの改善案（認知負荷の低減）: データ準備の絞り込みの整理と既定の列、学習設定の要約・YAML の既定を閉じる・2 列配置、本番推論の手順案内と実行できない理由の表示（「見やすさの改善」の節）</td><td>確認待ち・未実装</td></tr>
+<tr><td>v2.7</td><td>2026-09-27</td><td>見やすさの改善案（認知負荷の低減）: データ準備の絞り込みの整理と既定の列、学習設定の要約・YAML の既定を閉じる・2 列配置。本番推論は測定フローの確定まで保留とし、確定時に決めることを記載（「見やすさの改善」の節）</td><td>確認待ち・未実装</td></tr>
 <tr><td>v2.6</td><td>2026-09-26</td><td>学習をK分割交差検証・OOF評価・選択エポックでの全件最終学習へ変更。学習キュー（設定編集・順次実行・失敗後の継続）と待機実験の管理を追加。比較候補をfinal.ptに限定し、検証用mAPとOOF mAPを比較・リリースに追加。再試行の試行履歴保持、同一実験IDでの予約と候補・リリースの試行固定を追記。Mask R-CNN の画像平均・標準偏差を重みに応じて自動決定</td><td>今回の仕様</td></tr>
 </tbody></table></div>
 <nav><strong>目次</strong><ol class="toc"><li><a href="#sec-v27">見やすさの改善（v2.7 改良案）</a> <span class="badge">確認待ち</span></li><li><a href="#sec1">1. ソース構成</a></li><li><a href="#sec2">2. アプリ全体の画面構成</a> <span class="badge">改良案</span><br><a href="#sec2-6">2.6 見た目の設計（色・フォント・部品）</a> <span class="badge">v2.3</span></li><li><a href="#sec3">3. 共通部品</a></li><li><a href="#sec4">4. データ準備（PageId.DATA_PREPARATION）</a> <span class="badge">改良案</span></li><li><a href="#sec5">5. モデル学習（PageId.TRAINING）</a></li><li><a href="#sec6">6. 実験一覧（PageId.EXPERIMENTS）</a></li><li><a href="#sec7">7. モデル比較・リリース（PageId.CANDIDATES）</a></li><li><a href="#sec8">8. マスク比較（PageId.MASK_COMPARISON）</a></li><li><a href="#sec9">9. リリース済みモデル・モデル振り分け（PageId.RELEASED_MODELS）</a></li><li><a href="#sec10">10. 本番推論（PageId.INFERENCE）</a></li><li><a href="#sec11">11. MockBackend</a></li><li><a href="#sec12">12. テスト（tests/gui/）</a></li></ol></nav>
@@ -546,64 +546,88 @@ table.rev{font-size:.92rem}
   </ul></li>
 </ul>
 
-<h3>V3. 本番推論: 空の画面で手順を示し、実行できない理由をボタンの横に出す</h3>
-<div class="grid-2">
-<div class="flow-box"><div class="flow-title">今（v2.6）</div><ul class="steps">
-<li>画像を入れる前は、空の表と「画像なし」のプレビューだけが表示され、何から始めればよいか分からない。</li>
-<li>「推論を実行（0 枚）」は無効の灰色になるが、理由が出ない。</li>
-</ul></div>
-<div class="flow-box good"><div class="flow-title">v2.7</div><ul class="steps">
-<li>空の表に、手順（画像を追加 → 分類を確かめる → 出力先を選ぶ → 実行）と、追加ボタンを出す。</li>
-<li>実行できないときは、主ボタンの左に理由を 1 行で出す。</li>
-<li>空のプレビューは「画像を選ぶと、ここに結果が出ます」とする。</li>
-</ul></div>
-</div>
+<h3>V3. 本番推論: 測定フローが確定するまで保留</h3>
+<p>
+実際の測定フローがまだ確定していないため、本番推論の画面の改善案は白紙とします。
+今の画面（10 章）は、画像を手で選んで実行する形の仮の構成です。
+</p>
+<p>
+運用によっては、監視フォルダだけを選んでおき、そこに入った画像を自動で解析する形になることもあり得ます。
+測定フローが確定したら、次の順に決め、その結果に合わせて画面を作り直します。
+</p>
 
-<div class="mock">
-<div class="mock-title">本番推論 — 気泡インスタンスセグメンテーション（v2.7 案・画像を入れる前）</div>
-<div class="mock-body">
-<div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="spacer"></span></div>
-<div class="m-split" style="grid-template-columns:1.3fr 1fr">
-<div>
-<div class="m-toolbar" style="margin-top:0"><span class="btn">画像を追加…</span><span class="btn">フォルダを追加…</span><span class="btn dis">選択を削除</span><span class="spacer"></span><span class="small"><span class="num">0</span> 枚</span></div>
-<div class="v27-empty">
-<ol>
-<li><b>画像を追加します</b><br><span class="small">ファイルかフォルダを選ぶか、ここにドラッグします。</span></li>
-<li><b>画像分類を確かめます</b><br><span class="small">分類に応じて、使うモデルが自動で決まります。</span></li>
-<li><b>出力先と出力する内容を選びます</b></li>
-<li><b>推論を実行します</b></li>
-</ol>
-<div class="btns" style="justify-content:flex-start"><span class="btn">画像を追加…</span><span class="btn">フォルダを追加…</span></div>
-</div>
-<div class="panel"><p class="ptitle">出力</p>
-<div class="row"><span>出力先</span><span><span class="input" style="display:inline-block;min-width:200px;color:var(--slate)">未選択</span> <span class="btn">参照…</span></span></div>
-<div class="row"><span>出力する内容</span><span>☑ インスタンスラベルマスク　☑ 粒子解析用二値マスク　☐ オーバーレイ画像</span></div>
-<div class="row"><span>形式</span><span>◉ PNG　○ TIFF</span></div>
-<div class="v27-actions" style="border:0;margin:0;padding:6px 0 0"><span class="small v27-why">画像を追加し、出力先を選ぶと実行できます</span><span class="btn primary dis">推論を実行（0 枚）</span></div></div>
-</div>
-<div><div class="m-toolbar" style="margin-top:0"><span class="mtabs"><span class="on">オーバーレイ</span><span>ラベル</span><span>二値</span></span></div>
-<div class="img" style="aspect-ratio:4/3;display:flex;align-items:center;justify-content:center"><span style="color:#AEB6BD;font-size:.84rem;position:relative">画像を選ぶと、ここに結果が出ます</span></div></div>
-</div>
-<div class="status"><span>準備完了</span><span>実行中ジョブ <span class="num">0</span></span><span>自動保存 <span class="num">10:42:08</span></span></div>
-</div></div>
+<h4>1. 運用の形を決める</h4>
 <ul>
-<li><strong>手順の案内</strong>
+<li><strong>手動実行</strong>: 画像やフォルダを選んで実行する（今の画面の形）。</li>
+<li><strong>監視フォルダ</strong>: 監視するフォルダを指定しておき、入ってきた画像を自動で解析する。</li>
+<li><strong>両方</strong>: 普段は監視フォルダで解析し、取りこぼしや再解析のときだけ手動で実行する。</li>
+</ul>
+
+<h4>2. 監視フォルダ方式の場合に決めること</h4>
+<div class="table-wrap"><table>
+<thead><tr><th>項目</th><th>決めること</th></tr></thead>
+<tbody>
+<tr><td>対象</td><td>
   <ul>
-  <li>入力の表が空のときだけ、表の場所に出す。</li>
-  <li>画像を 1 枚でも追加したら、通常の表に切り替える。</li>
-  <li>ドラッグ＆ドロップにも対応する。</li>
-  </ul></li>
-<li><strong>実行できない理由</strong>
+  <li>監視するフォルダ（1 つか複数か）。</li>
+  <li>サブフォルダも対象にするか。</li>
+  <li>対象の拡張子。</li>
+  </ul></td></tr>
+<tr><td>取り込むタイミング</td><td>
   <ul>
-  <li>足りない条件を、まとめて 1 行で出す。
-    <ul>
-    <li>「画像を追加し、出力先を選ぶと実行できます」</li>
-    <li>「出力先を選ぶと実行できます」</li>
-    <li>「出力する内容を 1 つ以上選んでください」</li>
-    </ul></li>
-  <li>分類にモデルが割り当てられていない画像があるときは、今のエラーの帯（振り分け画面へ）を出したまま、実行できる枚数だけで実行する。</li>
+  <li>書き込み途中のファイルを読まないための判定（例: ファイルサイズが一定時間変わらない、完了の目印ファイルを置く）。</li>
+  <li>1 回の測定で複数枚の画像が出る場合は、それをひとまとまりとして扱うか。</li>
+  </ul></td></tr>
+<tr><td>画像分類の決め方</td><td>
+  <ul>
+  <li>使うモデルは画像分類で決まるので、監視フォルダ方式では分類をどう決めるかが要になる。候補は、フォルダ名・ファイル名の規則・画像のメタデータ・監視フォルダごとの固定値。</li>
+  <li>分類が決まらない画像と、モデルが割り当てられていない分類の画像を、どう扱うか（保留して知らせる、など）。</li>
+  </ul></td></tr>
+<tr><td>処理済みの管理</td><td>
+  <ul>
+  <li>同じ画像を二重に解析しないための記録。</li>
+  <li>アプリを閉じている間に入った画像を、起動時に解析するか。</li>
+  <li>入力画像を処理済みフォルダへ移すか、そのまま置くか。</li>
+  </ul></td></tr>
+<tr><td>出力</td><td>
+  <ul>
+  <li>出力先の構成（入力と同じ階層か、別のフォルダか、日付ごとか）。</li>
+  <li>出力する内容と形式。</li>
+  <li>外部の粒子解析ソフトウェアがそのまま読める形にするか。</li>
+  </ul></td></tr>
+<tr><td>失敗時</td><td>
+  <ul>
+  <li>失敗した画像を再試行するか（回数）。</li>
+  <li>失敗の知らせ方。</li>
+  <li>失敗した画像の置き場所。</li>
+  </ul></td></tr>
+<tr><td>動かし方</td><td>
+  <ul>
+  <li>監視を画面から開始・停止するか、常時動かすか。</li>
+  <li>画面を閉じても監視を続けるか。</li>
+  <li>長時間運用するときの記録（ログ）と、ディスク容量の扱い。</li>
+  </ul></td></tr>
+<tr><td>モデルの更新</td><td>監視中にモデルの振り分けが変わった場合、処理待ちの画像にいつから新しいモデルを使うか。</td></tr>
+</tbody></table></div>
+
+<h4>3. 画面で必要になりそうなもの（監視フォルダ方式の場合）</h4>
+<ul>
+<li>監視の状態（監視中／停止中／エラー）と、開始・停止の操作。</li>
+<li>処理待ち・処理中・完了・失敗の件数と、最近の処理の一覧。</li>
+<li>最新の結果のプレビュー。</li>
+<li>失敗した画像の一覧と、理由・再実行。</li>
+<li>設定: 監視フォルダ、出力先、出力する内容・形式、画像分類の決め方。</li>
+</ul>
+
+<h4>4. 作り方の前提</h4>
+<ul>
+<li>監視と解析の処理は <code>services/</code> 側に置き、画面（<code>gui/</code>）から切り離す。画面を閉じても続ける場合は、別プロセスで動かすことも検討する。</li>
+<li>画面は利用者向けなので、専門用語を避ける。</li>
+<li>次の 2 つは、どの運用の形になっても入れる。
+  <ul>
+  <li>空の画面で、次にすることを示す。</li>
+  <li>開始・実行できないときは、その理由を主ボタンの横に出す。</li>
   </ul></li>
-<li>同じ「押せない理由を横に出す」形は、データ準備の確定（v2.5 で実装済み）に続いて、ほかの主ボタンにも広げる（比較候補の「選択候補をリリース…」など）。</li>
 </ul>
 
 <h3>V4. このあとに行う改善（モックは次の段階で作る）</h3>
@@ -612,6 +636,7 @@ table.rev{font-size:.92rem}
 <tbody>
 <tr><td>中</td><td>全画面</td><td>V1〜V3 と同じ強弱の付け方（主な操作は 1 つだけ強い色、操作のまとまりの間に余白、注記は控えめ）を、ほかの画面にも広げる。</td></tr>
 <tr><td>中</td><td>全画面</td><td>押せる部品を、押せると分かる見た目にする。ホームの工程パネルは、マウスを乗せたときとキーボードフォーカス時に枠と「開く」の文字を出す。</td></tr>
+<tr><td>中</td><td>全画面</td><td>押せない主ボタンは、理由をボタンの横に出す（データ準備の確定と同じ形。比較候補の「選択候補をリリース…」など）。</td></tr>
 <tr><td>中</td><td>比較候補</td><td>
   <ul>
   <li>「最終学習モデル」とコメントを既定の列から外し、候補の詳細へ移す。</li>
@@ -1709,6 +1734,7 @@ training:
 </section>
 <section class="card" id="sec10">
 <h2>10. 本番推論（<code>PageId.INFERENCE</code>）</h2>
+<p class="small">この章は仮の構成です。測定フローが確定したら、「見やすさの改善」の V3 に書いた項目を決めてから作り直します（監視フォルダで自動解析する形になる可能性があります）。</p>
 <p>仕様: 全体概要 3〜4章（本番推論は詳細仕様書がないため、概要から最小構成で設計）。</p>
 <div class="mock"><div class="mock-title">本番推論 — 気泡インスタンスセグメンテーション</div>
 <div class="mock-body">
