@@ -1317,7 +1317,10 @@ class TrainingPage(BasePage):
         edit = params.get("edit")
         queue_edit = params.get("edit_queue")
         if queue_edit:
-            self._pre_queue_edit = self._capture_queue_edit_snapshot()
+            # 編集中に別のキュー行を開いたときは、最初のキュー編集前の設定を保つ
+            # （編集中だった行の未保存の変更は捨てる）
+            if not self._queue_edit_id or self._pre_queue_edit is None:
+                self._pre_queue_edit = self._capture_queue_edit_snapshot()
             self._queue_edit_unavailable = False
         elif self._queue_edit_id:
             self._restore_before_queue_edit()

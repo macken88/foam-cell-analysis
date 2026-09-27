@@ -215,3 +215,40 @@ def test_summary_tracks_cv_stratification_and_source_folder_grouping(shell, qapp
     assert "層別" not in page.summary_label.text()
     assert "フォルダ単位" in page.summary_label.text()
     assert "group_by_source_folder: true" in page.yaml_preview.toPlainText()
+
+
+@pytest.mark.parametrize("finish", ["save", "cancel"])
+def test_opening_another_queue_row_keeps_form_from_before_queue_edit(shell, qapp, finish):
+    """キュー編集中に別の行を開いても、最初のキュー編集前の設定に戻り、未保存の変更は移らない。"""
+    backend = shell.ctx.backend
+    shell.navigate(PageId.TRAINING)
+    page = shell.page(PageId.TRAINING)
+    page.fields["training.epochs"].setValue(33)
+    page.description_edit.setText("元の新規設定")
+    qapp.processEvents()
+
+    first = _enqueue_waiting_row(backend, epochs=17)
+    second = _enqueue_waiting_row(backend, epochs=27)
+    page = _open_queue_editor(shell, first, qapp)
+    page.fields["training.epochs"].setValue(18)
+    page = _open_queue_editor(shell, second, qapp)
+    assert page.fields["training.epochs"].value() == 27
+
+    if finish == "save":
+        page.fields["training.epochs"].setValue(30)
+        QTest.mouseClick(page.save_button, Qt.MouseButton.LeftButton)
+    else:
+        QTest.mouseClick(page.cancel_queue_edit_button, Qt.MouseButton.LeftButton)
+    qapp.processEvents()
+
+    assert backend.get_experiment(first.experiment_id).config.values["training"]["epochs"] == 17
+    expected_second = 30 if finish == "save" else 27
+    assert (
+        backend.get_experiment(second.experiment_id).config.values["training"]["epochs"]
+        == expected_second
+    )
+    shell.navigate(PageId.TRAINING)
+    qapp.processEvents()
+    assert page.fields["training.epochs"].value() == 33
+    assert page.description_edit.text() == "元の新規設定"
+    assert page.queue_edit_banner.isHidden()
