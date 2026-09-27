@@ -91,6 +91,10 @@ def build_stylesheet() -> str:
         "min-height: 28px; padding: 0 12px; }",
         f"QPushButton:hover {{ background: {c.IDLE_BG}; }}",
         f"QPushButton:disabled {{ color: {c.DISABLED}; border-color: {c.RULE_SOFT}; }}",
+        f"QPushButton[role='filterToggle']:checked[usage='error'] "
+        f"{{ background: {c.ERROR_BG}; color: {c.ERROR}; border-color: {c.ERROR}; }}",
+        f"QPushButton[role='filterToggle']:checked[usage='changed'] "
+        f"{{ background: {c.CHANGED}; border-color: {c.GRAPHITE}; }}",
         f'QPushButton[primary="true"] {{ background: {c.GRAPHITE}; '
         f"color: {c.WHITE}; border-color: {c.GRAPHITE}; }}",
         f'QPushButton[primary="true"]:disabled {{ background: {c.IDLE}; color: {c.IDLE_BG}; }}',
@@ -130,6 +134,7 @@ def build_stylesheet() -> str:
         f"QFrame#pipelineStage:hover {{ background: {c.HOVER_BG}; }}",
         f"QFrame#pipelineStage:focus {{ border: 1px solid {c.GRAPHITE}; }}",
         f"QFrame#homeUserRow {{ background: {c.SLIDE}; border: 1px solid {c.RULE}; }}",
+        f"QFrame[role='filterPanel'] {{ background: {c.SLIDE}; border: 1px solid {c.RULE}; }}",
         f"QFrame#homeUserRow:hover {{ background: {c.HOVER_BG}; }}",
         f"QFrame#homeUserRow:focus {{ border: 1px solid {c.GRAPHITE}; }}",
         f"QFrame#recentOperations {{ border: 0; border-top: 1px solid {c.RULE}; }}",
@@ -181,9 +186,12 @@ def build_stylesheet() -> str:
         "border-radius: 3px; padding: 0 7px; }",
         f"QLabel[state='失敗'] {{ background: {c.ERROR_BG}; color: {c.ERROR}; "
         "border-radius: 3px; padding: 0 7px; }",
-        "QPushButton[role='countChip'] { border: 1px solid transparent; background: transparent; }",
+        f"QPushButton[role='countChip'] {{ border: 1px solid {c.RULE}; background: {c.SLIDE}; }}",
+        f"QPushButton[role='countChip']:hover {{ background: {c.HOVER_BG}; }}",
         f"QPushButton[role='countChip']:checked {{ background: {c.GRAPHITE}; "
         f"color: {c.WHITE}; border-color: {c.GRAPHITE}; }}",
+        f"QPushButton[role='countChip'][usage='error']:checked {{ background: {c.ERROR_BG}; "
+        f"color: {c.ERROR}; border-color: {c.ERROR}; }}",
         f"QLabel[state='activeChipText'] {{ color: {c.WHITE}; }}",
         f"QPushButton[usage='error'] {{ color: {c.ERROR}; }}",
         f"QPushButton[usage='error'] QLabel {{ color: {c.ERROR}; }}",

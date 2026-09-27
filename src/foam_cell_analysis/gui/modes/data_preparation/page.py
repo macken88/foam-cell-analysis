@@ -4,13 +4,24 @@ from __future__ import annotations
 
 from collections import Counter
 
-from PySide6.QtCore import QByteArray, QEvent, QItemSelection, QItemSelectionModel, Qt, QTimer
+from PySide6.QtCore import (
+    QByteArray,
+    QEvent,
+    QItemSelection,
+    QItemSelectionModel,
+    Qt,
+    QTimer,
+    Signal,
+)
 from PySide6.QtGui import (
     QAction,
+    QActionGroup,
     QColor,
     QKeySequence,
     QPalette,
     QShortcut,
+    QStandardItem,
+    QStandardItemModel,
     QUndoCommand,
     QUndoStack,
 )
@@ -41,7 +52,7 @@ from PySide6.QtWidgets import (
 from ....services.models import DataItem, ImportCandidate
 from ...context import DEFAULT_CHANNEL, AppContext
 from ...settings import app_settings
-from ...theme import Color, numeric_font, set_style
+from ...theme import Color, body_font, numeric_font, set_style
 from ...widgets.image_convert import DisplayMode, array_to_pixmap, render
 from ...widgets.image_view import ImageView
 from ...widgets.marks import USAGE_MARKS, CountChip, DisplayToggle, TagDelegate
@@ -62,6 +73,7 @@ from .dialogs import (
 )
 from .finalize_thumbnails import DatasetVersionThumbnailWindow
 from .table_model import (
+    HEADERS,
     USAGE_TEXT,
     DataPreparationTableModel,
     DatasetHistoryModel,
@@ -191,6 +203,103 @@ class _TriageCommand(QUndoCommand):
         self.page.refresh(list(values), filter_membership_changed=True)
 
 
+class _ClassificationFilter(QComboBox):
+    """件数付きの複数選択分類フィルター。"""
+
+    changed = Signal()
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setMinimumWidth(150)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setEditable(True)
+        self.lineEdit().setReadOnly(True)
+        self.lineEdit().setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._items = QStandardItemModel(self)
+        self.setModel(self._items)
+        self._items.itemChanged.connect(self._item_changed)
+        self.setPlaceholderText("画像分類")
+
+    def set_classifications(
+        self,
+        values: list[tuple[str, int]],
+        selected: set[str],
+        total_count: int | None = None,
+    ) -> None:
+        self._items.blockSignals(True)
+        self._items.clear()
+        count = total_count if total_count is not None else sum(value for _, value in values)
+        all_item = QStandardItem(f"すべて　{count}")
+        all_item.setData(None, Qt.ItemDataRole.UserRole)
+        all_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
+        all_item.setCheckState(Qt.CheckState.Checked if not selected else Qt.CheckState.Unchecked)
+        self._items.appendRow(all_item)
+        for name, count in values:
+            item = QStandardItem(f"{name}　{count}")
+            item.setData(name, Qt.ItemDataRole.UserRole)
+            item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(
+                Qt.CheckState.Checked if name in selected else Qt.CheckState.Unchecked
+            )
+            self._items.appendRow(item)
+        self._items.blockSignals(False)
+        self._sync_text()
+
+    def selected_values(self) -> set[str]:
+        return {
+            str(item.data(Qt.ItemDataRole.UserRole))
+            for row in range(1, self._items.rowCount())
+            if (item := self._items.item(row)).checkState() == Qt.CheckState.Checked
+        }
+
+    def set_selected(self, selected: set[str]) -> None:
+        self._items.blockSignals(True)
+        self._items.item(0).setCheckState(
+            Qt.CheckState.Checked if not selected else Qt.CheckState.Unchecked
+        )
+        for row in range(1, self._items.rowCount()):
+            item = self._items.item(row)
+            item.setCheckState(
+                Qt.CheckState.Checked
+                if item.data(Qt.ItemDataRole.UserRole) in selected
+                else Qt.CheckState.Unchecked
+            )
+        self._items.blockSignals(False)
+        self._sync_text()
+
+    def _sync_text(self, *_args) -> None:
+        selected = self.selected_values()
+        label = "すべて" if not selected else "、".join(sorted(selected))
+        self.setCurrentText(label)
+
+    def showPopup(self) -> None:  # noqa: N802
+        super().showPopup()
+
+    def _item_changed(self, changed_item) -> None:
+        if changed_item.row() == 0:
+            if changed_item.checkState() == Qt.CheckState.Checked:
+                self._items.blockSignals(True)
+                for row in range(1, self._items.rowCount()):
+                    self._items.item(row).setCheckState(Qt.CheckState.Unchecked)
+                self._items.blockSignals(False)
+            elif not self.selected_values():
+                self._items.blockSignals(True)
+                changed_item.setCheckState(Qt.CheckState.Checked)
+                self._items.blockSignals(False)
+        elif changed_item.checkState() == Qt.CheckState.Checked:
+            all_item = self._items.item(0)
+            if all_item.checkState() == Qt.CheckState.Checked:
+                self._items.blockSignals(True)
+                all_item.setCheckState(Qt.CheckState.Unchecked)
+                self._items.blockSignals(False)
+        elif not self.selected_values():
+            self._items.blockSignals(True)
+            self._items.item(0).setCheckState(Qt.CheckState.Checked)
+            self._items.blockSignals(False)
+        self._sync_text()
+        self.changed.emit()
+
+
 class DataPreparationPage(BasePage):
     """作業表、プレビュー、絞り込み、キー操作をまとめて表示する。"""
 
@@ -220,14 +329,15 @@ class DataPreparationPage(BasePage):
         self.other_button.hide()
         self.finalize_error_button = QPushButton()
         self.finalize_error_button.setVisible(False)
-        self.finalize_error_button.clicked.connect(lambda: self._filter_usage("errors"))
+        self.finalize_error_button.clicked.connect(lambda: self._set_error_filter(True))
         self.tab_tools = QWidget()
         self.tab_tools_layout = QHBoxLayout(self.tab_tools)
         self.tab_tools_layout.setContentsMargins(0, 0, 0, 0)
         self.tab_tools_layout.addWidget(self.base_label)
         self.tab_tools_layout.addWidget(self.finalize_error_button)
         self.tab_tools_layout.addWidget(self.finalize_button)
-        chips = QHBoxLayout()
+        usage_row = QHBoxLayout()
+        usage_row.setSpacing(0)
         self.chips: dict[str, CountChip] = {}
         chip_defs = [
             ("all", "すべて", "plain"),
@@ -235,27 +345,46 @@ class DataPreparationPage(BasePage):
             ("train", "学習", "train"),
             ("val", "検証", "val"),
             ("excluded", "不採用", "excluded"),
-            ("errors", "⚠ エラー", "error"),
-            ("changed", "変更あり", "plain"),
         ]
-        chips.setSpacing(6)
         for key, label, usage in chip_defs:
             chip = CountChip(label, 0, usage)
+            chip.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             chip.clicked.connect(lambda checked=False, name=key: self._filter_usage(name))
-            chips.addWidget(chip)
+            usage_row.addWidget(chip)
             self.chips[key] = chip
         self.chips["all"].setChecked(True)
-        separator = QFrame()
-        separator.setProperty("role", "chipSeparator")
-        separator.setFixedSize(1, 22)
-        chips.addWidget(separator)
-        for classification in ("分類A", "分類B", "分類C"):
-            chip = CountChip(classification, 0)
-            chip.clicked.connect(
-                lambda checked=False, value=classification: self._filter_class(value)
-            )
-            chips.addWidget(chip)
-            self.chips[classification] = chip
+        root.addLayout(self._labeled_filter_row("用途", usage_row))
+
+        filter_row = QHBoxLayout()
+        filter_row.setSpacing(8)
+        self.error_filter = CountChip("⚠ エラー", 0, "error")
+        self.error_filter.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.error_filter.toggled.connect(self._set_error_filter)
+        self.chips["errors"] = self.error_filter
+        self.changed_filter = QPushButton("変更あり 0")
+        self.changed_filter.setCheckable(True)
+        self.changed_filter.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        set_style(self.changed_filter, role="filterToggle", usage="changed")
+        self.changed_filter.toggled.connect(self._set_changed_filter)
+        filter_row.addWidget(self.error_filter)
+        filter_row.addWidget(self.changed_filter)
+        filter_row.addSpacing(12)
+        self.class_filter = _ClassificationFilter()
+        self.class_filter.changed.connect(self._classification_filter_changed)
+        filter_row.addWidget(QLabel("画像分類"))
+        filter_row.addWidget(self.class_filter)
+        self.source_combo = QComboBox()
+        self.source_combo.setMinimumWidth(155)
+        self.source_combo.addItem("すべて", None)
+        self.source_combo.currentIndexChanged.connect(self._source_changed)
+        filter_row.addWidget(QLabel("取り込み元"))
+        filter_row.addWidget(self.source_combo)
+        self.search = QLineEdit()
+        self.search.setMinimumWidth(175)
+        self.search.setPlaceholderText("識別子・ファイル名を検索")
+        self.search.textChanged.connect(self._search_changed)
+        filter_row.addWidget(self.search, 1)
+        root.addLayout(self._labeled_filter_row("絞り込み", filter_row))
         for chip in self.chips.values():
             chip.toggled.connect(lambda checked, target=chip: self._style_chip(target, checked))
             self._style_chip(chip, chip.isChecked())
@@ -265,24 +394,8 @@ class DataPreparationPage(BasePage):
             ("train", "filter_train"),
             ("val", "filter_val"),
             ("excluded", "filter_excluded"),
-            ("errors", "filter_errors"),
         ):
             self.chips[name].setToolTip(self.shortcuts.display_key(self.shortcuts[key]))
-        chips.addStretch(1)
-        root.addLayout(chips)
-        filter_controls = QHBoxLayout()
-        filter_controls.setSpacing(8)
-        self.source_combo = QComboBox()
-        self.source_combo.setMinimumWidth(155)
-        self.source_combo.addItem("取り込み元: すべて", None)
-        self.source_combo.currentIndexChanged.connect(self._source_changed)
-        filter_controls.addWidget(self.source_combo)
-        self.search = QLineEdit()
-        self.search.setMinimumWidth(175)
-        self.search.setPlaceholderText("識別子・ファイル名を検索")
-        self.search.textChanged.connect(self._search_changed)
-        filter_controls.addWidget(self.search, 1)
-        root.addLayout(filter_controls)
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.table = QTableView()
         self.table.setModel(self.model)
@@ -293,25 +406,48 @@ class DataPreparationPage(BasePage):
         self.table.setSortingEnabled(False)
         self.table.horizontalHeader().setStretchLastSection(False)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        setup_table(
+            self.table,
+            stretch_column=1,
+            selection_mode=QAbstractItemView.SelectionMode.ExtendedSelection,
+        )
         usage_mapping = {
             USAGE_TEXT[key]: (values[1], values[2], values[3])
             for key, values in USAGE_MARKS.items()
         }
-        self.table.setItemDelegateForColumn(3, _UsageDelegate(usage_mapping, self.table))
+        self.table.setItemDelegateForColumn(2, _UsageDelegate(usage_mapping, self.table))
         self.table.setItemDelegateForColumn(
-            4, ValueComboDelegate(["未設定", *ctx.backend.classifications], self.table)
+            3, ValueComboDelegate(["未設定", *ctx.backend.classifications], self.table)
         )
         self.table.setItemDelegateForColumn(
-            5, ValueComboDelegate(["未設定", "良", "可", "不良"], self.table)
+            4, ValueComboDelegate(["未設定", "良", "可", "不良"], self.table)
         )
         self.model.edit_requested.connect(self._table_edit_requested)
-        self.splitter.addWidget(self.table)
+        table_panel = QWidget()
+        table_layout = QVBoxLayout(table_panel)
+        table_layout.setContentsMargins(0, 0, 0, 0)
+        table_head = QHBoxLayout()
+        self.visible_count = QLabel("0 件中 0 件を表示")
+        self.column_button = QPushButton("表示する列 ▾", table_panel)
+        self.column_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.column_menu = QMenu(self.column_button)
+        self.column_button.setMenu(self.column_menu)
+        table_head.addWidget(self.visible_count)
+        table_head.addStretch(1)
+        table_head.addWidget(self.column_button)
+        table_layout.addLayout(table_head)
+        table_layout.addWidget(self.table, 1)
+        self.splitter.addWidget(table_panel)
         self.preview_panel = QWidget()
         preview = QVBoxLayout(self.preview_panel)
         preview.setContentsMargins(8, 0, 0, 0)
         self.preview_meta = QLabel("画像を選択してください")
-        self.preview_meta.setFont(numeric_font(9))
+        self.preview_meta.setFont(body_font(13))
         preview.addWidget(self.preview_meta)
+        self.preview_details = QLabel("")
+        self.preview_details.setFont(numeric_font(9))
+        set_style(self.preview_details, role="note")
+        preview.addWidget(self.preview_details)
         self.image_view = ImageView()
         self.image_view.setMinimumWidth(300)
         self.display_toggle = DisplayToggle(ctx.display)
@@ -321,6 +457,12 @@ class DataPreparationPage(BasePage):
         self.image_caption = QLabel("画像表示形式")
         set_style(self.image_caption, role="note")
         preview.addWidget(self.image_caption)
+        edits_box = QFrame()
+        edits_box.setProperty("role", "filterPanel")
+        edits_layout = QVBoxLayout(edits_box)
+        edits_layout.setContentsMargins(10, 8, 10, 8)
+        self.selection_note = QLabel("選択中の 0 件を変更")
+        edits_layout.addWidget(self.selection_note)
         edits = QHBoxLayout()
         self.usage_combo = QComboBox()
         for key, label in USAGE_TEXT.items():
@@ -355,13 +497,13 @@ class DataPreparationPage(BasePage):
             pair.addWidget(combo)
             edits.addLayout(pair)
             self.edit_combos[label] = combo
-        preview.addLayout(edits)
-        self.selection_note = QLabel("0 件選択中。変更は選択中のすべてに適用")
-        preview.addWidget(self.selection_note)
+        edits_layout.addLayout(edits)
+        preview.addWidget(edits_box)
         self.splitter.addWidget(self.preview_panel)
         self.splitter.setStretchFactor(0, 3)
         self.splitter.setStretchFactor(1, 2)
         self.splitter.setSizes([900, 588])
+        self.splitter.splitterMoved.connect(lambda *_: fit_table_columns(self.table))
         root.addWidget(self.splitter, 1)
         self._make_menus()
         self.table.selectionModel().selectionChanged.connect(
@@ -377,13 +519,28 @@ class DataPreparationPage(BasePage):
         bind_button_action(self.finalize_button, self.menu_action_map["finalize"])
         settings = app_settings()
         saved_widths = settings.value("dataPreparation/columnWidths")
-        self._has_saved_column_widths = bool(saved_widths)
+        self._has_saved_column_widths = False
         self._initial_column_widths_done = False
         if saved_widths:
-            self.table.horizontalHeader().restoreState(QByteArray.fromBase64(saved_widths.encode()))
+            self._has_saved_column_widths = self.table.horizontalHeader().restoreState(
+                QByteArray.fromBase64(saved_widths.encode())
+            )
             for column in range(self.model.columnCount()):
                 if self.table.columnWidth(column) < 24:
                     self.table.setColumnWidth(column, 24)
+        for column, key in enumerate(
+            (
+                "state",
+                "filename",
+                "usage",
+                "classification",
+                "quality",
+                "identifier",
+                "source",
+                "mask",
+            )
+        ):
+            self.table.setColumnHidden(column, not self.column_action_map[key].isChecked())
         self._saving_column_widths = True
         self.table.horizontalHeader().sectionResized.connect(self._save_column_widths)
         self.refresh()
@@ -405,9 +562,30 @@ class DataPreparationPage(BasePage):
             header = self.table.horizontalHeader()
             self._saving_column_widths = False
             self.table.resizeColumnsToContents()
-            header.resizeSection(0, min(header.sectionSize(0), 240))
+            header.resizeSection(0, 34)
+            header.resizeSection(3, max(header.sectionSize(3), 96))
+            self.table._stretch_column = 1
+            fit_table_columns(self.table)
             header.resizeSection(3, max(header.sectionSize(3), 96))
             self._saving_column_widths = True
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        if (
+            not getattr(self, "_has_saved_column_widths", False)
+            and getattr(getattr(self, "table", None), "_stretch_column", None) is not None
+        ):
+            fit_table_columns(self.table)
+
+    @staticmethod
+    def _labeled_filter_row(label: str, controls: QHBoxLayout) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        title = QLabel(label)
+        title.setMinimumWidth(58)
+        row.addWidget(title)
+        row.addLayout(controls, 1)
+        return row
 
     def _make_menus(self) -> None:
         excel = QMenu(self)
@@ -502,7 +680,7 @@ class DataPreparationPage(BasePage):
         self.menu_action_map["triage"] = QAction("連続振り分け…\tEnter", self)
         self.menu_action_map["triage"].triggered.connect(self.open_triage)
         self.menu_action_map["error_filter"] = QAction("エラーのある画像を表示", self)
-        self.menu_action_map["error_filter"].triggered.connect(lambda: self._filter_usage("errors"))
+        self.menu_action_map["error_filter"].triggered.connect(lambda: self._set_error_filter(True))
         self.menu_action_map["keymap"] = QAction("キー割り当て…", self)
         self.menu_action_map["keymap"].triggered.connect(self.open_keymap)
         self.usage_menu = QMenu("用途を変更", self)
@@ -561,14 +739,41 @@ class DataPreparationPage(BasePage):
             ("filter_train", "学習"),
             ("filter_val", "検証"),
             ("filter_excluded", "不採用"),
-            ("filter_errors", "エラー"),
         ):
             action = QAction(self._menu_text(label, key), self)
+            action.setCheckable(True)
             action.triggered.connect(
                 lambda _checked=False, k=key: self._filter_usage(k.removeprefix("filter_"))
             )
             self.filter_menu.addAction(action)
             self.filter_action_map[key] = action
+        self.usage_filter_group = QActionGroup(self)
+        self.usage_filter_group.setExclusive(True)
+        for action in self.filter_action_map.values():
+            self.usage_filter_group.addAction(action)
+        self.filter_menu.addSeparator()
+        for key, label in (("filter_errors", "⚠ エラー"), ("filter_changed", "変更あり")):
+            action = QAction(label, self)
+            action.setCheckable(True)
+            action.toggled.connect(
+                self._set_error_filter if key == "filter_errors" else self._set_changed_filter
+            )
+            self.filter_menu.addAction(action)
+            self.filter_action_map[key] = action
+        self.filter_menu.addSeparator()
+        self.classification_filter_menu = self.filter_menu.addMenu("画像分類")
+        self.classification_filter_actions = {}
+        self.filter_all_classes_action = self.classification_filter_menu.addAction("すべて")
+        self.filter_all_classes_action.setCheckable(True)
+        self.filter_all_classes_action.triggered.connect(lambda: self._set_classifications(set()))
+        for classification in self.ctx.backend.classifications:
+            action = self.classification_filter_menu.addAction(classification)
+            action.setCheckable(True)
+            action.toggled.connect(
+                lambda checked, value=classification: self._toggle_class_filter(value, checked)
+            )
+            self.classification_filter_actions[classification] = action
+        self._make_column_actions()
         self.display_menu = QMenu("原画像と切り替える表示", self)
         for action in self.display_actions.values():
             self.display_menu.addAction(action)
@@ -604,6 +809,67 @@ class DataPreparationPage(BasePage):
             self.context_menu.addAction(action)
         add_row_context_menu(self.table, self.context_menu)
 
+    def _make_column_actions(self) -> None:
+        settings = app_settings()
+        saved = settings.value("dataPreparation/visibleColumns")
+        visible = (
+            set(saved) if saved else {"state", "filename", "usage", "classification", "quality"}
+        )
+        self.column_action_map = {}
+        self.column_menu.clear()
+        for column, key in enumerate(
+            (
+                "state",
+                "filename",
+                "usage",
+                "classification",
+                "quality",
+                "identifier",
+                "source",
+                "mask",
+            )
+        ):
+            action = self.column_menu.addAction(HEADERS[column])
+            action.setCheckable(True)
+            action.setChecked(key in visible)
+            action.toggled.connect(
+                lambda checked, col=column, name=key: self._set_column_visible(col, name, checked)
+            )
+            self.column_action_map[key] = action
+            self.table.setColumnHidden(column, key not in visible)
+
+    def _refresh_filter_classification_menu(self) -> None:
+        self.classification_filter_menu.clear()
+        self.classification_filter_actions = {}
+        self.filter_all_classes_action = self.classification_filter_menu.addAction("すべて")
+        self.filter_all_classes_action.setCheckable(True)
+        self.filter_all_classes_action.triggered.connect(lambda: self._set_classifications(set()))
+        for classification in self.ctx.backend.classifications:
+            action = self.classification_filter_menu.addAction(classification)
+            action.setCheckable(True)
+            action.toggled.connect(
+                lambda checked, value=classification: self._toggle_class_filter(value, checked)
+            )
+            self.classification_filter_actions[classification] = action
+
+    def _set_column_visible(self, column: int, key: str, visible: bool) -> None:
+        self.table.setColumnHidden(column, not visible)
+        names = [
+            "state",
+            "filename",
+            "usage",
+            "classification",
+            "quality",
+            "identifier",
+            "source",
+            "mask",
+        ]
+        current = {name for name, action in self.column_action_map.items() if action.isChecked()}
+        app_settings().setValue(
+            "dataPreparation/visibleColumns", [name for name in names if name in current]
+        )
+        self._save_column_widths()
+
     def _menu_text(self, label: str, shortcut: str | None) -> str:
         if shortcut:
             return f"{label}\t{self.shortcuts.display_key(self.shortcuts[shortcut])}"
@@ -634,6 +900,7 @@ class DataPreparationPage(BasePage):
             ],
             "view": [
                 None,
+                self.column_menu.menuAction(),
                 self.filter_menu.menuAction(),
                 None,
                 self.image_actions["display_mode"],
@@ -698,10 +965,13 @@ class DataPreparationPage(BasePage):
             "filter_errors",
         ):
             shortcut = QShortcut(QKeySequence(self.shortcuts[name]), self.table)
-            shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
-            shortcut.activated.connect(
-                lambda target=name: self._filter_usage(target.removeprefix("filter_"))
-            )
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            if name == "filter_errors":
+                shortcut.activated.connect(lambda: self.error_filter.toggle())
+            else:
+                shortcut.activated.connect(
+                    lambda target=name: self._filter_usage(target.removeprefix("filter_"))
+                )
             self._filter_shortcuts[name] = shortcut
 
     def _shortcuts_changed(self) -> None:
@@ -730,7 +1000,6 @@ class DataPreparationPage(BasePage):
             ("train", "filter_train"),
             ("val", "filter_val"),
             ("excluded", "filter_excluded"),
-            ("errors", "filter_errors"),
         ):
             self.chips[chip].setToolTip(self.shortcuts.display_key(self.shortcuts[name]))
         for button, name in (
@@ -801,15 +1070,15 @@ class DataPreparationPage(BasePage):
             if (item := self.model.item_at(index.row())) is not None
         ]
         self._selected_ids = ids
-        self.selection_note.setText(f"{len(ids)} 件選択中。変更は選択中のすべてに適用")
-        self.mask_revision_action.setEnabled(bool(ids))
+        self.selection_note.setText(f"選択中の {len(ids)} 件を変更")
+        self.set_menu_action_enabled(self.mask_revision_action, bool(ids))
         self.mask_revision_action.setToolTip("作業中データの行を選ぶと使えます" if not ids else "")
         for action in (
             *self.usage_action_map.values(),
             *self.class_action_map.values(),
             *self.quality_action_map.values(),
         ):
-            action.setEnabled(bool(ids))
+            self.set_menu_action_enabled(action, bool(ids))
             action.setToolTip("作業中データの行を選ぶと使えます" if not ids else "")
         self._show_preview()
         self._syncing_selection = False
@@ -831,6 +1100,7 @@ class DataPreparationPage(BasePage):
             self.image_view.set_image(None)
             self._preview_signature = None
             self.preview_meta.setText("画像を選択してください")
+            self.preview_details.setText("")
             self.image_caption.setText("画像表示形式")
             self.mask_combo.clear()
             for control in (
@@ -844,8 +1114,10 @@ class DataPreparationPage(BasePage):
         item = next((item for item in self.items if item.item_id == self._selected_ids[0]), None)
         if not item:
             return
-        self.preview_meta.setText(
-            f"{item.item_id}　{item.source_filename}\n取り込み元 {item.source_folder}"
+        self.preview_meta.setText(item.source_filename)
+        self.preview_details.setText(
+            f"{item.item_id}　取り込み元 {item.source_folder}　マスク版 "
+            f"{item.selected_mask_revision or 'なし'}"
         )
         self.usage_combo.blockSignals(True)
         self.class_combo.blockSignals(True)
@@ -897,16 +1169,80 @@ class DataPreparationPage(BasePage):
             "train": {"train"},
             "val": {"val"},
             "excluded": {"excluded"},
-            "errors": None,
-            "changed": None,
         }
         self.model.usages = mapping[name]
-        self.model.errors_only = name == "errors"
-        self.model.changed_only = name == "changed"
         self.refresh_views()
         self._sync_selection_to_visible()
-        for key in ("all", "unassigned", "train", "val", "excluded", "errors", "changed"):
+        for key in ("all", "unassigned", "train", "val", "excluded"):
             self.chips[key].setChecked(key == name)
+        self._sync_filter_menu()
+
+    def _set_error_filter(self, enabled: bool) -> None:
+        self.model.errors_only = enabled
+        self.error_filter.setChecked(enabled)
+        self.refresh_views()
+        self._sync_selection_to_visible()
+        self._sync_filter_menu()
+
+    def _set_changed_filter(self, enabled: bool) -> None:
+        self.model.changed_only = enabled
+        self.changed_filter.setChecked(enabled)
+        self.refresh_views()
+        self._sync_selection_to_visible()
+        self._sync_filter_menu()
+
+    def _classification_filter_changed(self) -> None:
+        self._set_classifications(self.class_filter.selected_values())
+
+    def _toggle_class_filter(self, classification: str, checked: bool) -> None:
+        selected = set(self.model.classifications)
+        if checked:
+            selected.add(classification)
+        else:
+            selected.discard(classification)
+        self._set_classifications(selected)
+
+    def _set_classifications(self, selected: set[str]) -> None:
+        self.model.classifications = set(selected)
+        self.class_filter.set_selected(selected)
+        for name, action in self.classification_filter_actions.items():
+            action.blockSignals(True)
+            action.setChecked(name in selected)
+            action.blockSignals(False)
+        self.filter_all_classes_action.blockSignals(True)
+        self.filter_all_classes_action.setChecked(not selected)
+        self.filter_all_classes_action.blockSignals(False)
+        self.refresh_views()
+        self._sync_selection_to_visible()
+        self._sync_filter_menu()
+
+    def _sync_filter_menu(self) -> None:
+        for key, name in (
+            ("filter_all", "all"),
+            ("filter_unassigned", "unassigned"),
+            ("filter_train", "train"),
+            ("filter_val", "val"),
+            ("filter_excluded", "excluded"),
+        ):
+            self.filter_action_map[key].blockSignals(True)
+            usage = None if name == "all" else {name}
+            self.filter_action_map[key].setChecked(self.model.usages == usage)
+            self.filter_action_map[key].blockSignals(False)
+        for key, enabled in (
+            ("filter_errors", self.model.errors_only),
+            ("filter_changed", self.model.changed_only),
+        ):
+            action = self.filter_action_map[key]
+            action.blockSignals(True)
+            action.setChecked(enabled)
+            action.blockSignals(False)
+        for name, action in self.classification_filter_actions.items():
+            action.blockSignals(True)
+            action.setChecked(name in self.model.classifications)
+            action.blockSignals(False)
+        self.filter_all_classes_action.blockSignals(True)
+        self.filter_all_classes_action.setChecked(not self.model.classifications)
+        self.filter_all_classes_action.blockSignals(False)
 
     @staticmethod
     def _style_chip(chip: CountChip, checked: bool) -> None:
@@ -916,13 +1252,7 @@ class DataPreparationPage(BasePage):
         set_style(chip.count_label, state=state)
 
     def _filter_class(self, value: str) -> None:
-        if value in self.model.classifications:
-            self.model.classifications.remove(value)
-        else:
-            self.model.classifications.add(value)
-        self.chips[value].setChecked(value in self.model.classifications)
-        self.refresh_views()
-        self._sync_selection_to_visible()
+        self._toggle_class_filter(value, value not in self.model.classifications)
 
     def _source_changed(self, index: int) -> None:
         self.model.source_folder = self.source_combo.currentData()
@@ -975,6 +1305,7 @@ class DataPreparationPage(BasePage):
                 )
         finally:
             self._syncing_selection = False
+        self.selection_note.setText(f"選択中の {len(self._selected_ids)} 件を変更")
 
     def _select_only_row(self, row: int, item_id: str) -> None:
         """拡張選択状態でも対象行だけを選ぶ。"""
@@ -986,11 +1317,15 @@ class DataPreparationPage(BasePage):
 
     def refresh_views(self) -> None:
         self.model.filters_changed()
+        self.visible_count.setText(
+            f"{len(self.items)} 件中 {len(self.model.visible_items())} 件を表示"
+        )
 
     def refresh(
         self, item_ids: list[str] | None = None, *, filter_membership_changed: bool = False
     ) -> None:
         self._refresh_classification_menu()
+        self._refresh_filter_classification_menu()
         self.items = self.ctx.backend.get_working_items()
         report = self.ctx.backend.validate_items()
         errors = {issue.item_id: issue.message for issue in report.errors}
@@ -1018,26 +1353,32 @@ class DataPreparationPage(BasePage):
             ("errors", len(errors)),
             ("changed", sum(item.change is not None for item in self.items)),
         ):
-            self.chips[key].count_label.setText(str(value))
-        for classification, chip in (
-            ("分類A", self.chips["分類A"]),
-            ("分類B", self.chips["分類B"]),
-            ("分類C", self.chips["分類C"]),
-        ):
-            chip.count_label.setText(
-                str(sum(item.classification == classification for item in self.items))
-            )
+            if key in self.chips:
+                self.chips[key].count_label.setText(str(value))
+        self.error_filter.count_label.setText(str(len(errors)))
+        self.changed_filter.setText(
+            f"変更あり {sum(item.change is not None for item in self.items)}"
+        )
+        class_counts = Counter(item.classification for item in self.items)
+        self.class_filter.set_classifications(
+            [(name, class_counts[name]) for name in self.ctx.backend.classifications],
+            self.model.classifications,
+            len(self.items),
+        )
         selected_folder = self.source_combo.currentData()
         folders = sorted({item.source_folder for item in self.items})
         self.source_combo.blockSignals(True)
         self.source_combo.clear()
-        self.source_combo.addItem("取り込み元: すべて", None)
+        self.source_combo.addItem("すべて", None)
         for folder in folders:
             self.source_combo.addItem(folder, folder)
         self.source_combo.setCurrentIndex(max(0, self.source_combo.findData(selected_folder)))
         self.source_combo.blockSignals(False)
+        self.visible_count.setText(
+            f"{len(self.items)} 件中 {len(self.model.visible_items())} 件を表示"
+        )
         self.finalize_button.setEnabled(not errors)
-        self.menu_action_map["finalize"].setEnabled(not errors)
+        self.set_menu_action_enabled(self.menu_action_map["finalize"], not errors)
         finalize_tip = f"確定（{self.shortcuts.display_key(self.shortcuts['finalize'])}）"
         if errors:
             finalize_tip += "　整合性エラーを解消してください"
@@ -1048,6 +1389,7 @@ class DataPreparationPage(BasePage):
         self.finalize_error_button.setText(f"⚠ エラー {len(errors)} 件を直すと確定できます")
         set_style(self.finalize_error_button, usage="error")
         self.finalize_error_button.setVisible(bool(errors))
+        self._sync_filter_menu()
         if not self._selected_ids and self.model.visible_items():
             self._selected_ids = [self.model.visible_items()[0].item_id]
         if self._selected_ids:
@@ -1064,8 +1406,10 @@ class DataPreparationPage(BasePage):
                 self._show_preview()
             else:
                 self._sync_selection_to_visible()
-        self.mask_revision_action.setEnabled(bool(self._selected_ids))
-        self.archive_action.setEnabled(bool(self.ctx.backend.list_dataset_versions()))
+        self.set_menu_action_enabled(self.mask_revision_action, bool(self._selected_ids))
+        self.set_menu_action_enabled(
+            self.archive_action, bool(self.ctx.backend.list_dataset_versions())
+        )
         self.archive_action.setToolTip(
             "データセット版を確定するとアーカイブを作成できます"
             if not self.ctx.backend.list_dataset_versions()
@@ -1278,10 +1622,9 @@ class DataPreparationPage(BasePage):
             self.search.clear()
             self.source_combo.setCurrentIndex(0)
             self._filter_usage("all")
-            self.model.classifications.clear()
-            for name in ("分類A", "分類B", "分類C"):
-                self.chips[name].setChecked(False)
-            self.refresh_views()
+            self._set_error_filter(False)
+            self._set_changed_filter(False)
+            self._set_classifications(set())
 
     def import_mask_revision(self) -> None:
         """選択中の項目へ新しいマスク版を追加する。"""
@@ -1545,7 +1888,7 @@ class DatasetHistoryPage(BasePage):
 
     def _update_thumbnail_action(self, *_args) -> None:
         enabled = bool(self.table.selectionModel().selectedRows())
-        self.thumbnail_action.setEnabled(enabled)
+        self.set_menu_action_enabled(self.thumbnail_action, enabled)
         self.thumbnail_action.setToolTip(
             "データセット版履歴で行を選ぶと使えます" if not enabled else ""
         )

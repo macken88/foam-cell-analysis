@@ -5,9 +5,10 @@ from __future__ import annotations
 from dataclasses import replace
 from time import perf_counter
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint, Qt
+from PySide6.QtGui import QStandardItemModel
 from PySide6.QtTest import QSignalSpy, QTest
-from PySide6.QtWidgets import QFileDialog
+from PySide6.QtWidgets import QFileDialog, QTableView
 
 from foam_cell_analysis.gui.context import AppContext
 from foam_cell_analysis.gui.jobs import JobManager
@@ -80,11 +81,230 @@ def test_table_edits_multiple_items_and_undo_restores_them(qapp):
         for key in selected
     )
     row = page.model.visible_items().index(backend.get_working_items()[0])
-    assert page.model.setData(page.model.index(row, 5), "可", Qt.ItemDataRole.EditRole)
+    assert page.model.setData(page.model.index(row, 4), "可", Qt.ItemDataRole.EditRole)
     assert backend.get_working_items()[0].quality == "可"
     page.undo_stack.undo()
     assert backend.get_working_items()[0].quality == "良"
     page.close()
+
+
+def _visible_ids(page):
+    return [item.item_id for item in page.model.visible_items()]
+
+
+def _click_combo_row(qtbot, combo, row):
+    combo.showPopup()
+    qtbot.wait(20)
+    index = combo.model().index(row, 0)
+    rect = combo.view().visualRect(index)
+    QTest.mouseClick(
+        combo.view().viewport(),
+        Qt.MouseButton.LeftButton,
+        pos=rect.topLeft() + QPoint(10, rect.height() // 2),
+    )
+    qtbot.wait(20)
+
+
+def test_filter_controls_combine_and_match_visible_rows(shell, qtbot):
+    from foam_cell_analysis.gui.navigation import PageId
+
+    shell.navigate(PageId.DATA_PREPARATION)
+    page = shell.page(PageId.DATA_PREPARATION)
+    window = shell.manager.window(
+        __import__("foam_cell_analysis.gui.navigation", fromlist=["ModeId"]).ModeId.DATA_PREPARATION
+    )
+    window.show()
+    window.activateWindow()
+    window.raise_()
+    qtbot.waitUntil(window.isActiveWindow)
+    qtbot.waitUntil(lambda: page.isVisible())
+
+    first_usage = page.items[0].usage
+    if first_usage != "train":
+        target_usage = next((item for item in page.items if item.usage == "train"), None)
+    else:
+        target_usage = page.items[0]
+    assert target_usage is not None
+    target_usage.change = "updated"
+    target_usage.classification = "分類A"
+    target_usage.source_relpath = "test-source/needle.tif"
+    target_usage.source_filename = "needle.tif"
+    second_target = next(
+        item
+        for item in page.items
+        if item.item_id != target_usage.item_id and item.usage == "train"
+    )
+    second_target.change = "updated"
+    second_target.classification = "分類B"
+    second_target.source_relpath = "test-source/other.tif"
+    second_target.source_filename = "other.tif"
+    shell.ctx.backend.validate_items = lambda *_args, **_kwargs: type(
+        "Report",
+        (),
+        {
+            "errors": [
+                type("Issue", (), {"item_id": item.item_id, "message": "test error"})()
+                for item in (target_usage, second_target)
+            ]
+        },
+    )()
+    page.refresh()
+
+    QTest.mouseClick(page.chips["train"], Qt.MouseButton.LeftButton)
+    QTest.mouseClick(page.error_filter, Qt.MouseButton.LeftButton)
+    QTest.mouseClick(page.changed_filter, Qt.MouseButton.LeftButton)
+    expected = {
+        item.item_id
+        for item in page.items
+        if item.usage == "train" and item.item_id in page.model.errors and item.change is not None
+    }
+    assert set(_visible_ids(page)) == expected
+    _click_combo_row(qtbot, page.class_filter, 1)
+    _click_combo_row(qtbot, page.class_filter, 2)
+    assert page.model.classifications == {"分類A", "分類B"}
+    assert set(_visible_ids(page)) == {target_usage.item_id, second_target.item_id}
+    _click_combo_row(qtbot, page.class_filter, 0)
+    assert page.model.classifications == set()
+    before = (target_usage.usage, target_usage.classification, target_usage.quality)
+    page.class_filter.setFocus()
+    for key in (
+        Qt.Key.Key_Q,
+        Qt.Key.Key_W,
+        Qt.Key.Key_E,
+        Qt.Key.Key_R,
+        Qt.Key.Key_1,
+        Qt.Key.Key_Z,
+        Qt.Key.Key_X,
+        Qt.Key.Key_C,
+    ):
+        QTest.keyClick(page.class_filter, key)
+    assert (target_usage.usage, target_usage.classification, target_usage.quality) == before
+    page.source_combo.showPopup()
+    qtbot.wait(20)
+    source_index = page.source_combo.findData("test-source")
+    QTest.mouseClick(
+        page.source_combo.view().viewport(),
+        Qt.MouseButton.LeftButton,
+        pos=page.source_combo.view()
+        .visualRect(page.source_combo.model().index(source_index, 0))
+        .center(),
+    )
+    QTest.keyClicks(page.search, "needle")
+    assert _visible_ids(page) == [target_usage.item_id]
+    assert page.visible_count.text() == f"{len(page.items)} 件中 1 件を表示"
+
+    page.search.clear()
+    QTest.mouseClick(page.changed_filter, Qt.MouseButton.LeftButton)
+    assert not page.model.changed_only
+    page.table.setFocus()
+    QTest.keyClick(page.table, Qt.Key.Key_6, Qt.KeyboardModifier.AltModifier)
+    assert not page.model.errors_only
+    QTest.keyClick(page.table, Qt.Key.Key_6, Qt.KeyboardModifier.AltModifier)
+    assert page.model.errors_only
+
+
+def test_column_visibility_settings_preview_mark_and_menu_sync(shell, qtbot):
+    from foam_cell_analysis.gui.navigation import ModeId, PageId
+    from foam_cell_analysis.gui.settings import app_settings
+
+    shell.navigate(PageId.DATA_PREPARATION)
+    page = shell.page(PageId.DATA_PREPARATION)
+    window = shell.manager.window(ModeId.DATA_PREPARATION)
+    window.show()
+    window.activateWindow()
+    window.raise_()
+    qtbot.waitUntil(window.isActiveWindow)
+    qtbot.waitUntil(lambda: page.isVisible())
+
+    assert [
+        page.table.horizontalHeader().model().headerData(i, Qt.Orientation.Horizontal)
+        for i in range(5)
+    ] == ["状態", "元ファイル名", "用途", "画像分類", "品質"]
+    assert not any(page.table.isColumnHidden(i) for i in range(5))
+    assert all(page.table.isColumnHidden(i) for i in range(5, 8))
+    page.column_action_map["identifier"].trigger()
+    assert not page.table.isColumnHidden(5)
+    assert "identifier" in app_settings().value("dataPreparation/visibleColumns")
+    restored_visibility = DataPreparationPage(shell.ctx)
+    assert not restored_visibility.table.isColumnHidden(5)
+    restored_visibility.close()
+    page.column_action_map["identifier"].trigger()
+    assert page.table.isColumnHidden(5)
+
+    error_id = next(issue.item_id for issue in shell.ctx.backend.validate_items().errors)
+    error_row = next(
+        i for i, item in enumerate(page.model.visible_items()) if item.item_id == error_id
+    )
+    mark = page.model.index(error_row, 0)
+    assert mark.data() == "⚠"
+    assert mark.data(Qt.ItemDataRole.ToolTipRole)
+    changed_item = next(
+        item for item in page.items if item.change and item.item_id not in page.model.errors
+    )
+    changed_row = next(
+        i
+        for i, item in enumerate(page.model.visible_items())
+        if item.item_id == changed_item.item_id
+    )
+    changed_mark = page.model.index(changed_row, 0)
+    assert changed_mark.data() == "●"
+    assert "変更あり" in changed_mark.data(Qt.ItemDataRole.ToolTipRole)
+    rect = page.table.visualRect(page.model.index(error_row, 1))
+    QTest.mouseClick(page.table.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
+    qtbot.wait(50)
+    selected = page.model.item_at(error_row)
+    assert page.preview_meta.text() == selected.source_filename
+    assert selected.item_id in page.preview_details.text()
+    assert page.selection_note.text() == "選択中の 1 件を変更"
+
+    display = next(
+        action.menu() for action in window.menuBar().actions() if action.text().startswith("表示")
+    )
+    filter_action = next(
+        action for action in display.actions() if action.text().split("\t", 1)[0] == "絞り込み"
+    )
+    error_filter_action = next(
+        action
+        for action in filter_action.menu().actions()
+        if action.text().split("\t", 1)[0] == "⚠ エラー"
+    )
+    changed_filter_action = next(
+        action
+        for action in filter_action.menu().actions()
+        if action.text().split("\t", 1)[0] == "変更あり"
+    )
+    error_filter_action.trigger()
+    assert page.error_filter.isChecked() == error_filter_action.isChecked()
+    changed_filter_action.trigger()
+    assert page.changed_filter.isChecked() == changed_filter_action.isChecked()
+    usage_train_action = next(
+        action
+        for action in filter_action.menu().actions()
+        if action.text().split("\t", 1)[0] == "学習"
+    )
+    usage_train_action.trigger()
+    assert page.chips["train"].isChecked() == usage_train_action.isChecked()
+    assert any(
+        action.text() == "画像分類" and action.menu() for action in filter_action.menu().actions()
+    )
+
+    legacy = QTableView()
+    legacy.setModel(QStandardItemModel(0, 3))
+    legacy.horizontalHeader().resizeSection(0, 3)
+    app_settings().setValue(
+        "dataPreparation/columnWidths",
+        legacy.horizontalHeader().saveState().toBase64().data().decode(),
+    )
+    app_settings().setValue(
+        "dataPreparation/visibleColumns",
+        ["state", "filename", "usage", "classification", "quality"],
+    )
+    page.close()
+    replacement = DataPreparationPage(shell.ctx)
+    assert replacement.table.model().columnCount() == 8
+    assert all(replacement.table.columnWidth(i) >= 24 for i in range(5))
+    assert all(replacement.table.isColumnHidden(i) for i in range(5, 8))
+    replacement.close()
 
 
 def test_auto_triage_is_deterministic_stratified_groupwise_and_preserves_assigned_items(qapp):

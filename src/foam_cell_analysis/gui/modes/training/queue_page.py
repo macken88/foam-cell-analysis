@@ -258,7 +258,7 @@ class TrainingQueuePage(BasePage):
             not entries_by_id[key].queue_is_retry for key in selected
         )
         self.duplicate_button.setEnabled(can_duplicate)
-        self.queue_actions["duplicate"].setEnabled(can_duplicate)
+        self.set_menu_action_enabled(self.queue_actions["duplicate"], can_duplicate)
         self.queue_actions["duplicate"].setToolTip(
             "複製する学習キューの行を選んでください"
             if not selected
@@ -274,7 +274,7 @@ class TrainingQueuePage(BasePage):
             else ""
         )
         self.delete_button.setEnabled(bool(queued))
-        self.queue_actions["delete"].setEnabled(bool(queued))
+        self.set_menu_action_enabled(self.queue_actions["delete"], bool(queued))
         self.queue_actions["delete"].setToolTip(
             "削除する待機中の学習項目を選んでください" if not queued else ""
         )
@@ -284,7 +284,7 @@ class TrainingQueuePage(BasePage):
         self.run_button.setText("実行を停止" if controller.executing else "キューを実行")
         self.run_button.setEnabled(controller.executing or waiting)
         self.run_action.setText("実行を停止" if controller.executing else "キューを実行")
-        self.run_action.setEnabled(controller.executing or waiting)
+        self.set_menu_action_enabled(self.run_action, controller.executing or waiting)
         self.run_action.setToolTip(
             "待機中の学習がありません" if not (controller.executing or waiting) else ""
         )
@@ -312,8 +312,8 @@ class TrainingQueuePage(BasePage):
         )
         self.up_button.setEnabled(can_move_up)
         self.down_button.setEnabled(can_move_down)
-        self.queue_actions["up"].setEnabled(can_move_up)
-        self.queue_actions["down"].setEnabled(can_move_down)
+        self.set_menu_action_enabled(self.queue_actions["up"], can_move_up)
+        self.set_menu_action_enabled(self.queue_actions["down"], can_move_down)
         self.queue_actions["up"].setToolTip(
             "上へ移動できる待機中の学習項目を選んでください" if not can_move_up else ""
         )
@@ -332,7 +332,7 @@ class TrainingQueuePage(BasePage):
             current_entry and current_entry.status == "queued" and not current_entry.queue_is_retry
         )
         self.edit_button.setEnabled(editable)
-        self.queue_actions["edit"].setEnabled(editable)
+        self.set_menu_action_enabled(self.queue_actions["edit"], editable)
         self.queue_actions["edit"].setToolTip(
             "編集する待機中の学習項目を選んでください" if not editable else ""
         )
@@ -341,7 +341,7 @@ class TrainingQueuePage(BasePage):
             entry.status in {"completed", "failed", "stopped"} for entry in self.model.entries
         )
         self.clear_button.setEnabled(can_clear)
-        self.queue_actions["clear"].setEnabled(can_clear)
+        self.set_menu_action_enabled(self.queue_actions["clear"], can_clear)
         self.queue_actions["clear"].setToolTip(
             "片付ける終了行がありません" if not can_clear else ""
         )

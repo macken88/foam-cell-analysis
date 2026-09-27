@@ -101,7 +101,7 @@ def test_review_02_filter_click_clears_selection_of_hidden_rows(shell, qapp):
         item_id in {item.item_id for item in page.model.visible_items()}
         for item_id in page._selected_ids
     )
-    assert page._selected_ids[0] in page.preview_meta.text()
+    assert page._selected_ids[0] in page.preview_details.text()
 
 
 def test_review_03_start_training_mouse_click_keeps_confirmation(shell, qapp):

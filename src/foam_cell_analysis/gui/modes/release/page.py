@@ -313,8 +313,8 @@ class ReleasedModelsPage(BasePage):
             self._selected_model = None
             self.new_release_button.setEnabled(False)
             self.detail_button.setEnabled(False)
-            self.release_actions["new"].setEnabled(False)
-            self.release_actions["detail"].setEnabled(False)
+            self.set_menu_action_enabled(self.release_actions["new"], False)
+            self.set_menu_action_enabled(self.release_actions["detail"], False)
             self.release_actions["new"].setToolTip("リリース済みモデルの行を選ぶと使えます")
             self.release_actions["detail"].setToolTip("リリース済みモデルの行を選ぶと使えます")
             for index, value in enumerate(self.detail_values.values()):
@@ -351,8 +351,8 @@ class ReleasedModelsPage(BasePage):
         self._selected_model = model
         self.new_release_button.setEnabled(True)
         self.detail_button.setEnabled(True)
-        self.release_actions["new"].setEnabled(True)
-        self.release_actions["detail"].setEnabled(True)
+        self.set_menu_action_enabled(self.release_actions["new"], True)
+        self.set_menu_action_enabled(self.release_actions["detail"], True)
         self.release_actions["new"].setToolTip("")
         self.release_actions["detail"].setToolTip("")
 
@@ -548,8 +548,8 @@ class ReleasedModelsPage(BasePage):
                 set_style(combo, state="changed" if changed else "")
         self.apply_button.setEnabled(bool(changes))
         self.discard_button.setEnabled(bool(changes))
-        self.apply_action.setEnabled(bool(changes))
-        self.release_actions["discard"].setEnabled(bool(changes))
+        self.set_menu_action_enabled(self.apply_action, bool(changes))
+        self.set_menu_action_enabled(self.release_actions["discard"], bool(changes))
         self.apply_action.setToolTip("振り分けを変更すると使えます" if not changes else "")
         self.release_actions["discard"].setToolTip(
             "破棄する振り分け変更はありません" if not changes else ""

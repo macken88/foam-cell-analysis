@@ -291,7 +291,7 @@ table.rev{font-size:.92rem}
 <tr><td>v2.5</td><td>2026-09-26</td><td>原画像と設定表示の二択、キー割り当て一覧、画像移動キー、列幅の保存、選択中の自動振り分け、単一チャンネル GUI、ラベルとコンボの間隔、版履歴サムネイル、確定不可理由の表示</td><td>実装済み</td></tr>
 <tr><td>v2.6</td><td>2026-09-26</td><td>学習をK分割交差検証・OOF評価・選択エポックでの全件最終学習へ変更。学習キュー（設定編集・順次実行・失敗後の継続）と待機実験の管理を追加。比較候補をfinal.ptに限定し、検証用mAPとOOF mAPを比較・リリースに追加。再試行の試行履歴保持、同一実験IDでの予約と候補・リリースの試行固定を追記。Mask R-CNN の画像平均・標準偏差を重みに応じて自動決定</td><td>実装済み</td></tr>
 <tr><td>v2.7</td><td>2026-09-27</td><td>設計書を現在の実装だけに整理（改良案はローカル資料 <code>docs/tasks/ui-improvement-plan.html</code> へ分離）。各節の見出しにリンク用の id を付与。末尾に重複して置かれていた交差検証・OOF の説明を 5〜8 章へ統合。モックで無効の主ボタンを灰色で描く</td><td>文書の整理</td></tr>
-<tr><td>v2.8</td><td>2026-09-27</td><td>メニューバーと主な操作の配置</td><td>実装済み</td></tr>
+<tr><td>v2.8</td><td>2026-09-27</td><td>メニューバーと主な操作の配置、データ準備の2行フィルター・複合条件、既定列と任意列の保存、状態印、件数表示、プレビュー情報と一括変更枠</td><td>実装済み</td></tr>
 </tbody></table></div>
 <nav><strong>目次</strong><ol class="toc"><li><a href="#sec1">1. ソース構成</a></li><li><a href="#sec2">2. アプリ全体の画面構成</a> <br><a href="#sec2-6">2.6 見た目の設計（色・フォント・部品）</a> <span class="badge">v2.3</span></li><li><a href="#sec3">3. 共通部品</a></li><li><a href="#sec4">4. データ準備（PageId.DATA_PREPARATION）</a> </li><li><a href="#sec5">5. モデル学習（PageId.TRAINING）</a></li><li><a href="#sec6">6. 実験一覧（PageId.EXPERIMENTS）</a></li><li><a href="#sec7">7. モデル比較・リリース（PageId.CANDIDATES）</a></li><li><a href="#sec8">8. マスク比較（PageId.MASK_COMPARISON）</a></li><li><a href="#sec9">9. リリース済みモデル・モデル振り分け（PageId.RELEASED_MODELS）</a></li><li><a href="#sec10">10. 本番推論（PageId.INFERENCE）</a></li><li><a href="#sec11">11. MockBackend</a></li><li><a href="#sec12">12. テスト（tests/gui/）</a></li></ol></nav>
 </header>
@@ -675,22 +675,21 @@ table.rev{font-size:.92rem}
 <div class="mock-body">
 <div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span class="on">作業中データ</span><span>データセット版履歴</span></span>
 <span class="spacer"></span><span class="small">ベース 学習 <span class="num">train_v003</span> / 検証 <span class="num">val_v003</span></span><span class="err">⚠ エラー 2 件を直すと確定できます</span><span class="btn primary dis">確定…</span></div>
-<div class="m-chips">
-<span class="chip on plain">すべて <b>612</b></span><span class="chip gray">未振り分け <b>23</b></span><span class="chip blue">学習 <b>489</b></span><span class="chip orange">検証 <b>96</b></span><span class="chip strike">不採用 <b>4</b></span><span class="chip red">⚠ エラー <b>2</b></span><span class="chip chg">変更あり <b>37</b></span>
-<span class="sep">|</span><span class="chip plain">分類A</span><span class="chip plain">分類B</span><span class="chip plain">分類C</span>
-<span class="sel-combo">取り込み元: すべて ▾</span>
-<span class="m-search">🔍 識別子・ファイル名</span>
-</div>
-<div class="m-main tbl">
-<div><div class="table-wrap"><table>
-<thead><tr><th>用途</th><th>⚠</th><th>データ識別子</th><th>元ファイル名</th><th>取り込み元フォルダ</th><th>画像分類</th><th>品質</th><th>マスク版</th><th>変更</th></tr></thead>
-<tbody><tr class=""><td><span class="tag train">学習</span></td><td></td><td class="num">item_000121</td><td class="num">foam_0121.tif</td><td><span class="path">2026-09\分類A_lot12</span></td><td>分類A</td><td>良</td><td class="num">rev_002</td><td class="small"></td></tr><tr class="sel"><td><span class="tag val">検証</span></td><td></td><td class="num">item_000122</td><td class="num">foam_0122.tif</td><td><span class="path">2026-09\分類A_lot12</span></td><td>分類A</td><td>良</td><td class="num">rev_002</td><td class="small"></td></tr><tr class="sel chg"><td><span class="tag train">学習</span></td><td></td><td class="num">item_000123</td><td class="num">foam_0123.tif</td><td><span class="path">2026-09\分類B_lot07</span></td><td>分類B</td><td>可</td><td class="num">rev_002</td><td class="small">用途変更</td></tr><tr class=""><td><span class="tag idle">未振り分け</span></td><td></td><td class="num">item_000124</td><td class="num">foam_0124.tif</td><td><span class="path">2026-09\分類B_lot07</span></td><td>分類B</td><td>良</td><td class="num">rev_002</td><td class="small"></td></tr><tr class="chg"><td><span class="tag train">学習</span></td><td><span class="err">⚠ 1</span></td><td class="num">item_000125</td><td class="num">foam_0125.tif</td><td><span class="path">2026-09\分類B_lot07</span></td><td>分類B</td><td>良</td><td class="num">—</td><td class="small">追加</td></tr><tr class=""><td><span class="tag excl">不採用</span></td><td></td><td class="num">item_000126</td><td class="num">foam_0126.tif</td><td><span class="path">2026-09\分類B_lot07</span></td><td>分類B</td><td>不良</td><td class="num">rev_002</td><td class="small"></td></tr><tr class="chg"><td><span class="tag idle">未振り分け</span></td><td></td><td class="num">item_000127</td><td class="num">foam_0127.tif</td><td><span class="path">2026-09\lot03</span></td><td><span class="small">未設定</span></td><td>良</td><td class="num">rev_001</td><td class="small">追加</td></tr></tbody></table></div></div>
+<div class="m-chips"><span class="small">用途</span>
+<span class="chip on plain">すべて <b>612</b></span><span class="chip gray">未振り分け <b>23</b></span><span class="chip blue">学習 <b>489</b></span><span class="chip orange">検証 <b>96</b></span><span class="chip strike">不採用 <b>4</b></span></div>
+<div class="m-chips"><span class="small">絞り込み</span><span class="chip red">⚠ エラー <b>2</b></span><span class="chip chg">変更あり <b>37</b></span>
+<span class="small">画像分類</span><span class="sel-combo">すべて ▾</span><span class="small">取り込み元</span><span class="sel-combo">すべて ▾</span><span class="m-search">🔍 識別子・ファイル名</span></div>
+<div class="m-main tbl" style="grid-template-columns:1.5fr 1fr">
+<div><div class="row"><span class="small"><span class="num">612</span> 件中 <span class="num">612</span> 件を表示</span><span class="spacer"></span><span class="btn">表示する列 ▾</span></div><div class="table-wrap"><table>
+<thead><tr><th></th><th>元ファイル名</th><th>用途</th><th>画像分類</th><th>品質</th></tr></thead>
+<tbody><tr><td></td><td class="num">foam_0121.tif</td><td><span class="tag train">学習</span></td><td>分類A</td><td>良</td></tr><tr class="sel"><td></td><td class="num">foam_0122.tif</td><td><span class="tag val">検証</span></td><td>分類A</td><td>良</td></tr><tr class="sel chg"><td title="用途変更">●</td><td class="num">foam_0123.tif</td><td><span class="tag train">学習</span></td><td>分類B</td><td>可</td></tr><tr><td></td><td class="num">foam_0124.tif</td><td><span class="tag idle">未振り分け</span></td><td>分類B</td><td>良</td></tr><tr class="chg"><td title="マスクがありません">⚠</td><td class="num">foam_0125.tif</td><td><span class="tag train">学習</span></td><td>分類B</td><td>良</td></tr></tbody></table></div></div>
 <div class="m-preview">
+<div class="m-info"><b class="num">foam_0123.tif</b><br><span class="small"><span class="num">item_000123</span>　取り込み元 <span class="path">2026-09\分類B_lot07</span>　マスク版 <span class="num">rev_002</span></span></div>
 <div class="row"><span class="btn">原画像</span><span class="btn primary">オーバーレイ</span></div>
 <div class="m-img" style="min-height:230px"><svg><use href="#foam-ovl"/></svg><span class="cap">オーバーレイ</span></div>
-<div class="m-info"><span class="num"><b>item_000123</b></span>　<span class="num">foam_0123.tif</span>　<span class="small">取り込み元 <span class="path">2026-09\分類B_lot07</span></span><br>
+<div class="panel"><div class="m-info">
 用途 <span class="sel-combo">学習 ▾</span>　　 分類 <span class="sel-combo">分類B ▾</span>　　 品質 <span class="sel-combo">可 ▾</span>　　 マスク <span class="sel-combo num">rev_002 ▾</span><br>
-<span class="small"><span class="num">2</span> 件選択中。変更は選択中のすべてに適用</span></div>
+<span class="small">選択中の <span class="num">2</span> 件を変更</span></div></div>
 </div>
 </div>
 <div class="status"><span>item_000123 ほか 1 件を 学習 にしました（Ctrl+Z で元に戻す）</span><span>実行中ジョブ <span class="num">1</span></span><span>自動保存 <span class="num">10:42:08</span></span></div>
@@ -698,11 +697,12 @@ table.rev{font-size:.92rem}
 
 <ul>
 <li><strong>メニューとタブ右端</strong>: 取り込み・自動振り分け・Excel 入出力・連続振り分け・マスク版取り込み・アーカイブはメニューバーから実行する。タブ行の右端にベース版、エラー件数とエラー行へ絞り込む操作、主ボタン「確定…」を置く。版履歴では「サムネイルで確認…」を表上部の右端に置く。</li>
-<li><strong>件数チップ</strong>: 用途ごとの件数が常に見え、クリック（または <code>Alt</code>+<code>1</code>〜）でその用途に絞り込む。分類チップ・取り込み元の絞り込みとは AND で組み合わせる。「⚠ エラー」チップが整合性確認タブの代わりになる。</li>
+<li><strong>絞り込み</strong>: 1行目の用途ボタンは単一選択。2行目の「⚠ エラー」「変更あり」と画像分類（件数付き複数選択）、取り込み元、検索は AND で組み合わせる。用途は <code>Alt</code>+<code>1</code>〜<code>5</code>、エラーは <code>Alt</code>+<code>6</code> で切り替える。表示件数は条件に合わせて更新する。</li>
 <li><strong>取り込み元の絞り込み（▾）</strong>: 画像ごとに記録している取り込み元フォルダ（仕様8章「元ディレクトリからの相対パス」）で絞り込む。「あるフォルダの画像だけを見直す」ときに使う。フォルダを管理する機能ではなく、絞り込みの条件の1つにすぎない。</li>
 <li><strong>中央</strong>: 作業中データは表だけを表示する。画像の一覧確認は確定ダイアログに置く。</li>
-<li><strong>プレビュー（右）</strong>: 選択中の画像を大きく表示する。原画像と設定表示を二択で切り替える。下に用途・分類・品質・マスク版のコンボをラベルと組にして並べる（ラベルとの間隔約6px、組同士は20px以上）。コンボ幅は内容に合わせる。</li>
-<li><strong>表の列幅</strong>: 全列を個別にドラッグで変更できる。幅は設定に保存し、次回復元する。横幅が足りない場合は横スクロールする。</li>
+<li><strong>表（左）</strong>: 上部に「全件数 件中 表示件数 件を表示」と「表示する列 ▾」を置く。既定列は状態の印・元ファイル名・用途・画像分類・品質。識別子・取り込み元フォルダ・マスク版は任意表示とし、表示状態を設定へ保存する。</li>
+<li><strong>プレビュー（右）</strong>: 選択中の元ファイル名を大きく表示し、下に識別子・取り込み元・マスク版を小さく表示する。原画像と設定表示を二択で切り替える。一括変更コンボは「選択中の N 件を変更」の枠にまとめる。</li>
+<li><strong>表の列幅</strong>: 幅は設定に保存し、列の表示・非表示と組み合わせて次回復元する。古い列幅設定は無視し、既定幅で表示する。ファイル名列を伸ばして余白を抑える。</li>
 <li><strong>確定不可の理由</strong>: 整合性エラー件数をタブ行の確定ボタン左に表示する。押すとエラーのある行だけに絞り込む。</li>
 </ul>
 
@@ -765,16 +765,15 @@ table.rev{font-size:.92rem}
 <div class="table-wrap"><table>
 <thead><tr><th>列</th><th>内容・編集</th></tr></thead>
 <tbody>
-<tr><td>用途</td><td>色付きタグ（未振り分け=灰、学習=青、検証=橙、不採用=灰・取り消し線）。<strong>コンボ</strong>またはキーで変更する。</td></tr>
-<tr><td>⚠</td><td>自動検査のエラー件数。ツールチップとプレビュー下に内容を表示する。</td></tr>
-<tr><td>データ識別子 / 元ファイル名 / 取り込み元フォルダ</td><td>読み取り専用。</td></tr>
-<tr><td>画像分類 / 品質 / マスク版</td><td><strong>コンボ</strong>またはキーで変更する。</td></tr>
-<tr><td>変更</td><td>ベース版からの差分（追加／変更／用途変更）。行の背景色でも示す。</td></tr>
+<tr><td>状態の印</td><td>先頭の狭い列。変更ありは ●、エラーは ⚠ とツールチップで示す。変更行は背景色でも示す。</td></tr>
+<tr><td>元ファイル名 / 用途 / 画像分類 / 品質</td><td>既定で表示する。用途は色付きタグ（未振り分け=灰、学習=青、検証=橙、不採用=灰・取り消し線）。用途・分類・品質は<strong>コンボ</strong>またはキーで変更する。</td></tr>
+<tr><td>データ識別子 / 取り込み元フォルダ / マスク版</td><td>読み取り専用。既定で非表示。「表示する列 ▾」または「表示 → 表示する列」から表示できる。</td></tr>
 </tbody></table></div>
 <ul>
 <li><strong>コンボによる選択は v1 と同じく残す。</strong>セルをクリックして値を選ぶ。分類選択はキー割り当てからも開ける。</li>
 <li>複数の行を選択した状態でどれか1つのセルのコンボを変えると、選択中のすべての行に同じ値を設定する（1回の操作として <code>Ctrl</code>+<code>Z</code> で戻せる）。</li>
-<li>列幅は保存し、次回も同じ幅で開く。各列を個別にドラッグして変更できる。</li>
+<li>一括変更コンボは「選択中の N 件を変更」という枠にまとめる。</li>
+<li>列幅と表示状態は保存し、次回も復元する。列表示を切り替えても幅設定を保持し、列数が異なる古い幅設定は安全に無視する。</li>
 </ul>
 
 <h3 id="sec4-6">4.6 用途の規則</h3>
@@ -786,7 +785,7 @@ table.rev{font-size:.92rem}
 </ul>
 
 <h3 id="sec4-7">4.7 キーボードショートカット</h3>
-<p>現在の割り当ては「キー割り当て一覧」に操作名・分類とともに表示する。キーは一覧から変更でき、ボタンにキー名を埋め込まない。例外として、連続振り分けの用途ボタンだけは割り当てキーを表示する。検索欄・コンボ編集中は画像移動キーを無効にする。</p>
+<p>現在の割り当ては「キー割り当て一覧」に操作名・分類とともに表示する。キーは一覧から変更でき、ボタンにキー名を埋め込まない。例外として、連続振り分けの用途ボタンだけは割り当てキーを表示する。検索欄・コンボ・入切ボタンにフォーカスがある間、表の編集・画像移動キーは誤作動しない。表にフォーカスを戻すと既存のキー操作を使える。</p>
 <div class="table-wrap"><table>
 <thead><tr><th>操作名</th><th>分類</th><th>既定キー</th></tr></thead>
 <tbody>
@@ -794,7 +793,7 @@ table.rev{font-size:.92rem}
 <tr><td>品質を良・可・不良にする</td><td>品質</td><td>Z / X / C</td></tr><tr><td>分類1〜9を設定・分類を未設定にする</td><td>分類</td><td>1〜9 / 0</td></tr><tr><td>分類を選ぶ</td><td>分類</td><td>K</td></tr>
 <tr><td>前の画像 / 次の画像</td><td>画像移動</td><td>Left / Right</td></tr><tr><td>前の未振り分け / 次の未振り分け</td><td>画像移動</td><td>Shift+Space / Space</td></tr><tr><td>連続振り分け</td><td>表示</td><td>Enter</td></tr><tr><td>原画像と設定表示を切り替え</td><td>表示</td><td>M</td></tr>
 <tr><td>拡大 / 縮小 / 全体表示</td><td>表示</td><td>+ / - / F</td></tr><tr><td>元に戻す / やり直す</td><td>編集</td><td>Ctrl+Z / Ctrl+Y</td></tr><tr><td>表示中をすべて選択 / 選択・絞り込み解除</td><td>編集</td><td>Ctrl+A / Esc</td></tr>
-<tr><td>取り込み / 自動振り分け</td><td>データ準備</td><td>Ctrl+I / Ctrl+D</td></tr><tr><td>Excel 出力 / Excel 取込</td><td>データ準備</td><td>Ctrl+E / Ctrl+Shift+E</td></tr><tr><td>件数チップの絞り込み</td><td>絞り込み</td><td>Alt+1〜Alt+6</td></tr><tr><td>選択・絞り込み解除</td><td>編集</td><td>Esc</td></tr><tr><td>キー一覧（F1 でも開く）</td><td>ヘルプ</td><td>?</td></tr><tr><td>検索 / 確定</td><td>データ準備</td><td>Ctrl+F / Ctrl+Enter</td></tr><tr><td>ホームへ戻る</td><td>共通</td><td>Ctrl+H</td></tr>
+<tr><td>取り込み / 自動振り分け</td><td>データ準備</td><td>Ctrl+I / Ctrl+D</td></tr><tr><td>Excel 出力 / Excel 取込</td><td>データ準備</td><td>Ctrl+E / Ctrl+Shift+E</td></tr><tr><td>用途の絞り込み</td><td>絞り込み</td><td>Alt+1〜Alt+5</td></tr><tr><td>エラー表示の入・切</td><td>絞り込み</td><td>Alt+6</td></tr><tr><td>選択・絞り込み解除</td><td>編集</td><td>Esc</td></tr><tr><td>キー一覧（F1 でも開く）</td><td>ヘルプ</td><td>?</td></tr><tr><td>検索 / 確定</td><td>データ準備</td><td>Ctrl+F / Ctrl+Enter</td></tr><tr><td>ホームへ戻る</td><td>共通</td><td>Ctrl+H</td></tr>
 </tbody></table></div>
 <ul>
 <li>左右キーは作業表・連続振り分け・マスク比較で前後の画像へ移動する。作業表では列移動に使わず、上下キーによる行移動は維持する。</li>

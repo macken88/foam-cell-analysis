@@ -366,8 +366,9 @@ class CandidatesPage(BasePage):
     def _update_buttons(self) -> None:
         selected = self._selected()
         one = len(selected) == 1
-        self.candidate_actions["evaluate"].setEnabled(
-            bool(selected) and all(c.status == "candidate" for c in selected)
+        self.set_menu_action_enabled(
+            self.candidate_actions["evaluate"],
+            bool(selected) and all(c.status == "candidate" for c in selected),
         )
         self.candidate_actions["evaluate"].setToolTip(
             "候補を 1 つ以上選ぶと使えます"
@@ -376,15 +377,16 @@ class CandidatesPage(BasePage):
             if any(c.status != "candidate" for c in selected)
             else ""
         )
-        self.candidate_actions["detail"].setEnabled(
-            one and self.validation.currentText() in selected[0].evaluations
+        self.set_menu_action_enabled(
+            self.candidate_actions["detail"],
+            one and self.validation.currentText() in selected[0].evaluations,
         )
         self.candidate_actions["detail"].setToolTip(
             "評価済みの候補を 1 つ選ぶと使えます"
             if not one or self.validation.currentText() not in selected[0].evaluations
             else ""
         )
-        self.candidate_actions["compare"].setEnabled(len(selected) >= 2)
+        self.set_menu_action_enabled(self.candidate_actions["compare"], len(selected) >= 2)
         self.candidate_actions["compare"].setToolTip(
             "候補を 2 つ以上選ぶと使えます" if len(selected) < 2 else ""
         )
@@ -393,7 +395,7 @@ class CandidatesPage(BasePage):
             and selected[0].status == "candidate"
             and self.validation.currentText() in selected[0].evaluations
         )
-        self.candidate_actions["release"].setEnabled(release_enabled)
+        self.set_menu_action_enabled(self.candidate_actions["release"], release_enabled)
         reason = ""
         if not one:
             reason = "評価済みの候補を 1 つ選ぶとリリースできます"
@@ -404,9 +406,11 @@ class CandidatesPage(BasePage):
         self.candidate_actions["release"].setToolTip(reason)
         self.release_reason.setText(reason)
         self.release_reason.setVisible(bool(reason))
-        self.menu_actions["export"].setEnabled(bool(selected))
+        self.set_menu_action_enabled(self.menu_actions["export"], bool(selected))
         self.menu_actions["export"].setToolTip("候補を選ぶと使えます" if not selected else "")
-        self.menu_actions["reject"].setEnabled(any(c.status == "candidate" for c in selected))
+        self.set_menu_action_enabled(
+            self.menu_actions["reject"], any(c.status == "candidate" for c in selected)
+        )
         self.menu_actions["reject"].setToolTip(
             "候補状態の行を 1 つ以上選ぶと使えます"
             if not selected or not any(c.status == "candidate" for c in selected)

@@ -8,14 +8,14 @@ from ....services.models import DataItem, DatasetVersion
 from ...theme import Color, numeric_font
 
 HEADERS = (
-    "取り込み元フォルダ",
-    "データ識別子",
+    "状態",
     "元ファイル名",
     "用途",
     "画像分類",
     "品質",
+    "データ識別子",
+    "取り込み元フォルダ",
     "マスク版",
-    "⚠",
 )
 USAGE_TEXT = {"unassigned": "未振り分け", "train": "学習", "val": "検証", "excluded": "不採用"}
 
@@ -120,29 +120,40 @@ class DataPreparationTableModel(QAbstractTableModel):
             return item
         if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole):
             return (
-                item.source_folder,
-                item.item_id,
+                ("⚠" if item.item_id in self.errors else "●" if item.change else ""),
                 item.source_filename,
                 USAGE_TEXT[item.usage],
                 item.classification or "未設定",
                 item.quality or "未設定",
+                item.item_id,
+                item.source_folder,
                 item.selected_mask_revision or "なし",
-                "⚠" if item.item_id in self.errors else "",
             )[column]
-        if role == Qt.ItemDataRole.ToolTipRole and column == 7 and item.item_id in self.errors:
-            return self.errors[item.item_id]
+        if role == Qt.ItemDataRole.ToolTipRole and column == 0:
+            details = []
+            if item.item_id in self.errors:
+                details.append(f"エラー: {self.errors[item.item_id]}")
+            if item.change:
+                details.append(f"変更あり: {item.change}")
+            if details:
+                return "\n".join(details)
         if role == Qt.ItemDataRole.BackgroundRole and item.change:
             return QColor(Color.CHANGED)
-        if role == Qt.ItemDataRole.TextAlignmentRole and column in (1, 6, 7):
+        if role == Qt.ItemDataRole.ForegroundRole and column == 0:
+            if item.item_id in self.errors:
+                return QColor(Color.ERROR)
+            if item.change:
+                return QColor(Color.OK)
+        if role == Qt.ItemDataRole.TextAlignmentRole and column in (5, 7):
             return int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        if role == Qt.ItemDataRole.FontRole and column in (1, 6):
+        if role == Qt.ItemDataRole.FontRole and column in (5, 7):
             font = numeric_font()
             return font
         return None
 
     def flags(self, index: QModelIndex):
         flags = super().flags(index)
-        if index.isValid() and index.column() in (3, 4, 5):
+        if index.isValid() and index.column() in (2, 3, 4):
             flags |= Qt.ItemFlag.ItemIsEditable
         return flags
 
@@ -152,13 +163,13 @@ class DataPreparationTableModel(QAbstractTableModel):
         item = self.item_at(index.row())
         if item is None:
             return False
-        if index.column() == 3:
+        if index.column() == 2:
             usage = {label: key for key, label in USAGE_TEXT.items()}.get(str(value))
             if usage is None:
                 return False
             self.edit_requested.emit(item.item_id, "usage", usage)
         else:
-            key = "classification" if index.column() == 4 else "quality"
+            key = "classification" if index.column() == 3 else "quality"
             self.edit_requested.emit(
                 item.item_id, key, None if str(value) == "未設定" else str(value)
             )

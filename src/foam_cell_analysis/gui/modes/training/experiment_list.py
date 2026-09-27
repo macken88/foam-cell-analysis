@@ -661,10 +661,11 @@ class ExperimentListPage(BasePage):
     def _update_buttons(self) -> None:
         selected = self._checked_experiments()
         current = self._current_experiment()
-        self.action_map["compare"].setEnabled(len(selected) >= 2)
-        self.action_map["copy"].setEnabled(current is not None)
-        self.action_map["send"].setEnabled(
-            current is not None and current.status == "completed" and bool(current.checkpoints)
+        self.set_menu_action_enabled(self.action_map["compare"], len(selected) >= 2)
+        self.set_menu_action_enabled(self.action_map["copy"], current is not None)
+        self.set_menu_action_enabled(
+            self.action_map["send"],
+            current is not None and current.status == "completed" and bool(current.checkpoints),
         )
         self.action_map["compare"].setToolTip(
             "実験を 2 つ以上選ぶと使えます" if len(selected) < 2 else ""
@@ -677,12 +678,19 @@ class ExperimentListPage(BasePage):
             if current is None or current.status != "completed" or not current.checkpoints
             else ""
         )
-        self.action_map["result"].setEnabled(current is not None and current.status == "completed")
-        self.action_map["stop"].setEnabled(current is not None and current.status == "running")
-        self.action_map["retry"].setEnabled(
-            current is not None and current.status in {"failed", "stopped"}
+        self.set_menu_action_enabled(
+            self.action_map["result"], current is not None and current.status == "completed"
         )
-        self.action_map["edit"].setEnabled(current is not None and current.status == "draft")
+        self.set_menu_action_enabled(
+            self.action_map["stop"], current is not None and current.status == "running"
+        )
+        self.set_menu_action_enabled(
+            self.action_map["retry"],
+            current is not None and current.status in {"failed", "stopped"},
+        )
+        self.set_menu_action_enabled(
+            self.action_map["edit"], current is not None and current.status == "draft"
+        )
         self.action_map["result"].setToolTip(
             "完了した実験を 1 つ選ぶと結果を開けます"
             if current is None or current.status != "completed"
@@ -715,11 +723,11 @@ class ExperimentListPage(BasePage):
             else ""
         )
         if hasattr(self, "yaml_menu_action"):
-            self.yaml_menu_action.setEnabled(current is not None)
+            self.set_menu_action_enabled(self.yaml_menu_action, current is not None)
             self.yaml_menu_action.setToolTip(
                 "設定 YAML を表示する実験を選んでください" if current is None else ""
             )
-        self.action_map["queue_copy"].setEnabled(bool(selected))
+        self.set_menu_action_enabled(self.action_map["queue_copy"], bool(selected))
         self.action_map["queue_copy"].setToolTip(
             "複製する実験をチェックしてください" if not selected else ""
         )

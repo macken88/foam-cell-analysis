@@ -68,6 +68,8 @@ class ModeWindow(QMainWindow):
         self.page_ids = page_ids
         self._page_widgets = {}
         self._page_menu_actions = {}
+        self._page_action_owners = {}
+        self._page_action_guard = set()
         self._generated_page_actions = {}
         self._menus = {}
         self.setWindowTitle(f"{MODE_LABELS[self.mode]} — 気泡インスタンスセグメンテーション")
@@ -278,17 +280,22 @@ class ModeWindow(QMainWindow):
                     if action is None:
                         continue
                     if active:
-                        prior_enabled = action.property("_page_action_enabled")
-                        if prior_enabled is not None:
-                            action.setEnabled(bool(prior_enabled))
-                        action.setProperty("_page_action_enabled", None)
-                        action.setProperty("_page_action_tooltip", None)
+                        prior_tooltip = action.property("_page_action_tooltip")
+                        if prior_tooltip is not None:
+                            self._set_page_action(
+                                action,
+                                enabled=bool(action.property("_page_action_enabled")),
+                                tooltip=str(prior_tooltip),
+                            )
                     else:
                         if action.property("_page_action_enabled") is None:
                             action.setProperty("_page_action_enabled", action.isEnabled())
                             action.setProperty("_page_action_tooltip", action.toolTip())
-                        action.setEnabled(False)
-                        action.setToolTip(f"{tab_label}タブで利用できます")
+                        self._set_page_action(
+                            action,
+                            enabled=False,
+                            tooltip=f"{tab_label}タブで利用できます",
+                        )
         page = self._page_widgets.get(page_id)
         refresh_menu_actions = getattr(page, "refresh_menu_actions", None)
         if callable(refresh_menu_actions):
@@ -306,6 +313,65 @@ class ModeWindow(QMainWindow):
             action.setChecked(target == page_id)
         for menu in self._menus.values():
             self._normalize_menu_tree(menu)
+
+    def _set_page_action(self, action: QAction, *, enabled: bool, tooltip: str) -> None:
+        """ページ状態と現在タブによる表示状態を分けて適用する。"""
+        self._page_action_guard.add(action)
+        try:
+            action.setEnabled(enabled)
+            action.setToolTip(tooltip)
+        finally:
+            self._page_action_guard.discard(action)
+
+    def set_page_action_enabled(self, action: QAction, enabled: bool) -> None:
+        """ページ本来の有効状態を記録し、現在タブの可否と合わせて適用する。"""
+        owner = self._page_action_owners.get(action)
+        if owner is None:
+            action.setEnabled(enabled)
+            return
+        action.setProperty("_page_action_enabled", bool(enabled))
+        active_page = self.page_ids[self.tabs.currentIndex()]
+        effective = bool(enabled) and active_page == owner
+        tooltip = action.toolTip()
+        if active_page != owner:
+            tooltip = f"{MODE_TAB_LABELS[owner][0]}タブで利用できます"
+        self._set_page_action(action, enabled=effective, tooltip=tooltip)
+
+    def _register_page_actions(self, page_id: PageId, groups: dict) -> None:
+        """ページ QAction の状態変更を監視し、非表示タブでは無効を保つ。"""
+        pending = [action for actions in groups.values() for action in actions if action]
+        while pending:
+            action = pending.pop()
+            if action in self._page_action_owners:
+                continue
+            self._page_action_owners[action] = page_id
+            action.setProperty("_page_action_enabled", action.isEnabled())
+            action.setProperty("_page_action_tooltip", action.toolTip())
+            action.changed.connect(lambda a=action: self._page_action_changed(a))
+            if action.menu():
+                pending.extend(action.menu().actions())
+
+    def _page_action_changed(self, action: QAction) -> None:
+        """ページが共有 QAction を更新した意図を記録して、タブ可否を再適用する。"""
+        if action in self._page_action_guard:
+            return
+        owner = self._page_action_owners.get(action)
+        if owner is None:
+            return
+        inactive_tooltip = f"{MODE_TAB_LABELS[owner][0]}タブで利用できます"
+        if action.toolTip() != inactive_tooltip:
+            action.setProperty("_page_action_tooltip", action.toolTip())
+        active_page = self.page_ids[self.tabs.currentIndex()]
+        if active_page != owner:
+            if action.isEnabled():
+                action.setProperty("_page_action_enabled", True)
+            self._set_page_action(
+                action,
+                enabled=False,
+                tooltip=inactive_tooltip,
+            )
+        else:
+            action.setProperty("_page_action_enabled", action.isEnabled())
 
     def _install_tab_tools(self, page_id: PageId) -> None:
         self._clear_tab_tools()
@@ -350,6 +416,7 @@ class ModeWindow(QMainWindow):
         if provider is None:
             provider = getattr(page, "menu_actions", lambda: {})
         self._page_menu_actions[PageId(page_id)] = provider() if callable(provider) else provider
+        self._register_page_actions(PageId(page_id), self._page_menu_actions[PageId(page_id)])
         self._rebuild_page_menus()
         self.tabs.setTabText(index, title)
         self.tabs.setTabToolTip(index, description)

@@ -39,3 +39,12 @@ class BasePage(QWidget):
     def refresh_on_activate(self) -> None:
         """ウィンドウの再表示時に状態を保ちながらページを更新する。"""
         self.on_enter({})
+
+    def set_menu_action_enabled(self, action, enabled: bool) -> None:
+        """共有メニュー項目の本来の有効状態をモードウィンドウへ伝える。"""
+        window = self.window()
+        setter = getattr(window, "set_page_action_enabled", None)
+        if callable(setter):
+            setter(action, enabled)
+        else:
+            action.setEnabled(enabled)

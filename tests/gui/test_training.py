@@ -357,6 +357,7 @@ def test_legacy_draft_edit_and_copy_migrate_via_experiment_actions(shell, qapp):
 
     store_legacy(edited)
     store_legacy(copied)
+    shell.navigate(PageId.EXPERIMENTS)
     results = shell.page(PageId.EXPERIMENTS)
     results.refresh()
 
@@ -408,6 +409,7 @@ def test_legacy_stopped_experiment_retry_is_blocked_without_mutating_record(
     legacy["training"]["epochs"] = 2
     experiment.total_epochs = 2
     experiment.status = "stopped"
+    shell.navigate(PageId.EXPERIMENTS)
     results = shell.page(PageId.EXPERIMENTS)
     results.refresh()
     row = next(
