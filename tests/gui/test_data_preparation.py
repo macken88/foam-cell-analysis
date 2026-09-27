@@ -6,7 +6,7 @@ from dataclasses import replace
 from time import perf_counter
 
 from PySide6.QtCore import QPoint, Qt
-from PySide6.QtGui import QStandardItemModel
+from PySide6.QtGui import QColor, QStandardItemModel
 from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import QFileDialog, QTableView
 
@@ -20,6 +20,7 @@ from foam_cell_analysis.gui.modes.data_preparation.dialogs import (
 )
 from foam_cell_analysis.gui.modes.data_preparation.page import DataPreparationPage
 from foam_cell_analysis.gui.navigation import Navigator
+from foam_cell_analysis.gui.theme import Color
 from foam_cell_analysis.gui.widgets.image_convert import DisplayMode
 from foam_cell_analysis.services.mock.backend import MockBackend
 from foam_cell_analysis.services.models import DataItem
@@ -436,6 +437,56 @@ def test_preview_shortcuts_work_from_table_but_not_search_input(qapp):
     QTest.keyClick(page.search, Qt.Key.Key_M)
     assert page.search.text().casefold() == "m"
     assert page.display_toggle.is_alternate
+    page.close()
+
+
+def test_filter_rows_align_headings_and_start_controls_at_same_x(qapp):
+    page = _page(qapp)
+    page.resize(1440, 800)
+    page.show()
+    qapp.processEvents()
+
+    row_titles = {}
+    for position in range(page.content_layout.count()):
+        row = page.content_layout.itemAt(position).layout()
+        if row and row.count() >= 2 and row.itemAt(0).widget():
+            controls = row.itemAt(1).layout()
+            if controls and controls.indexOf(page.chips["all"]) >= 0:
+                row_titles["用途"] = row.itemAt(0).widget()
+            if controls and controls.indexOf(page.error_filter) >= 0:
+                row_titles["絞り込み"] = row.itemAt(0).widget()
+    usage_label = row_titles["用途"]
+    filter_label = row_titles["絞り込み"]
+    usage_controls_x = page.chips["all"].mapTo(page, QPoint(0, 0)).x()
+    filter_controls_x = page.error_filter.mapTo(page, QPoint(0, 0)).x()
+
+    assert usage_label.width() == filter_label.width() == 58
+    assert usage_controls_x == filter_controls_x
+    assert usage_controls_x < 200
+    page.close()
+
+
+def test_status_marks_use_semantic_theme_colors(qapp):
+    page = _page(qapp)
+    changed_item = next(item for item in page.items if item.item_id not in page.model.errors)
+    changed_item.change = "updated"
+    page.model.set_items(page.items, page.model.errors)
+    changed_row = next(
+        row
+        for row, item in enumerate(page.model.visible_items())
+        if item.item_id == changed_item.item_id
+    )
+    changed_index = page.model.index(changed_row, 0)
+    assert page.model.data(changed_index, Qt.ItemDataRole.ForegroundRole) == QColor(
+        Color.CHANGED_INK
+    )
+
+    error_id = next(iter(page.model.errors))
+    error_row = next(
+        row for row, item in enumerate(page.model.visible_items()) if item.item_id == error_id
+    )
+    error_index = page.model.index(error_row, 0)
+    assert page.model.data(error_index, Qt.ItemDataRole.ForegroundRole) == QColor(Color.ERROR)
     page.close()
 
 

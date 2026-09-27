@@ -151,10 +151,23 @@ def test_work_table_first_launch_sizes_data_columns_to_contents(qapp, tmp_path):
     page.show()
     qapp.processEvents()
     header = page.table.horizontalHeader()
+    assert not header.stretchLastSection()
+    assert getattr(page.table, "_stretch_column", None) is None
     for column in range(1, page.model.columnCount()):
         assert page.table.columnWidth(column) >= header.sectionSizeHint(column)
     assert page.table.columnWidth(3) >= 96
     assert page.table.columnWidth(0) <= 240
+    visible_width = sum(
+        page.table.columnWidth(column)
+        for column in range(page.model.columnCount())
+        if not page.table.isColumnHidden(column)
+    )
+    assert page.table.viewport().width() - visible_width >= 100
+
+    header.resizeSection(1, 333)
+    page._save_column_widths()
+    page.column_action_map["source"].setChecked(True)
+    assert page.table.columnWidth(1) == 333
     page.close()
 
 

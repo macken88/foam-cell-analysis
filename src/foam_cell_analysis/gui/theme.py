@@ -27,6 +27,7 @@ class Color:
     OK = "#2A7147"
     OK_BG = "#E4F1E8"
     CHANGED = "#FFF4CC"
+    CHANGED_INK = "#8A5D00"
     IMAGE_BG = "#2E3338"
     HEADER_BG = "#F5F7F8"
     HOVER_BG = "#F6F8F9"

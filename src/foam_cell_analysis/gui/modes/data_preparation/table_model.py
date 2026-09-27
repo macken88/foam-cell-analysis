@@ -143,7 +143,7 @@ class DataPreparationTableModel(QAbstractTableModel):
             if item.item_id in self.errors:
                 return QColor(Color.ERROR)
             if item.change:
-                return QColor(Color.OK)
+                return QColor(Color.CHANGED_INK)
         if role == Qt.ItemDataRole.TextAlignmentRole and column in (5, 7):
             return int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         if role == Qt.ItemDataRole.FontRole and column in (5, 7):

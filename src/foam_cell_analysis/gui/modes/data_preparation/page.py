@@ -153,6 +153,10 @@ class _ChangedRowDelegate(QStyledItemDelegate):
     def paint(self, painter, option, index) -> None:
         item = index.data(Qt.ItemDataRole.UserRole)
         prepared = QStyleOptionViewItem(option)
+        marker_color = index.data(Qt.ItemDataRole.ForegroundRole)
+        if index.column() == 0 and marker_color is not None:
+            prepared.palette.setColor(QPalette.ColorRole.Text, marker_color)
+            prepared.palette.setColor(QPalette.ColorRole.HighlightedText, marker_color)
         if isinstance(item, DataItem) and item.change:
             color = (
                 Color.SELECTION_CHANGED
@@ -384,7 +388,7 @@ class DataPreparationPage(BasePage):
         self.search.setPlaceholderText("識別子・ファイル名を検索")
         self.search.textChanged.connect(self._search_changed)
         filter_row.addWidget(self.search, 1)
-        root.addLayout(self._labeled_filter_row("絞り込み", filter_row))
+        root.addLayout(self._labeled_filter_row("絞り込み", filter_row, stretch_controls=True))
         for chip in self.chips.values():
             chip.toggled.connect(lambda checked, target=chip: self._style_chip(target, checked))
             self._style_chip(chip, chip.isChecked())
@@ -408,7 +412,6 @@ class DataPreparationPage(BasePage):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         setup_table(
             self.table,
-            stretch_column=1,
             selection_mode=QAbstractItemView.SelectionMode.ExtendedSelection,
         )
         usage_mapping = {
@@ -503,7 +506,6 @@ class DataPreparationPage(BasePage):
         self.splitter.setStretchFactor(0, 3)
         self.splitter.setStretchFactor(1, 2)
         self.splitter.setSizes([900, 588])
-        self.splitter.splitterMoved.connect(lambda *_: fit_table_columns(self.table))
         root.addWidget(self.splitter, 1)
         self._make_menus()
         self.table.selectionModel().selectionChanged.connect(
@@ -561,30 +563,23 @@ class DataPreparationPage(BasePage):
         if not self._has_saved_column_widths:
             header = self.table.horizontalHeader()
             self._saving_column_widths = False
-            self.table.resizeColumnsToContents()
-            header.resizeSection(0, 34)
-            header.resizeSection(3, max(header.sectionSize(3), 96))
-            self.table._stretch_column = 1
             fit_table_columns(self.table)
+            header.resizeSection(0, 34)
             header.resizeSection(3, max(header.sectionSize(3), 96))
             self._saving_column_widths = True
 
-    def resizeEvent(self, event) -> None:  # noqa: N802
-        super().resizeEvent(event)
-        if (
-            not getattr(self, "_has_saved_column_widths", False)
-            and getattr(getattr(self, "table", None), "_stretch_column", None) is not None
-        ):
-            fit_table_columns(self.table)
-
     @staticmethod
-    def _labeled_filter_row(label: str, controls: QHBoxLayout) -> QHBoxLayout:
+    def _labeled_filter_row(
+        label: str, controls: QHBoxLayout, *, stretch_controls: bool = False
+    ) -> QHBoxLayout:
         row = QHBoxLayout()
         row.setSpacing(8)
         title = QLabel(label)
-        title.setMinimumWidth(58)
+        title.setFixedWidth(58)
         row.addWidget(title)
-        row.addLayout(controls, 1)
+        row.addLayout(controls, int(stretch_controls))
+        if not stretch_controls:
+            row.setAlignment(controls, Qt.AlignmentFlag.AlignLeft)
         return row
 
     def _make_menus(self) -> None:
