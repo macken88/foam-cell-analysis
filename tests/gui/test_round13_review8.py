@@ -168,7 +168,7 @@ def test_detail_editor_reports_if_row_is_deleted_and_catches_save_errors(shell, 
     editor = shell.page(PageId.TRAINING)
     shell.navigate(PageId.TRAINING_QUEUE)
     queue.table.selectRow(queue.model.row_for_id(item.experiment_id))
-    QTest.mouseClick(queue.delete_button, Qt.MouseButton.LeftButton)
+    queue.queue_actions["delete"].trigger()
     assert "削除されたため" in editor.queue_edit_banner.text()
     assert not editor.save_button.isEnabled()
     editor._restore_before_queue_edit()

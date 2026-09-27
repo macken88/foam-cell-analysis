@@ -385,7 +385,7 @@ def test_legacy_draft_edit_and_copy_migrate_via_experiment_actions(shell, qapp):
     shell.navigate(PageId.EXPERIMENTS)
     row = select(copied.experiment_id)
     results.table.setCurrentCell(row, 1)
-    QTest.mouseClick(results.button_map["copy"], Qt.MouseButton.LeftButton)
+    results.action_map["copy"].trigger()
     copied_page = shell.page(PageId.TRAINING)
     assert "split_id" not in copied_page.config["data"]
     assert copied_page.config["data"]["cv"]["n_folds"] == 5

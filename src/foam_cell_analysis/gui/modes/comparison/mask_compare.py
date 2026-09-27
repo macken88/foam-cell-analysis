@@ -1,7 +1,7 @@
 """複数候補のマスクを同期表示する画面。"""
 
 from PySide6.QtCore import QEvent, Qt, QTimer
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtGui import QAction, QKeyEvent
 from PySide6.QtWidgets import (
     QComboBox,
     QGridLayout,
@@ -68,6 +68,16 @@ class MaskComparisonPage(BasePage):
         mode_row.addWidget(self.position)
         self.previous.setToolTip(f"前の画像（{self.shortcuts['previous_image']}）")
         self.next.setToolTip(f"次の画像（{self.shortcuts['next_image']}）")
+        self.view_actions = {}
+        for key, label, callback in (
+            ("display_mode", "原画像と切り替える", self._cycle_display_mode),
+            ("previous_image", "前の画像", lambda: self._move(-1)),
+            ("next_image", "次の画像", lambda: self._move(1)),
+            ("fit_view", "全体表示", self._fit_all),
+        ):
+            action = QAction(self._menu_text(label, key), self)
+            action.triggered.connect(callback)
+            self.view_actions[key] = action
         self.grid = QGridLayout()
         self.views: list[ImageView] = []
         area = QWidget()
@@ -87,6 +97,12 @@ class MaskComparisonPage(BasePage):
         self.fit.clicked.connect(self._fit_all)
         self.classification.currentTextChanged.connect(self._load_items)
         self.item_select.currentIndexChanged.connect(self._select_item)
+
+    def _menu_text(self, label: str, key: str) -> str:
+        return f"{label}\t{self.shortcuts.display_key(self.shortcuts[key])}"
+
+    def menu_actions(self):
+        return {"view": list(self.view_actions.values())}
 
     def on_enter(self, params: dict) -> None:
         self.validation = params.get("validation_version", "val_v003")
@@ -222,6 +238,8 @@ class MaskComparisonPage(BasePage):
         self.next.setToolTip(
             f"次の画像（{self.shortcuts.display_key(self.shortcuts['next_image'])}）"
         )
+        for key, action in self.view_actions.items():
+            action.setText(self._menu_text(action.text().split("\t", 1)[0], key))
 
     def _display_mode(self) -> DisplayMode:
         """二択表示を候補画像の描画モードへ変換する。"""

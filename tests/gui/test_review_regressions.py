@@ -450,7 +450,7 @@ def test_review_13_candidate_menu_actions_disable_without_selection(qapp, qtbot)
     page.show()
     assert not page.menu_actions["export"].isEnabled()
     assert not page.menu_actions["reject"].isEnabled()
-    _click_menu_action(qapp, page.more_button, page.menu_actions["export"])
+    page.menu_actions["export"].trigger()
     assert not page.menu_actions["export"].isEnabled()
 
 
@@ -561,40 +561,44 @@ def test_review_18_excel_import_releases_source_file(shell, qapp, tmp_path, monk
 def test_review_19_data_preparation_other_menu_has_required_actions(shell):
     page = shell.page(PageId.DATA_PREPARATION)
     labels = [action.text() for action in page.other_button.menu().actions()]
-    assert "新しいマスク版を取り込む" in labels
-    assert "アーカイブ作成…" in labels
+    assert "新しいマスク版を取り込む…" in labels
+    assert "アーカイブを作成…" in labels
     assert "キー割り当て一覧…" in labels
 
 
-def test_review_19_archive_menu_action_records_archive_for_latest_versions(
-    shell, qapp, monkeypatch
-):
-    page = shell.page(PageId.DATA_PREPARATION)
+def test_review_19_archive_menu_action_records_archive_for_latest_versions(shell, monkeypatch):
+    shell.page(PageId.DATA_PREPARATION)
     monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *_args: "C:/archive")
-    action = next(
-        action
-        for action in page.other_button.menu().actions()
-        if action.text() == "アーカイブ作成…"
+    window = shell.manager.window(ModeId.DATA_PREPARATION)
+    file_menu = next(
+        action.menu()
+        for action in window.menuBar().actions()
+        if action.text().startswith("ファイル")
     )
+    action = next(action for action in file_menu.actions() if action.text() == "アーカイブを作成…")
     assert action.isEnabled()
-    _click_menu_action(qapp, page.other_button, action)
+    action.trigger()
     latest = {}
     for version in shell.ctx.backend.list_dataset_versions():
         latest[version.purpose] = version
     assert all(version.archive_status == "COMPLETED" for version in latest.values())
 
 
-def test_review_19_mask_import_menu_action_adds_revision_to_selected_item(shell, qapp):
+def test_review_19_mask_import_menu_action_adds_revision_to_selected_item(shell):
     page = shell.page(PageId.DATA_PREPARATION)
     item = next(item for item in page.items if item.item_id in page._selected_ids)
     previous_revisions = len(item.mask_revisions)
+    window = shell.manager.window(ModeId.DATA_PREPARATION)
+    file_menu = next(
+        action.menu()
+        for action in window.menuBar().actions()
+        if action.text().startswith("ファイル")
+    )
     action = next(
-        action
-        for action in page.other_button.menu().actions()
-        if action.text() == "新しいマスク版を取り込む"
+        action for action in file_menu.actions() if action.text() == "新しいマスク版を取り込む…"
     )
     assert action.isEnabled()
-    _click_menu_action(qapp, page.other_button, action)
+    action.trigger()
     assert len(item.mask_revisions) == previous_revisions + 1
 
 

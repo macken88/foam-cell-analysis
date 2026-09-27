@@ -46,7 +46,13 @@ from ...widgets.image_convert import DisplayMode, array_to_pixmap, render
 from ...widgets.image_view import ImageView
 from ...widgets.marks import USAGE_MARKS, CountChip, DisplayToggle, TagDelegate
 from ...widgets.page_base import BasePage
-from ...widgets.table import fit_table_columns, restore_row_selection, setup_table
+from ...widgets.table import (
+    add_row_context_menu,
+    bind_button_action,
+    fit_table_columns,
+    restore_row_selection,
+    setup_table,
+)
 from .dialogs import (
     AutoTriageDialog,
     ContinuousTriageDialog,
@@ -202,23 +208,25 @@ class DataPreparationPage(BasePage):
         root.setSpacing(6)
         self.base_label = QLabel()
         self.base_label.setFont(numeric_font(9))
-        root.addWidget(self.base_label)
-        toolbar = QHBoxLayout()
         self.import_button = QPushButton("取り込み…")
         self.auto_button = QPushButton("自動振り分け…")
         self.excel_button = QPushButton("Excel ▾")
         self.other_button = QPushButton("その他 ▾")
         self.finalize_button = QPushButton("確定…")
         self.finalize_button.setProperty("primary", True)
-        for button in (self.import_button, self.auto_button, self.excel_button, self.other_button):
-            toolbar.addWidget(button)
-        toolbar.addStretch(1)
+        self.import_button.hide()
+        self.auto_button.hide()
+        self.excel_button.hide()
+        self.other_button.hide()
         self.finalize_error_button = QPushButton()
         self.finalize_error_button.setVisible(False)
         self.finalize_error_button.clicked.connect(lambda: self._filter_usage("errors"))
-        toolbar.addWidget(self.finalize_error_button)
-        toolbar.addWidget(self.finalize_button)
-        root.addLayout(toolbar)
+        self.tab_tools = QWidget()
+        self.tab_tools_layout = QHBoxLayout(self.tab_tools)
+        self.tab_tools_layout.setContentsMargins(0, 0, 0, 0)
+        self.tab_tools_layout.addWidget(self.base_label)
+        self.tab_tools_layout.addWidget(self.finalize_error_button)
+        self.tab_tools_layout.addWidget(self.finalize_button)
         chips = QHBoxLayout()
         self.chips: dict[str, CountChip] = {}
         chip_defs = [
@@ -275,7 +283,6 @@ class DataPreparationPage(BasePage):
         self.search.textChanged.connect(self._search_changed)
         filter_controls.addWidget(self.search, 1)
         root.addLayout(filter_controls)
-        self._make_menus()
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.table = QTableView()
         self.table.setModel(self.model)
@@ -356,6 +363,7 @@ class DataPreparationPage(BasePage):
         self.splitter.setStretchFactor(1, 2)
         self.splitter.setSizes([900, 588])
         root.addWidget(self.splitter, 1)
+        self._make_menus()
         self.table.selectionModel().selectionChanged.connect(
             lambda *_: self._selection_changed(self.table)
         )
@@ -364,9 +372,9 @@ class DataPreparationPage(BasePage):
         self._install_filter_shortcuts()
         self.image_view.installEventFilter(self)
         self.image_view.viewport().installEventFilter(self)
-        self.import_button.clicked.connect(self.import_data)
-        self.auto_button.clicked.connect(self.auto_triage)
-        self.finalize_button.clicked.connect(self.finalize)
+        bind_button_action(self.import_button, self.menu_action_map["import"])
+        bind_button_action(self.auto_button, self.menu_action_map["auto_triage"])
+        bind_button_action(self.finalize_button, self.menu_action_map["finalize"])
         settings = app_settings()
         saved_widths = settings.value("dataPreparation/columnWidths")
         self._has_saved_column_widths = bool(saved_widths)
@@ -421,10 +429,10 @@ class DataPreparationPage(BasePage):
             self.display_actions[name] = action
         other.addAction("元に戻す", self.undo_stack.undo)
         other.addAction("やり直す", self.undo_stack.redo)
-        self.mask_revision_action = QAction("新しいマスク版を取り込む", self)
+        self.mask_revision_action = QAction("新しいマスク版を取り込む…", self)
         other.addAction(self.mask_revision_action)
         self.mask_revision_action.triggered.connect(self.import_mask_revision)
-        self.archive_action = QAction("アーカイブ作成…", self)
+        self.archive_action = QAction("アーカイブを作成…", self)
         other.addAction(self.archive_action)
         self.archive_action.triggered.connect(self.create_archive)
         self.other_button.setMenu(other)
@@ -462,6 +470,213 @@ class DataPreparationPage(BasePage):
         self._shortcut_actions["clear_selection"] = self._add_key_action(
             "clear_selection", self._clear_selection_or_filter
         )
+        labels = {
+            "import": "画像を取り込む…",
+            "auto_triage": "自動振り分け…",
+            "export_excel": "Excel に出力…",
+            "import_excel": "Excel から取り込む…",
+            "finalize": "データセットを確定…",
+            "undo": "元に戻す",
+            "redo": "やり直す",
+            "search": "検索",
+            "select_all": "すべて選択",
+            "clear_selection": "選択を解除",
+        }
+        self.menu_action_map = {}
+        for key, label in labels.items():
+            shortcut_action = self._shortcut_actions.get(key)
+            if shortcut_action is not None:
+                action = QAction(self)
+                action.triggered.connect(shortcut_action.trigger)
+            else:
+                action = QAction(self)
+                action.triggered.connect(
+                    (lambda: self.table.selectAll())
+                    if key == "select_all"
+                    else self._clear_selection_or_filter
+                )
+            action.setText(self._menu_text(label, key if key in self.shortcuts.mapping else None))
+            self.menu_action_map[key] = action
+        self.menu_action_map["mask_revision"] = self.mask_revision_action
+        self.menu_action_map["archive"] = self.archive_action
+        self.menu_action_map["triage"] = QAction("連続振り分け…\tEnter", self)
+        self.menu_action_map["triage"].triggered.connect(self.open_triage)
+        self.menu_action_map["error_filter"] = QAction("エラーのある画像を表示", self)
+        self.menu_action_map["error_filter"].triggered.connect(lambda: self._filter_usage("errors"))
+        self.menu_action_map["keymap"] = QAction("キー割り当て…", self)
+        self.menu_action_map["keymap"].triggered.connect(self.open_keymap)
+        self.usage_menu = QMenu("用途を変更", self)
+        self.usage_action_map = {}
+        for key, label, value in (
+            ("usage_unassigned", "未振り分け", "unassigned"),
+            ("usage_train", "学習", "train"),
+            ("usage_val", "検証", "val"),
+            ("usage_excluded", "不採用", "excluded"),
+        ):
+            action = QAction(self._menu_text(label, key), self)
+            action.triggered.connect(
+                lambda _checked=False, v=value: self._change(self._selected_ids, usage=v)
+            )
+            self.usage_menu.addAction(action)
+            self.usage_action_map[key] = action
+        self.class_menu = QMenu("画像分類を変更", self)
+        self.class_action_map = {}
+        self._classification_actions = []
+        self._static_class_actions = {}
+        for key, label, value in (
+            ("class_clear", "未設定", None),
+            ("class_dialog", "一覧から選ぶ…", "dialog"),
+        ):
+            action = QAction(self._menu_text(label, key), self)
+            action.triggered.connect(
+                lambda _checked=False, v=value: (
+                    self.choose_classification()
+                    if v == "dialog"
+                    else self._change(self._selected_ids, classification=v)
+                )
+            )
+            self._static_class_actions[key] = action
+        self._class_menu_separator = self.class_menu.addSeparator()
+        for action in self._static_class_actions.values():
+            self.class_menu.addAction(action)
+        self._refresh_classification_menu()
+        self.quality_menu = QMenu("品質を変更", self)
+        self.quality_action_map = {}
+        for key, label, value in (
+            ("quality_good", "良", "good"),
+            ("quality_ok", "可", "acceptable"),
+            ("quality_bad", "不良", "bad"),
+        ):
+            action = QAction(self._menu_text(label, key), self)
+            action.triggered.connect(
+                lambda _checked=False, v=value: self._change(self._selected_ids, quality=v)
+            )
+            self.quality_menu.addAction(action)
+            self.quality_action_map[key] = action
+        self.filter_menu = QMenu("絞り込み", self)
+        self.filter_action_map = {}
+        for key, label in (
+            ("filter_all", "すべて"),
+            ("filter_unassigned", "未振り分け"),
+            ("filter_train", "学習"),
+            ("filter_val", "検証"),
+            ("filter_excluded", "不採用"),
+            ("filter_errors", "エラー"),
+        ):
+            action = QAction(self._menu_text(label, key), self)
+            action.triggered.connect(
+                lambda _checked=False, k=key: self._filter_usage(k.removeprefix("filter_"))
+            )
+            self.filter_menu.addAction(action)
+            self.filter_action_map[key] = action
+        self.display_menu = QMenu("原画像と切り替える表示", self)
+        for action in self.display_actions.values():
+            self.display_menu.addAction(action)
+        self.image_actions = {}
+        for key, label, callback in (
+            ("display_mode", "原画像と切り替える", self._cycle_preview_mode),
+            ("previous_image", "前の画像", lambda: self._move_image(-1)),
+            ("next_image", "次の画像", lambda: self._move_image(1)),
+            ("zoom_in", "拡大", lambda: self.image_view.zoom_by(1.2)),
+            ("zoom_out", "縮小", lambda: self.image_view.zoom_by(1 / 1.2)),
+            ("fit_view", "全体表示", self.image_view.fit_image),
+        ):
+            action = QAction(f"{label}\t{self.shortcuts.display_key(self.shortcuts[key])}", self)
+            action.triggered.connect(callback)
+            self.image_actions[key] = action
+        for key, label in (("changed", "変更あり"),):
+            action = QAction(label, self)
+            action.triggered.connect(lambda _checked=False, value=key: self._filter_usage(value))
+            self.filter_menu.addAction(action)
+        self.context_menu = QMenu(self)
+        for action in (
+            self.usage_menu.menuAction(),
+            self.class_menu.menuAction(),
+            self.quality_menu.menuAction(),
+        ):
+            self.context_menu.addAction(action)
+        self.context_menu.addSeparator()
+        for action in (
+            self.menu_action_map["triage"],
+            self.menu_action_map["undo"],
+            self.menu_action_map["redo"],
+        ):
+            self.context_menu.addAction(action)
+        add_row_context_menu(self.table, self.context_menu)
+
+    def _menu_text(self, label: str, shortcut: str | None) -> str:
+        if shortcut:
+            return f"{label}\t{self.shortcuts.display_key(self.shortcuts[shortcut])}"
+        return label
+
+    def menu_actions(self):
+        return {
+            "file": [
+                self.menu_action_map["import"],
+                self.menu_action_map["mask_revision"],
+                None,
+                self.menu_action_map["export_excel"],
+                self.menu_action_map["import_excel"],
+                None,
+                self.menu_action_map["archive"],
+            ],
+            "edit": [
+                self.menu_action_map["undo"],
+                self.menu_action_map["redo"],
+                None,
+                self.menu_action_map["select_all"],
+                self.menu_action_map["clear_selection"],
+                self.menu_action_map["search"],
+                None,
+                self.usage_menu.menuAction(),
+                self.class_menu.menuAction(),
+                self.quality_menu.menuAction(),
+            ],
+            "view": [
+                None,
+                self.filter_menu.menuAction(),
+                None,
+                self.image_actions["display_mode"],
+                self.image_actions["previous_image"],
+                self.image_actions["next_image"],
+                None,
+                self.image_actions["zoom_in"],
+                self.image_actions["zoom_out"],
+                self.image_actions["fit_view"],
+            ],
+            "dataset": [
+                self.menu_action_map["auto_triage"],
+                self.menu_action_map["triage"],
+                None,
+                self.menu_action_map["error_filter"],
+                self.menu_action_map["finalize"],
+            ],
+            "tools": [],
+        }
+
+    def _refresh_classification_menu(self) -> None:
+        for action in self._classification_actions:
+            self.class_menu.removeAction(action)
+        self._classification_actions = []
+        self.class_action_map = {}
+        classifications = list(self.ctx.backend.classifications)
+        for number, classification in enumerate(classifications, 1):
+            key = f"class_{number}"
+            label = self._menu_text(classification, key) if number <= 9 else classification
+            action = QAction(label, self)
+            action.triggered.connect(
+                lambda _checked=False, value=classification: self._change(
+                    self._selected_ids, classification=value
+                )
+            )
+            self.class_menu.insertAction(self._class_menu_separator, action)
+            self._classification_actions.append(action)
+            self.class_action_map[key] = action
+        for key, action in self._static_class_actions.items():
+            self.class_action_map[key] = action
+
+    def tab_tools_widget(self):
+        return self.tab_tools
 
     def _add_key_action(self, name: str, callback) -> QAction:
         action = QAction(self)
@@ -493,6 +708,20 @@ class DataPreparationPage(BasePage):
         """共有キー変更を画面の操作・表示へ反映する。"""
         for name, action in self._shortcut_actions.items():
             action.setShortcut(QKeySequence(self.shortcuts[name]))
+        for name in self.shortcuts.mapping:
+            if name in self.menu_action_map:
+                label = self.menu_action_map[name].text().split("\t", 1)[0]
+                self.menu_action_map[name].setText(self._menu_text(label, name))
+            for action_map in (
+                self.usage_action_map,
+                self.class_action_map,
+                self.quality_action_map,
+                self.filter_action_map,
+                self.image_actions,
+            ):
+                if name in action_map:
+                    label = action_map[name].text().split("\t", 1)[0]
+                    action_map[name].setText(self._menu_text(label, name))
         for name, shortcut in self._filter_shortcuts.items():
             shortcut.setKey(QKeySequence(self.shortcuts[name]))
         for chip, name in (
@@ -574,6 +803,14 @@ class DataPreparationPage(BasePage):
         self._selected_ids = ids
         self.selection_note.setText(f"{len(ids)} 件選択中。変更は選択中のすべてに適用")
         self.mask_revision_action.setEnabled(bool(ids))
+        self.mask_revision_action.setToolTip("作業中データの行を選ぶと使えます" if not ids else "")
+        for action in (
+            *self.usage_action_map.values(),
+            *self.class_action_map.values(),
+            *self.quality_action_map.values(),
+        ):
+            action.setEnabled(bool(ids))
+            action.setToolTip("作業中データの行を選ぶと使えます" if not ids else "")
         self._show_preview()
         self._syncing_selection = False
 
@@ -753,6 +990,7 @@ class DataPreparationPage(BasePage):
     def refresh(
         self, item_ids: list[str] | None = None, *, filter_membership_changed: bool = False
     ) -> None:
+        self._refresh_classification_menu()
         self.items = self.ctx.backend.get_working_items()
         report = self.ctx.backend.validate_items()
         errors = {issue.item_id: issue.message for issue in report.errors}
@@ -799,10 +1037,14 @@ class DataPreparationPage(BasePage):
         self.source_combo.setCurrentIndex(max(0, self.source_combo.findData(selected_folder)))
         self.source_combo.blockSignals(False)
         self.finalize_button.setEnabled(not errors)
+        self.menu_action_map["finalize"].setEnabled(not errors)
         finalize_tip = f"確定（{self.shortcuts.display_key(self.shortcuts['finalize'])}）"
         if errors:
             finalize_tip += "　整合性エラーを解消してください"
         self.finalize_button.setToolTip(finalize_tip)
+        self.menu_action_map["finalize"].setToolTip(
+            f"エラー {len(errors)} 件を直すと確定できます" if errors else ""
+        )
         self.finalize_error_button.setText(f"⚠ エラー {len(errors)} 件を直すと確定できます")
         set_style(self.finalize_error_button, usage="error")
         self.finalize_error_button.setVisible(bool(errors))
@@ -824,6 +1066,11 @@ class DataPreparationPage(BasePage):
                 self._sync_selection_to_visible()
         self.mask_revision_action.setEnabled(bool(self._selected_ids))
         self.archive_action.setEnabled(bool(self.ctx.backend.list_dataset_versions()))
+        self.archive_action.setToolTip(
+            "データセット版を確定するとアーカイブを作成できます"
+            if not self.ctx.backend.list_dataset_versions()
+            else ""
+        )
 
     def import_data(self) -> None:
         dialog = ImportDialog(self)
@@ -1208,6 +1455,10 @@ class DataPreparationPage(BasePage):
         finally:
             self._preserve_preview_on_refresh = False
 
+    def refresh_menu_actions(self) -> None:
+        """作業データの状態に応じたメニュー項目の有効状態を更新する。"""
+        self.refresh_on_activate()
+
 
 class _ExcelCommand(QUndoCommand):
     """Excel 取込の変更全体を取り消し可能にする。"""
@@ -1266,6 +1517,9 @@ class DatasetHistoryPage(BasePage):
         self.thumbnail_windows = {}
         controls = QHBoxLayout()
         self.thumbnail_button = QPushButton("サムネイルで確認…")
+        self.thumbnail_action = QAction("選択した版をサムネイルで確認…", self)
+        self.thumbnail_action.triggered.connect(self.open_thumbnails)
+        bind_button_action(self.thumbnail_button, self.thumbnail_action)
         controls.addStretch(1)
         controls.addWidget(self.thumbnail_button)
         self.content_layout.addLayout(controls)
@@ -1279,13 +1533,27 @@ class DatasetHistoryPage(BasePage):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         setup_table(self.table)
         self.content_layout.addWidget(self.table)
-        self.thumbnail_button.clicked.connect(self.open_thumbnails)
         self.table.doubleClicked.connect(lambda _index: self.open_thumbnails())
+        self.table.selectionModel().selectionChanged.connect(self._update_thumbnail_action)
+        self.history_context_menu = QMenu(self)
+        self.history_context_menu.addAction(self.thumbnail_action)
+        add_row_context_menu(self.table, self.history_context_menu)
         self.refresh()
+
+    def menu_actions(self):
+        return {"dataset": [None, self.thumbnail_action]}
+
+    def _update_thumbnail_action(self, *_args) -> None:
+        enabled = bool(self.table.selectionModel().selectedRows())
+        self.thumbnail_action.setEnabled(enabled)
+        self.thumbnail_action.setToolTip(
+            "データセット版履歴で行を選ぶと使えます" if not enabled else ""
+        )
 
     def refresh(self) -> None:
         self.model.set_versions(self.ctx.backend.list_dataset_versions())
         fit_table_columns(self.table)
+        self._update_thumbnail_action()
 
     def on_enter(self, params: dict) -> None:
         self.refresh()

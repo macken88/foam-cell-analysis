@@ -129,7 +129,7 @@ def test_active_retry_is_read_only_reservation_for_same_experiment(shell, monkey
         "question",
         lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
     )
-    QTest.mouseClick(queue.delete_button, Qt.MouseButton.LeftButton)
+    queue.queue_actions["delete"].trigger()
     assert backend.get_experiment(original.experiment_id) is original
     assert len(original.runs) == run_count
 
@@ -274,7 +274,7 @@ def test_rereserving_after_cancel_keeps_retry_reservations_distinct(shell, monke
 
     # 先の予約を取り消し、もう一度予約する
     queue.table.selectRow(retry_rows()[0])
-    QTest.mouseClick(queue.delete_button, Qt.MouseButton.LeftButton)
+    queue.queue_actions["delete"].trigger()
     reserve_retry()
     shell.navigate(PageId.TRAINING_QUEUE)
     ids = [queue.model.entries[row].queue_id for row in retry_rows()]
@@ -286,7 +286,7 @@ def test_rereserving_after_cancel_keeps_retry_reservations_distinct(shell, monke
 
     # 1 件だけ削除すると、もう 1 件は残る
     queue.table.selectRow(retry_rows()[0])
-    QTest.mouseClick(queue.delete_button, Qt.MouseButton.LeftButton)
+    queue.queue_actions["delete"].trigger()
     assert retry_labels() == [f"exp_0044（再試行 {run_count + 1}）"]
     assert len(original.runs) == run_count
     assert active.experiment_id in {entry.experiment_id for entry in backend.list_training_queue()}

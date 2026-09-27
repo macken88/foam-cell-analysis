@@ -7,7 +7,7 @@ import math
 from typing import Any
 
 from PySide6.QtCore import QEvent, Qt
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -40,7 +40,7 @@ from ...navigation import PageId
 from ...theme import Color, mono_font, numeric_font, set_style
 from ...widgets.form import CollapsibleSection, FormSection
 from ...widgets.page_base import BasePage
-from ...widgets.table import mark_primary
+from ...widgets.table import bind_button_action, mark_primary
 from .augmentation_dialog import AugmentationDialog
 
 LABELS = {
@@ -146,15 +146,15 @@ class TrainingPage(BasePage):
         scroll.setWidget(form_host)
         self.form_host = form_host
         splitter.addWidget(scroll)
-        preview_panel = QWidget()
-        preview_layout = QVBoxLayout(preview_panel)
+        self.preview_panel = QWidget()
+        preview_layout = QVBoxLayout(self.preview_panel)
         preview_layout.addWidget(QLabel("設定プレビュー（YAML）"))
         self.yaml_preview = QTextEdit()
         self.yaml_preview.setReadOnly(True)
         self.yaml_preview.setFont(mono_font())
         set_style(self.yaml_preview, role="panel")
         preview_layout.addWidget(self.yaml_preview, 1)
-        splitter.addWidget(preview_panel)
+        splitter.addWidget(self.preview_panel)
         splitter.setSizes([720, 310])
         self._build_form()
         buttons = QHBoxLayout()
@@ -164,12 +164,30 @@ class TrainingPage(BasePage):
         self.cancel_queue_edit_button.hide()
         self.start_button = QPushButton("学習開始")
         self.queue_button = QPushButton("キューに追加")
-        self.queue_button.clicked.connect(self.enqueue_config)
+        self.training_actions = {
+            "validate": QAction("設定を検証", self),
+            "save": QAction("下書き保存", self),
+            "queue": QAction("キューに追加", self),
+            "start": QAction("学習開始", self),
+            "new": QAction("新しい実験", self),
+        }
+        self.training_actions["validate"].triggered.connect(self.validate_config)
+        self.training_actions["save"].triggered.connect(self._save_button_clicked)
+        self.training_actions["queue"].triggered.connect(self.enqueue_config)
+        self.training_actions["start"].triggered.connect(lambda: self.start_training())
+        self.training_actions["new"].triggered.connect(self._new_experiment)
+        self.preview_action = QAction("設定プレビュー（YAML）", self)
+        self.preview_action.setCheckable(True)
+        self.preview_action.setChecked(True)
+        self.preview_action.toggled.connect(self.preview_panel.setVisible)
+        self.augmentation_action = QAction("データ拡張プロファイルの編集…", self)
+        self.augmentation_action.triggered.connect(self.open_augmentation_dialog)
+        bind_button_action(self.validate_button, self.training_actions["validate"])
+        bind_button_action(self.save_button, self.training_actions["save"])
+        bind_button_action(self.queue_button, self.training_actions["queue"])
+        bind_button_action(self.start_button, self.training_actions["start"])
         mark_primary(self.start_button)
-        self.validate_button.clicked.connect(self.validate_config)
-        self.save_button.clicked.connect(self._save_button_clicked)
         self.cancel_queue_edit_button.clicked.connect(self._cancel_queue_edit)
-        self.start_button.clicked.connect(lambda: self.start_training())
         buttons.addStretch(1)
         buttons.addWidget(self.validate_button)
         buttons.addWidget(self.save_button)
@@ -180,6 +198,22 @@ class TrainingPage(BasePage):
         self._refresh_yaml()
         if ctx.queue_controller is not None:
             ctx.queue_controller.changed.connect(self._sync_queue_edit_state)
+
+    def _new_experiment(self):
+        self.on_enter({})
+
+    def menu_actions(self):
+        return {
+            "file": [self.training_actions["new"], self.training_actions["save"]],
+            "training": [
+                self.training_actions["validate"],
+                self.training_actions["queue"],
+                self.training_actions["start"],
+                None,
+            ],
+            "view": [self.preview_action],
+            "tools": [self.augmentation_action],
+        }
 
     def _build_form(self) -> None:
         """共通フォームとモデル別スタックを組み立てる。"""
@@ -708,7 +742,7 @@ class TrainingPage(BasePage):
         self._queue_edit_id = None
         self._queue_edit_unavailable = False
         self.save_button.setEnabled(True)
-        self.save_button.setText("下書き保存")
+        self.training_actions["save"].setText("下書き保存")
         self.cancel_queue_edit_button.setText("キャンセル")
         if self._pre_queue_edit is not None:
             self.config, self._edit_id = copy.deepcopy(self._pre_queue_edit)
@@ -885,7 +919,7 @@ class TrainingPage(BasePage):
             self._restore_before_queue_edit()
         self._queue_edit_id = queue_edit
         self.save_button.setEnabled(True)
-        self.save_button.setText("キューに保存" if queue_edit else "下書き保存")
+        self.training_actions["save"].setText("キューに保存" if queue_edit else "下書き保存")
         self.cancel_queue_edit_button.setText("キャンセル")
         self.validate_button.setVisible(not bool(queue_edit))
         self.cancel_queue_edit_button.setVisible(bool(queue_edit))

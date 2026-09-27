@@ -65,7 +65,8 @@ def test_routing_table_expands_model_column_and_marks_unassigned_red(qapp, mock_
     page._routing_controls["分類A"].setCurrentIndex(
         page._routing_controls["分類A"].findData("model_012")
     )
-    assert page.apply_button.text() == "変更を適用…（1 件）"
+    assert page.change_count_label.text() == "1 件の変更があります"
+    assert page.apply_button.text() == "変更を適用…"
 
 
 def test_detailed_model_settings_use_japanese_labels_instead_of_dict_repr(qapp, mock_backend):

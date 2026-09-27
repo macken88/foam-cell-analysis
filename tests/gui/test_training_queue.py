@@ -134,8 +134,12 @@ def test_queue_failure_does_not_block_following_item(shell):
     shell.navigate(PageId.TRAINING_QUEUE)
     queue = shell.page(PageId.TRAINING_QUEUE)
     queue.run_button.click()
-    QTest.qWait(1500)
     statuses = [backend.get_experiment(item.experiment_id).status for item in entries]
+    for _ in range(100):
+        if statuses == ["failed", "completed"]:
+            break
+        QTest.qWait(100)
+        statuses = [backend.get_experiment(item.experiment_id).status for item in entries]
     assert statuses == ["failed", "completed"]
     assert not shell.ctx.queue_controller.executing
     failed_id = entries[0].experiment_id
@@ -145,9 +149,7 @@ def test_queue_failure_does_not_block_following_item(shell):
     assert backend.get_experiment(failed_id).status == "failed"
 
 
-def test_queue_stop_finishes_active_item_and_leaves_next_waiting(shell):
-    from PySide6.QtTest import QTest
-
+def test_queue_stop_finishes_active_item_and_leaves_next_waiting(shell, qtbot):
     backend = shell.ctx.backend
     for _ in range(2):
         config = backend.default_experiment_config("mask_rcnn")
@@ -159,10 +161,15 @@ def test_queue_stop_finishes_active_item_and_leaves_next_waiting(shell):
     controller.start()
     QTest.qWait(5)
     controller.stop()
-    QTest.qWait(900)
+    qtbot.waitUntil(
+        lambda: (
+            backend.get_experiment(entries[0].experiment_id).status == "completed"
+            and not controller.executing
+        ),
+        timeout=10_000,
+    )
     assert backend.get_experiment(entries[0].experiment_id).status == "completed"
     assert backend.get_experiment(entries[1].experiment_id).status == "queued"
-    assert not controller.executing
 
 
 def test_queue_keeps_running_and_selection_when_window_reopens(shell):

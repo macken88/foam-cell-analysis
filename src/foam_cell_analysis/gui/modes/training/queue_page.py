@@ -1,7 +1,7 @@
 """順番に学習する設定を編集・実行する model/view 表。"""
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
@@ -17,7 +17,14 @@ from ...navigation import PageId
 from ...settings import app_settings
 from ...theme import set_style
 from ...widgets.page_base import BasePage
-from ...widgets.table import fit_table_columns, restore_row_selection, setup_table
+from ...widgets.table import (
+    add_row_context_menu,
+    bind_button_action,
+    fit_table_columns,
+    mark_primary,
+    restore_row_selection,
+    setup_table,
+)
 from .queue_model import FIELDS, TrainingQueueDelegate, TrainingQueueModel
 
 
@@ -54,13 +61,16 @@ class TrainingQueuePage(BasePage):
         self.empty_label = QLabel("キューは空です。学習設定の『キューに追加』で設定を追加します。")
         self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         set_style(self.empty_label, role="note")
-        self.content_layout.addWidget(self.status_line)
+        status_row = QHBoxLayout()
+        status_row.addWidget(self.status_line, 1)
+        self.content_layout.addLayout(status_row)
         self.content_layout.addWidget(self.empty_label)
         self.content_layout.addWidget(self.table, 1)
 
         buttons = QHBoxLayout()
         self.column_button = QPushButton("表示する列 ▾")
         self.column_menu = QMenu(self.column_button)
+        self.column_menu.setTitle("表示する列（学習キュー）")
         self.column_button.setMenu(self.column_menu)
         self._build_column_menu()
         buttons.addWidget(self.column_button)
@@ -71,8 +81,11 @@ class TrainingQueuePage(BasePage):
         self.down_button = QPushButton("下へ")
         self.edit_button = QPushButton("設定を開いて編集…")
         self.clear_button = QPushButton("終了した行を片付ける")
+        mark_primary(self.run_button)
+        self.run_action = QAction("キューを実行", self)
+        self.run_action.triggered.connect(self._toggle_run)
+        bind_button_action(self.run_button, self.run_action)
         for button in (
-            self.run_button,
             self.duplicate_button,
             self.delete_button,
             self.up_button,
@@ -80,17 +93,31 @@ class TrainingQueuePage(BasePage):
             self.edit_button,
             self.clear_button,
         ):
-            buttons.addWidget(button)
-        buttons.addStretch(1)
-        self.content_layout.addLayout(buttons)
-
-        self.run_button.clicked.connect(self._toggle_run)
-        self.duplicate_button.clicked.connect(self.duplicate_selected)
-        self.delete_button.clicked.connect(self.delete_selected)
-        self.up_button.clicked.connect(lambda: self.move_selected(-1))
-        self.down_button.clicked.connect(lambda: self.move_selected(1))
-        self.edit_button.clicked.connect(self.edit_selected)
-        self.clear_button.clicked.connect(self.clear_finished)
+            button.hide()
+        self.queue_actions = {
+            "duplicate": QAction("複製", self),
+            "delete": QAction("削除", self),
+            "up": QAction("上へ移動\tCtrl+↑", self),
+            "down": QAction("下へ移動\tCtrl+↓", self),
+            "edit": QAction("設定を開いて編集…", self),
+            "clear": QAction("終了した行を片付ける", self),
+        }
+        for key, callback in (
+            ("duplicate", self.duplicate_selected),
+            ("delete", self.delete_selected),
+            ("up", lambda: self.move_selected(-1)),
+            ("down", lambda: self.move_selected(1)),
+            ("edit", self.edit_selected),
+            ("clear", self.clear_finished),
+        ):
+            self.queue_actions[key].triggered.connect(callback)
+        row_layout = status_row
+        row_layout.addWidget(self.column_button)
+        row_layout.addWidget(self.run_button)
+        self.context_menu = QMenu(self)
+        for key in ("edit", "duplicate", "delete", "up", "down", "clear"):
+            self.context_menu.addAction(self.queue_actions[key])
+        add_row_context_menu(self.table, self.context_menu)
         self.up_shortcut = QShortcut(QKeySequence("Ctrl+Up"), self)
         self.up_shortcut.activated.connect(lambda: self.move_selected(-1))
         self.down_shortcut = QShortcut(QKeySequence("Ctrl+Down"), self)
@@ -100,6 +127,21 @@ class TrainingQueuePage(BasePage):
         ctx.queue_controller.changed.connect(self.refresh)
         ctx.queue_controller.progressed.connect(self._update_status_line)
         self.refresh(initial=True)
+
+    def menu_actions(self):
+        return {
+            "edit": [
+                self.queue_actions["duplicate"],
+                self.queue_actions["delete"],
+                None,
+                self.queue_actions["up"],
+                self.queue_actions["down"],
+                None,
+                self.queue_actions["edit"],
+            ],
+            "training": [self.run_action, self.queue_actions["clear"], None],
+            "view": [None, self.column_menu.menuAction()],
+        }
 
     def _build_column_menu(self) -> None:
         categories: dict[str, list[tuple[int, str]]] = {}
@@ -216,6 +258,14 @@ class TrainingQueuePage(BasePage):
             not entries_by_id[key].queue_is_retry for key in selected
         )
         self.duplicate_button.setEnabled(can_duplicate)
+        self.queue_actions["duplicate"].setEnabled(can_duplicate)
+        self.queue_actions["duplicate"].setToolTip(
+            "複製する学習キューの行を選んでください"
+            if not selected
+            else "再試行予約は複製できません"
+            if not can_duplicate
+            else ""
+        )
         self.duplicate_button.setToolTip(
             "複製する行を選択してください"
             if not selected
@@ -224,11 +274,20 @@ class TrainingQueuePage(BasePage):
             else ""
         )
         self.delete_button.setEnabled(bool(queued))
+        self.queue_actions["delete"].setEnabled(bool(queued))
+        self.queue_actions["delete"].setToolTip(
+            "削除する待機中の学習項目を選んでください" if not queued else ""
+        )
         self.delete_button.setToolTip("待機中の項目だけ削除できます" if not queued else "")
         controller = self.ctx.queue_controller
         waiting = any(entry.status == "queued" for entry in self.model.entries)
         self.run_button.setText("実行を停止" if controller.executing else "キューを実行")
         self.run_button.setEnabled(controller.executing or waiting)
+        self.run_action.setText("実行を停止" if controller.executing else "キューを実行")
+        self.run_action.setEnabled(controller.executing or waiting)
+        self.run_action.setToolTip(
+            "待機中の学習がありません" if not (controller.executing or waiting) else ""
+        )
         self.run_button.setToolTip(
             "待機中の学習がありません" if not self.run_button.isEnabled() else ""
         )
@@ -253,6 +312,14 @@ class TrainingQueuePage(BasePage):
         )
         self.up_button.setEnabled(can_move_up)
         self.down_button.setEnabled(can_move_down)
+        self.queue_actions["up"].setEnabled(can_move_up)
+        self.queue_actions["down"].setEnabled(can_move_down)
+        self.queue_actions["up"].setToolTip(
+            "上へ移動できる待機中の学習項目を選んでください" if not can_move_up else ""
+        )
+        self.queue_actions["down"].setToolTip(
+            "下へ移動できる待機中の学習項目を選んでください" if not can_move_down else ""
+        )
         self.up_button.setToolTip(
             "移動できる待機行を選択してください" if not can_move_up else "Ctrl+↑"
         )
@@ -265,11 +332,19 @@ class TrainingQueuePage(BasePage):
             current_entry and current_entry.status == "queued" and not current_entry.queue_is_retry
         )
         self.edit_button.setEnabled(editable)
+        self.queue_actions["edit"].setEnabled(editable)
+        self.queue_actions["edit"].setToolTip(
+            "編集する待機中の学習項目を選んでください" if not editable else ""
+        )
         self.edit_button.setToolTip("編集できる待機行を選択してください" if not editable else "")
         can_clear = any(
             entry.status in {"completed", "failed", "stopped"} for entry in self.model.entries
         )
         self.clear_button.setEnabled(can_clear)
+        self.queue_actions["clear"].setEnabled(can_clear)
+        self.queue_actions["clear"].setToolTip(
+            "片付ける終了行がありません" if not can_clear else ""
+        )
         self.clear_button.setToolTip("片付ける終了行がありません" if not can_clear else "")
 
     def _double_clicked(self, index) -> None:

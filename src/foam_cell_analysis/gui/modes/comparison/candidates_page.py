@@ -1,7 +1,7 @@
 """モデル比較・リリース候補一覧。"""
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -21,7 +21,13 @@ from ...navigation import PageId
 from ...theme import Color, numeric_font
 from ...widgets.marks import STATUS_MARKS, TagDelegate
 from ...widgets.page_base import BasePage
-from ...widgets.table import fit_table_columns, mark_primary, setup_table
+from ...widgets.table import (
+    add_row_context_menu,
+    bind_button_action,
+    fit_table_columns,
+    mark_primary,
+    setup_table,
+)
 from .dialogs import CandidateDialog, EvaluationDialog, MaskExportDialog, ReleaseDialog
 
 
@@ -43,6 +49,22 @@ class CandidatesPage(BasePage):
             self.validation.setCurrentIndex(latest)
         self.state_filter = QComboBox()
         self.state_filter.addItems(["すべて", "候補", "評価中", "リリース済み", "非採用"])
+        self.validation_menu = QMenu("検証用データセット", self)
+        self.validation_actions = {}
+        self.state_menu = QMenu("候補の状態で絞り込み", self)
+        self.state_actions = {}
+        for version in ctx.backend.list_validation_versions():
+            action = self.validation_menu.addAction(version.version)
+            action.triggered.connect(
+                lambda _checked=False, value=version.version: self.validation.setCurrentText(value)
+            )
+            self.validation_actions[version.version] = action
+        for state in ("すべて", "候補", "評価中", "リリース済み", "非採用"):
+            action = self.state_menu.addAction(state)
+            action.triggered.connect(
+                lambda _checked=False, value=state: self.state_filter.setCurrentText(value)
+            )
+            self.state_actions[state] = action
         row = QHBoxLayout()
         row.addWidget(QLabel("検証用データセット:"))
         self.validation.setMaximumWidth(150)
@@ -51,6 +73,8 @@ class CandidatesPage(BasePage):
         self.state_filter.setMaximumWidth(150)
         row.addWidget(self.state_filter)
         row.addStretch(1)
+        self.release_reason = QLabel()
+        row.addWidget(self.release_reason)
         self.table = QTableWidget(0, 11)
         self.table.setHorizontalHeaderLabels(
             [
@@ -81,7 +105,7 @@ class CandidatesPage(BasePage):
             self.table.setColumnWidth(column, width)
         self.table.setEditTriggers(QTableWidget.EditTrigger.AllEditTriggers)
         self.buttons: dict[str, QPushButton] = {}
-        button_row = QHBoxLayout()
+        self.candidate_actions = {}
         for key, label in (
             ("add", "候補を追加…"),
             ("evaluate", "評価を実行"),
@@ -92,37 +116,65 @@ class CandidatesPage(BasePage):
             button = QPushButton(label)
             button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             self.buttons[key] = button
-            button_row.addWidget(button)
-        for key in ("release",):
-            mark_primary(self.buttons[key])
+            action = QAction(label, self)
+            self.candidate_actions[key] = action
+            bind_button_action(button, action)
+            if key != "release":
+                button.hide()
+        mark_primary(self.buttons["release"])
+        self.candidate_actions["export"] = QAction("粒子解析用マスクを出力…", self)
+        self.candidate_actions["reject"] = QAction("非採用にする", self)
+        self.candidate_actions["export"].triggered.connect(self._export_masks)
+        self.candidate_actions["reject"].triggered.connect(self._reject)
         self.more_button = QPushButton("その他 ▾")
         self.more_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.more_menu = QMenu(self.more_button)
         self.menu_actions = {}
-        for key, label, callback in (
-            ("export", "粒子解析用マスク出力…", self._export_masks),
-            ("reject", "非採用にする", self._reject),
-        ):
-            action = self.more_menu.addAction(label)
-            action.triggered.connect(callback)
+        for key in ("export", "reject"):
+            action = self.candidate_actions[key]
             self.menu_actions[key] = action
         self.more_button.setMenu(self.more_menu)
         self.content_layout.addLayout(row)
         self.content_layout.addWidget(self.table, 1)
-        self.content_layout.addLayout(button_row)
-        button_row.insertWidget(4, self.more_button)
-        button_row.addStretch(1)
+        row.addWidget(self.buttons["release"])
         self.validation.currentTextChanged.connect(self.refresh)
         self.state_filter.currentTextChanged.connect(self.refresh)
         self.table.itemChanged.connect(lambda _item: self._update_buttons())
         self.table.itemClicked.connect(self._remember_clicked_candidate)
-        self.buttons["add"].clicked.connect(self._add_candidate)
-        self.buttons["evaluate"].clicked.connect(self._evaluate)
-        self.buttons["detail"].clicked.connect(self._detail)
-        self.buttons["compare"].clicked.connect(self._compare)
-        self.buttons["release"].clicked.connect(self._release)
+        self.candidate_actions["add"].triggered.connect(self._add_candidate)
+        self.candidate_actions["evaluate"].triggered.connect(self._evaluate)
+        self.candidate_actions["detail"].triggered.connect(self._detail)
+        self.candidate_actions["compare"].triggered.connect(self._compare)
+        self.candidate_actions["release"].triggered.connect(self._release)
+        self.context_menu = QMenu(self)
+        for key in ("add", "evaluate", "detail", "compare", "reject", "release"):
+            self.context_menu.addAction(self.candidate_actions[key])
+
+        def select_candidate_for_context(row_index):
+            clicked = self.table.item(row_index, 0)
+            if clicked.checkState() == Qt.CheckState.Checked:
+                return
+            for row_index_existing in range(self.table.rowCount()):
+                item = self.table.item(row_index_existing, 0)
+                item.setCheckState(
+                    Qt.CheckState.Checked
+                    if row_index_existing == row_index
+                    else Qt.CheckState.Unchecked
+                )
+
+        add_row_context_menu(self.table, self.context_menu, select_candidate_for_context)
         self._pending_action = None
         self.refresh()
+
+    def menu_action_groups(self):
+        return {
+            "file": [self.candidate_actions["export"]],
+            "view": [self.validation_menu.menuAction(), self.state_menu.menuAction(), None],
+            "candidate": [
+                self.candidate_actions[key] for key in ("add", "evaluate", "detail", "compare")
+            ]
+            + [None, self.candidate_actions["reject"], self.candidate_actions["release"]],
+        }
 
     def on_enter(self, params: dict) -> None:
         """他画面から候補追加を受け付ける。"""
@@ -177,6 +229,13 @@ class CandidatesPage(BasePage):
         )
         self.validation.setCurrentText(target_version)
         self.validation.blockSignals(False)
+        for value in available_versions:
+            if value not in self.validation_actions:
+                action = self.validation_menu.addAction(value)
+                action.triggered.connect(
+                    lambda _checked=False, selected=value: self.validation.setCurrentText(selected)
+                )
+                self.validation_actions[value] = action
         self.refresh()
 
     def refresh(self, _value: str = "") -> None:
@@ -307,29 +366,52 @@ class CandidatesPage(BasePage):
     def _update_buttons(self) -> None:
         selected = self._selected()
         one = len(selected) == 1
-        self.buttons["evaluate"].setEnabled(
+        self.candidate_actions["evaluate"].setEnabled(
             bool(selected) and all(c.status == "candidate" for c in selected)
         )
-        self.buttons["detail"].setEnabled(
+        self.candidate_actions["evaluate"].setToolTip(
+            "候補を 1 つ以上選ぶと使えます"
+            if not selected
+            else "評価前の候補を選ぶと使えます"
+            if any(c.status != "candidate" for c in selected)
+            else ""
+        )
+        self.candidate_actions["detail"].setEnabled(
             one and self.validation.currentText() in selected[0].evaluations
         )
-        self.buttons["compare"].setEnabled(len(selected) >= 2)
+        self.candidate_actions["detail"].setToolTip(
+            "評価済みの候補を 1 つ選ぶと使えます"
+            if not one or self.validation.currentText() not in selected[0].evaluations
+            else ""
+        )
+        self.candidate_actions["compare"].setEnabled(len(selected) >= 2)
+        self.candidate_actions["compare"].setToolTip(
+            "候補を 2 つ以上選ぶと使えます" if len(selected) < 2 else ""
+        )
         release_enabled = (
             one
             and selected[0].status == "candidate"
             and self.validation.currentText() in selected[0].evaluations
         )
-        self.buttons["release"].setEnabled(release_enabled)
+        self.candidate_actions["release"].setEnabled(release_enabled)
         reason = ""
         if not one:
-            reason = "リリース候補を1件選択してください。"
+            reason = "評価済みの候補を 1 つ選ぶとリリースできます"
         elif selected[0].status != "candidate":
-            reason = "候補状態のモデルのみリリースできます。"
+            reason = "候補状態のモデルを選ぶとリリースできます"
         elif self.validation.currentText() not in selected[0].evaluations:
-            reason = "選択中の検証用データセットで評価を完了してください。"
-        self.buttons["release"].setToolTip(reason)
+            reason = "評価済みの候補を 1 つ選ぶとリリースできます"
+        self.candidate_actions["release"].setToolTip(reason)
+        self.release_reason.setText(reason)
+        self.release_reason.setVisible(bool(reason))
         self.menu_actions["export"].setEnabled(bool(selected))
+        self.menu_actions["export"].setToolTip("候補を選ぶと使えます" if not selected else "")
         self.menu_actions["reject"].setEnabled(any(c.status == "candidate" for c in selected))
+        self.menu_actions["reject"].setToolTip(
+            "候補状態の行を 1 つ以上選ぶと使えます"
+            if not selected or not any(c.status == "candidate" for c in selected)
+            else ""
+        )
 
     def _show_add_dialog(self, preset=None) -> None:
         dialog = CandidateDialog(self.ctx, self, preset)

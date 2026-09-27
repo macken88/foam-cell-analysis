@@ -3,7 +3,7 @@
 from datetime import datetime
 
 from PySide6.QtCore import QEvent, Qt, Signal
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -67,6 +67,9 @@ class ModeWindow(QMainWindow):
         self.ctx = ctx
         self.page_ids = page_ids
         self._page_widgets = {}
+        self._page_menu_actions = {}
+        self._generated_page_actions = {}
+        self._menus = {}
         self.setWindowTitle(f"{MODE_LABELS[self.mode]} — 気泡インスタンスセグメンテーション")
         self.setMinimumSize(900, 600)
         root = QWidget()
@@ -109,6 +112,11 @@ class ModeWindow(QMainWindow):
             self.tab_bar.addTab(title)
             self.tab_bar.setTabToolTip(self.tab_bar.count() - 1, description)
         top.addWidget(self.tab_bar, 1)
+        self.tab_tools = QWidget(topbar)
+        self.tab_tools_layout = QHBoxLayout(self.tab_tools)
+        self.tab_tools_layout.setContentsMargins(0, 0, 0, 0)
+        self.tab_tools_layout.setSpacing(8)
+        top.addWidget(self.tab_tools)
         layout.addWidget(topbar)
         self.stack = QStackedWidget()
         self.tabs.currentChanged.connect(self._select_tab)
@@ -131,12 +139,181 @@ class ModeWindow(QMainWindow):
         self._update_saved_time(ctx.backend.get_last_saved_at())
         self._install_home_shortcut()
         self.ctx.shortcuts.changed.connect(self._shortcuts_changed)
-        help_menu = self.menuBar().addMenu("ヘルプ")
-        help_menu.addAction("キー割り当て一覧…", self._open_keymap)
+        self._build_menus()
         self._help_shortcut = QShortcut(QKeySequence(self.ctx.shortcuts["help"]), self)
         self._help_shortcut.activated.connect(self._open_keymap)
         self._f1_shortcut = QShortcut(QKeySequence("F1"), self)
         self._f1_shortcut.activated.connect(self._open_keymap)
+
+    def _build_menus(self) -> None:
+        if self.mode == ModeId.INFERENCE:
+            help_menu = self.menuBar().addMenu("ヘルプ(&H)")
+            self._help_menu_action = self._add_action(
+                help_menu, "キー割り当て一覧…", self._open_keymap, "help"
+            )
+            return
+        menu_specs = [("file", "ファイル(&F)")]
+        if self.mode in (ModeId.DATA_PREPARATION, ModeId.TRAINING):
+            menu_specs.append(("edit", "編集(&E)"))
+        menu_specs.append(("view", "表示(&V)"))
+        for key, title in menu_specs:
+            self._menus[key] = self.menuBar().addMenu(title)
+        if self.mode == ModeId.DATA_PREPARATION:
+            self._menus["dataset"] = self.menuBar().addMenu("データセット(&D)")
+        elif self.mode == ModeId.TRAINING:
+            self._menus["training"] = self.menuBar().addMenu("学習(&L)")
+        elif self.mode == ModeId.COMPARISON:
+            self._menus["candidate"] = self.menuBar().addMenu("候補(&C)")
+            self._menus["release"] = self.menuBar().addMenu("リリース(&R)")
+        self._menus["tools"] = self.menuBar().addMenu("ツール(&T)")
+        self._menus["help"] = self.menuBar().addMenu("ヘルプ(&H)")
+        self._file_common_separator = self._menus["file"].addSeparator()
+        self._home_menu_action = self._add_action(
+            self._menus["file"],
+            f"ホームに戻る\t{self.ctx.shortcuts.display_key(self.ctx.shortcuts['home'])}",
+            self.home_requested.emit,
+        )
+        self._add_action(self._menus["file"], "ウィンドウを閉じる", self.close)
+        if self.mode == ModeId.TRAINING:
+            self._tools_keymap_separator = self._menus["tools"].addSeparator()
+        self._tools_keymap_action = self._add_action(
+            self._menus["tools"], "キー割り当て…", self._open_keymap
+        )
+        self._display_menu = None
+        if self.mode in (ModeId.DATA_PREPARATION, ModeId.COMPARISON):
+            self._display_menu = self._menus["tools"].addMenu("原画像と切り替える表示")
+            self._display_actions = {}
+            for name in sorted(self.ctx.display.MODES):
+                action = self._display_menu.addAction(name)
+                action.setCheckable(True)
+                action.setChecked(name == self.ctx.display.value)
+                action.triggered.connect(
+                    lambda _checked=False, value=name: self.ctx.display.set_value(value)
+                )
+                self._display_actions[name] = action
+            self.ctx.display.changed.connect(self._display_changed)
+        self._help_menu_action = self._add_action(
+            self._menus["help"], "キー割り当て一覧…", self._open_keymap, "help"
+        )
+        self._tab_menu_actions = {}
+        for target in self.page_ids:
+            action = self._menus["view"].addAction(MODE_TAB_LABELS[target][0])
+            action.setCheckable(True)
+            action.triggered.connect(
+                lambda _checked=False, value=target: self.tab_requested.emit(value)
+            )
+            self._tab_menu_actions[target] = action
+        self._view_page_separator = self._menus["view"].addSeparator()
+        for menu in self._menus.values():
+            menu.aboutToShow.connect(lambda target=menu: self._normalize_menu_tree(target))
+
+    def _normalize_menu_tree(self, menu) -> None:
+        """Remove leading, trailing, and repeated separators throughout a menu tree."""
+        previous_item = False
+        pending_separator = None
+        for action in menu.actions():
+            action.setStatusTip("")
+            if action.isSeparator():
+                if previous_item and pending_separator is None:
+                    pending_separator = action
+                else:
+                    menu.removeAction(action)
+                continue
+            if not action.isVisible():
+                continue
+            if pending_separator is not None:
+                pending_separator.setVisible(True)
+                pending_separator = None
+            previous_item = True
+            if action.menu():
+                self._normalize_menu_tree(action.menu())
+        if pending_separator is not None:
+            menu.removeAction(pending_separator)
+
+    def _display_changed(self, name: str) -> None:
+        for value, action in self._display_actions.items():
+            action.setChecked(value == name)
+
+    def _add_action(self, menu, label, callback=None, shortcut_key=None):
+        action = QAction(label, self)
+        if shortcut_key:
+            action.setText(
+                f"{label}\t{self.ctx.shortcuts.display_key(self.ctx.shortcuts[shortcut_key])}"
+            )
+            action.triggered.connect(callback)
+        elif callback:
+            action.triggered.connect(callback)
+        menu.addAction(action)
+        return action
+
+    def _clear_tab_tools(self) -> None:
+        while self.tab_tools_layout.count():
+            item = self.tab_tools_layout.takeAt(0)
+            if item.widget():
+                item.widget().setParent(None)
+
+    def _select_tab(self, index: int) -> None:
+        if 0 <= index < len(self.page_ids):
+            page_id = self.page_ids[index]
+            widget = self._page_widgets.get(page_id)
+            if widget:
+                self.stack.setCurrentWidget(widget)
+            self._install_page_menu(page_id)
+            self._install_tab_tools(page_id)
+
+    def _install_page_menu(self, page_id: PageId) -> None:
+        menus = list(self._menus.values())
+        while menus:
+            menu = menus.pop()
+            menu.setToolTipsVisible(True)
+            menus.extend(action.menu() for action in menu.actions() if action.menu() is not None)
+        for owner_page in self.page_ids:
+            for menu_name, actions in self._page_menu_actions.get(owner_page, {}).items():
+                menu = self._menus.get(menu_name)
+                if menu is None or not actions:
+                    continue
+                active = owner_page == page_id
+                tab_label = MODE_TAB_LABELS[owner_page][0]
+                for action in actions:
+                    if action is None:
+                        continue
+                    if active:
+                        prior_enabled = action.property("_page_action_enabled")
+                        if prior_enabled is not None:
+                            action.setEnabled(bool(prior_enabled))
+                        action.setProperty("_page_action_enabled", None)
+                        action.setProperty("_page_action_tooltip", None)
+                    else:
+                        if action.property("_page_action_enabled") is None:
+                            action.setProperty("_page_action_enabled", action.isEnabled())
+                            action.setProperty("_page_action_tooltip", action.toolTip())
+                        action.setEnabled(False)
+                        action.setToolTip(f"{tab_label}タブで利用できます")
+        page = self._page_widgets.get(page_id)
+        refresh_menu_actions = getattr(page, "refresh_menu_actions", None)
+        if callable(refresh_menu_actions):
+            refresh_menu_actions()
+        elif callable(getattr(page, "_update_buttons", None)):
+            page._update_buttons()
+        elif callable(getattr(page, "_update_thumbnail_action", None)):
+            page._update_thumbnail_action()
+        elif callable(getattr(page, "_show_model_detail", None)):
+            page._show_model_detail()
+            update_routing = getattr(page, "_update_routing_rows", None)
+            if callable(update_routing):
+                update_routing()
+        for target, action in getattr(self, "_tab_menu_actions", {}).items():
+            action.setChecked(target == page_id)
+        for menu in self._menus.values():
+            self._normalize_menu_tree(menu)
+
+    def _install_tab_tools(self, page_id: PageId) -> None:
+        self._clear_tab_tools()
+        page = self._page_widgets.get(page_id)
+        factory = getattr(page, "tab_tools_widget", None) if page else None
+        widget = factory() if factory else None
+        if widget:
+            self.tab_tools_layout.addWidget(widget)
 
     def _install_home_shortcut(self) -> None:
         self.home_shortcut = QShortcut(QKeySequence(self.ctx.shortcuts["home"]), self)
@@ -148,6 +325,14 @@ class ModeWindow(QMainWindow):
         self._help_shortcut.setKey(QKeySequence(self.ctx.shortcuts["help"]))
         self.home_button.setToolTip(
             f"ホームへ戻る（{self.ctx.shortcuts.display_key(self.ctx.shortcuts['home'])}）"
+        )
+        if self.mode != ModeId.INFERENCE:
+            self._install_page_menu(self.page_ids[self.tabs.currentIndex()])
+            self._home_menu_action.setText(
+                f"ホームに戻る\t{self.ctx.shortcuts.display_key(self.ctx.shortcuts['home'])}"
+            )
+        self._help_menu_action.setText(
+            f"キー割り当て一覧…\t{self.ctx.shortcuts.display_key(self.ctx.shortcuts['help'])}"
         )
 
     def _open_keymap(self) -> None:
@@ -161,10 +346,69 @@ class ModeWindow(QMainWindow):
         index = self.page_ids.index(PageId(page_id))
         self.stack.insertWidget(index, page)
         self._page_widgets[PageId(page_id)] = page
+        provider = getattr(page, "menu_action_groups", None)
+        if provider is None:
+            provider = getattr(page, "menu_actions", lambda: {})
+        self._page_menu_actions[PageId(page_id)] = provider() if callable(provider) else provider
+        self._rebuild_page_menus()
         self.tabs.setTabText(index, title)
         self.tabs.setTabToolTip(index, description)
         self.tab_bar.setTabText(index, title)
         self.tab_bar.setTabToolTip(index, description)
+        if index == self.tabs.currentIndex():
+            self._install_page_menu(PageId(page_id))
+            self._install_tab_tools(PageId(page_id))
+
+    @staticmethod
+    def _append_token(menu, token, before=None):
+        if token is None:
+            action = QAction(menu)
+            action.setSeparator(True)
+        else:
+            action = token
+            action.setStatusTip("")
+        if before is None:
+            menu.addAction(action)
+        else:
+            menu.insertAction(before, action)
+        return action
+
+    def _rebuild_page_menus(self) -> None:
+        """Reassemble page-owned actions so empty groups never leave separators."""
+        for menu_name, generated in self._generated_page_actions.items():
+            menu = self._menus.get(menu_name)
+            if menu is None:
+                continue
+            for action in generated:
+                menu.removeAction(action)
+                if action.isSeparator():
+                    action.deleteLater()
+        self._generated_page_actions = {}
+
+        for menu_name, menu in self._menus.items():
+            tokens = []
+            for page_id in self.page_ids:
+                for token in self._page_menu_actions.get(page_id, {}).get(menu_name, []):
+                    if token is None:
+                        if tokens and tokens[-1] is not None:
+                            tokens.append(None)
+                    else:
+                        tokens.append(token)
+            while tokens and tokens[-1] is None:
+                tokens.pop()
+            if not tokens:
+                continue
+            before = (
+                self._file_common_separator
+                if menu_name == "file"
+                else self._tools_keymap_separator
+                if menu_name == "tools" and self.mode == ModeId.TRAINING
+                else None
+            )
+            generated = []
+            for token in tokens:
+                generated.append(self._append_token(menu, token, before))
+            self._generated_page_actions[menu_name] = generated
 
     def select_page(self, page_id: PageId) -> None:
         """指定ページのタブを選択する。"""
@@ -178,12 +422,8 @@ class ModeWindow(QMainWindow):
         widget = self._page_widgets.get(PageId(page_id))
         if widget:
             self.stack.setCurrentWidget(widget)
-
-    def _select_tab(self, index: int) -> None:
-        if 0 <= index < len(self.page_ids):
-            widget = self._page_widgets.get(self.page_ids[index])
-            if widget:
-                self.stack.setCurrentWidget(widget)
+        self._install_page_menu(PageId(page_id))
+        self._install_tab_tools(PageId(page_id))
 
     def _select_requested_tab(self, index: int) -> None:
         """利用者が押した未生成タブを管理側へ通知する。"""
@@ -201,6 +441,8 @@ class ModeWindow(QMainWindow):
         result = super().event(event)
         if event.type() == QEvent.Type.WindowActivate:
             self.activated.emit(self.mode)
+            if self.mode != ModeId.INFERENCE:
+                self._install_page_menu(self.page_ids[self.tabs.currentIndex()])
         return result
 
     def closeEvent(self, event) -> None:

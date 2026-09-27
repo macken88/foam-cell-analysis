@@ -302,11 +302,11 @@ class HomeWindow(QMainWindow):
         self.refresh_summary()
 
     def _build_menus(self) -> None:
-        file_menu = self.menuBar().addMenu("ファイル")
+        file_menu = self.menuBar().addMenu("ファイル(&F)")
         file_menu.addAction("終了", self.close)
-        settings_menu = self.menuBar().addMenu("設定")
-        settings_menu.addAction("キー割り当て一覧…", self._show_shortcuts_info)
-        display_menu = settings_menu.addMenu("原画像と切り替える表示")
+        tools_menu = self.menuBar().addMenu("ツール(&T)")
+        tools_menu.addAction("キー割り当て…", self._show_shortcuts_info)
+        display_menu = tools_menu.addMenu("原画像と切り替える表示")
         self.display_actions = {}
         for name in sorted(self.ctx.display.MODES):
             action = display_menu.addAction(name)
@@ -322,7 +322,7 @@ class HomeWindow(QMainWindow):
         self.f1_shortcut = QShortcut(QKeySequence("F1"), self)
         self.f1_shortcut.activated.connect(self._show_shortcuts_info)
         self.ctx.shortcuts.changed.connect(self._shortcuts_changed)
-        help_menu = self.menuBar().addMenu("ヘルプ")
+        help_menu = self.menuBar().addMenu("ヘルプ(&H)")
         help_menu.addAction(
             "バージョン情報",
             lambda: QMessageBox.about(

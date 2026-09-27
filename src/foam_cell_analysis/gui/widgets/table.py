@@ -1,9 +1,10 @@
 """Qt の表ウィジェットに共通設定を適用する。"""
 
-from PySide6.QtCore import QEvent, QItemSelection, QItemSelectionModel, QObject
+from PySide6.QtCore import QEvent, QItemSelection, QItemSelectionModel, QObject, Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHeaderView,
+    QMenu,
     QPushButton,
     QTableView,
     QTableWidget,
@@ -143,3 +144,35 @@ def fit_table_columns(view: QTableView | QTableWidget) -> None:
 def mark_primary(button: QPushButton) -> None:
     """ボタンへ主操作用スタイルプロパティを適用する。"""
     set_style(button, primary=True)
+
+
+def bind_button_action(button: QPushButton, action) -> None:
+    """ボタンとメニュー項目を同じ QAction の状態・処理へ結ぶ。"""
+
+    def sync() -> None:
+        button.setText(action.text().split("\t", 1)[0])
+        button.setEnabled(action.isEnabled())
+        button.setToolTip(action.toolTip())
+
+    action.changed.connect(sync)
+    button.clicked.connect(lambda _checked=False: action.trigger())
+    sync()
+
+
+def add_row_context_menu(view: QTableView | QTableWidget, menu: QMenu, on_new_row=None) -> None:
+    """表の行選択を保ちながら行メニューを表示する。"""
+    view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+
+    def show_menu(position) -> None:
+        index = view.indexAt(position)
+        if not index.isValid():
+            return
+        if on_new_row:
+            on_new_row(index.row())
+        selected = view.selectionModel().selectedRows()
+        if not any(row.row() == index.row() for row in selected):
+            view.selectRow(index.row())
+            view.setCurrentIndex(index)
+        menu.exec(view.viewport().mapToGlobal(position))
+
+    view.customContextMenuRequested.connect(show_menu)

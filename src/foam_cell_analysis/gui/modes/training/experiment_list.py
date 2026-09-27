@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -40,7 +40,13 @@ from ...theme import Color, numeric_font, set_style
 from ...widgets.chart import LineChart
 from ...widgets.marks import STATUS_MARKS, TagDelegate
 from ...widgets.page_base import BasePage
-from ...widgets.table import fit_table_columns, mark_primary, setup_table
+from ...widgets.table import (
+    add_row_context_menu,
+    bind_button_action,
+    fit_table_columns,
+    mark_primary,
+    setup_table,
+)
 from .dialogs import ExperimentCompareDialog, SendToCandidatesDialog, flatten_config
 
 
@@ -89,6 +95,47 @@ class ExperimentListPage(BasePage):
                 "途中保存モデル",
             ]
         )
+        self.column_button = QPushButton("表示する列 ▾")
+        self.column_menu = QMenu(self.column_button)
+        self.column_menu.setTitle("表示する列（実験一覧）")
+        self.column_button.setMenu(self.column_menu)
+        self.column_actions = []
+        column_labels = (
+            "選択",
+            "ID",
+            "実験群",
+            "モデル",
+            "データセット",
+            "データ拡張",
+            "状態",
+            "進捗",
+            "OOF mAP",
+            "途中保存モデル",
+        )
+        for column, label in enumerate(column_labels):
+            action = self.column_menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(True)
+            action.toggled.connect(
+                lambda visible, index=column: self.table.setColumnHidden(index, not visible)
+            )
+            self.column_actions.append(action)
+        filter_row.addWidget(self.column_button)
+        self.experiment_filter_menu = QMenu("実験の絞り込み", self)
+        self.experiment_filter_actions = []
+        self.experiment_filter_submenus = []
+        self._experiment_filter_specs = (
+            ("実験群", self.study_filter),
+            ("モデル", self.model_filter),
+            ("状態", self.state_filter),
+        )
+        for label, combo in (*self._experiment_filter_specs,):
+            submenu = self.experiment_filter_menu.addMenu(label)
+            self.experiment_filter_submenus.append(submenu)
+            combo.currentIndexChanged.connect(
+                lambda selected, target=combo: self._update_filter_menu_checks(target, selected)
+            )
+        self._refresh_experiment_filter_menu()
         setup_table(self.table, stretch_column=9)
         self.table.setItemDelegateForColumn(
             6,
@@ -175,6 +222,13 @@ class ExperimentListPage(BasePage):
         self.more_menu = QMenu(self.more_button)
         self.action_map = {}
         for key, label, callback in (
+            ("compare", "選択した実験を比較", self.compare_selected),
+            ("copy", "設定を複製して新規実験", self.copy_selected),
+            ("send", "モデル比較へ送る…", self.send_selected),
+        ):
+            self.action_map[key] = QAction(label, self)
+            self.action_map[key].triggered.connect(callback)
+        for key, label, callback in (
             ("stop", "学習を中断", self.stop_selected),
             ("retry", "再実行", self.retry_selected),
             ("edit", "下書きを編集", self.edit_selected),
@@ -186,9 +240,11 @@ class ExperimentListPage(BasePage):
             self.action_map[key] = action
         self.more_button.setMenu(self.more_menu)
         self.more_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        filter_row.addWidget(self.button_map["compare"])
-        filter_row.addWidget(self.button_map["copy"])
-        filter_row.addWidget(self.more_button)
+        for key in ("compare", "copy"):
+            self.button_map[key].hide()
+            bind_button_action(self.button_map[key], self.action_map[key])
+        self.more_button.hide()
+        bind_button_action(self.button_map["send"], self.action_map["send"])
         filter_row.addWidget(self.button_map["send"])
         self.content_layout.addLayout(filter_row)
         self.content_layout.addWidget(splitter, 1)
@@ -197,14 +253,76 @@ class ExperimentListPage(BasePage):
         self.state_filter.currentTextChanged.connect(self.refresh)
         self.table.itemChanged.connect(self._selection_changed)
         self.table.itemSelectionChanged.connect(self._current_changed)
-        self.button_map["compare"].clicked.connect(self.compare_selected)
-        self.button_map["copy"].clicked.connect(self.copy_selected)
-        self.button_map["send"].clicked.connect(self.send_selected)
+        self.context_menu = QMenu(self)
+        for key in ("compare", "copy", "send", "stop", "retry", "edit", "queue_copy", "result"):
+            self.context_menu.addAction(self.action_map[key])
+
+        def select_experiment_for_context(row_index):
+            item = self.table.item(row_index, 0)
+            if item and item.checkState() != Qt.CheckState.Checked:
+                for current_row in range(self.table.rowCount()):
+                    current_item = self.table.item(current_row, 0)
+                    if current_item:
+                        current_item.setCheckState(
+                            Qt.CheckState.Checked
+                            if current_row == row_index
+                            else Qt.CheckState.Unchecked
+                        )
+
+        add_row_context_menu(self.table, self.context_menu, select_experiment_for_context)
         self._timer = QTimer(self)
         self._timer.setInterval(1000)
         self._timer.timeout.connect(self.refresh)
         self._timer.start()
         self.refresh()
+
+    def menu_actions(self):
+        if not hasattr(self, "yaml_menu_action"):
+            self.yaml_menu_action = QAction("設定 YAML を表示…", self)
+            self.yaml_menu_action.triggered.connect(self.show_config_yaml)
+            self._update_buttons()
+        return {
+            "file": [None, self.yaml_menu_action],
+            "edit": [self.action_map["edit"]],
+            "training": [
+                self.action_map["stop"],
+                self.action_map["retry"],
+                None,
+                self.action_map["copy"],
+                self.action_map["queue_copy"],
+                None,
+                self.action_map["compare"],
+                self.action_map["result"],
+                self.action_map["send"],
+            ],
+            "view": [self.column_menu.menuAction(), self.experiment_filter_menu.menuAction()],
+        }
+
+    def _refresh_experiment_filter_menu(self) -> None:
+        self.experiment_filter_actions = []
+        for submenu, (_label, combo) in zip(
+            self.experiment_filter_submenus, self._experiment_filter_specs, strict=True
+        ):
+            submenu.clear()
+            actions = []
+            for index in range(combo.count()):
+                action = submenu.addAction(combo.itemText(index))
+                action.setCheckable(True)
+                action.triggered.connect(
+                    lambda _checked=False, target=combo, item=index: target.setCurrentIndex(item)
+                )
+                actions.append(action)
+            self.experiment_filter_actions.append(actions)
+            self._update_filter_menu_checks(combo, combo.currentIndex())
+
+    def _update_filter_menu_checks(self, combo: QComboBox, selected: int) -> None:
+        filter_index = next(
+            index
+            for index, (_label, target) in enumerate(self._experiment_filter_specs)
+            if target is combo
+        )
+        for index, action in enumerate(self.experiment_filter_actions[filter_index]):
+            action.setChecked(index == selected)
 
     def on_enter(self, params: dict[str, object]) -> None:
         """遷移パラメータの実験を選択して再読込する。"""
@@ -232,6 +350,7 @@ class ExperimentListPage(BasePage):
         if old_study in ["すべて", *studies]:
             self.study_filter.setCurrentText(old_study)
         self.study_filter.blockSignals(False)
+        self._refresh_experiment_filter_menu()
         self.table.blockSignals(True)
         self.table.setRowCount(0)
         for experiment in experiments:
@@ -542,10 +661,21 @@ class ExperimentListPage(BasePage):
     def _update_buttons(self) -> None:
         selected = self._checked_experiments()
         current = self._current_experiment()
-        self.button_map["compare"].setEnabled(len(selected) >= 2)
-        self.button_map["copy"].setEnabled(current is not None)
-        self.button_map["send"].setEnabled(
+        self.action_map["compare"].setEnabled(len(selected) >= 2)
+        self.action_map["copy"].setEnabled(current is not None)
+        self.action_map["send"].setEnabled(
             current is not None and current.status == "completed" and bool(current.checkpoints)
+        )
+        self.action_map["compare"].setToolTip(
+            "実験を 2 つ以上選ぶと使えます" if len(selected) < 2 else ""
+        )
+        self.action_map["copy"].setToolTip(
+            "複製する実験を選ぶと使えます" if current is None else ""
+        )
+        self.action_map["send"].setToolTip(
+            "完了した実験と途中保存モデルを選ぶと使えます"
+            if current is None or current.status != "completed" or not current.checkpoints
+            else ""
         )
         self.action_map["result"].setEnabled(current is not None and current.status == "completed")
         self.action_map["stop"].setEnabled(current is not None and current.status == "running")
@@ -553,6 +683,42 @@ class ExperimentListPage(BasePage):
             current is not None and current.status in {"failed", "stopped"}
         )
         self.action_map["edit"].setEnabled(current is not None and current.status == "draft")
+        self.action_map["result"].setToolTip(
+            "完了した実験を 1 つ選ぶと結果を開けます"
+            if current is None or current.status != "completed"
+            else ""
+        )
+        self.action_map["stop"].setToolTip(
+            "実行中の実験を 1 つ選ぶと中断できます"
+            if current is None or current.status != "running"
+            else ""
+        )
+        self.action_map["retry"].setToolTip(
+            "失敗または中断した実験を 1 つ選ぶと再実行できます"
+            if current is None or current.status not in {"failed", "stopped"}
+            else ""
+        )
+        self.action_map["edit"].setToolTip(
+            "下書きの実験を 1 つ選ぶと編集できます"
+            if current is None or current.status != "draft"
+            else ""
+        )
+        self.action_map["compare"].setToolTip(
+            "比較する実験を 2 つ以上選んでください" if len(selected) < 2 else ""
+        )
+        self.action_map["copy"].setToolTip(
+            "複製する実験を 1 つ選んでください" if current is None else ""
+        )
+        self.action_map["send"].setToolTip(
+            "完了した実験と途中保存モデルを選ぶと使えます"
+            if current is None or current.status != "completed" or not current.checkpoints
+            else ""
+        )
+        if hasattr(self, "yaml_menu_action"):
+            self.yaml_menu_action.setEnabled(current is not None)
+            self.yaml_menu_action.setToolTip(
+                "設定 YAML を表示する実験を選んでください" if current is None else ""
+            )
         self.action_map["queue_copy"].setEnabled(bool(selected))
         self.action_map["queue_copy"].setToolTip(
             "複製する実験をチェックしてください" if not selected else ""

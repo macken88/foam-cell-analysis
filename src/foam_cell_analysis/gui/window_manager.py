@@ -156,6 +156,9 @@ class WindowManager(QObject):
         page_id = PageId(page_id)
         mode, _tab = PAGE_TO_MODE_TAB[page_id]
         page = self.page(page_id)
+        for sibling in MODE_PAGES[mode]:
+            if sibling not in self._pages:
+                self.page(sibling)
         window = self._ensure_window(mode)
         self._last_navigation_at[mode] = monotonic()
         keep_current = bool((params or {}).get("_preserve_current_tab")) and window.isVisible()

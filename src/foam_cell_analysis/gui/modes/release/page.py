@@ -1,7 +1,7 @@
 """リリース済みモデルと分類振り分けを管理する画面。"""
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMenu,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -25,7 +26,14 @@ from ...navigation import PageId
 from ...theme import Color, numeric_font, set_style
 from ...widgets.form import FormSection
 from ...widgets.page_base import BasePage
-from ...widgets.table import fit_table_columns, mark_primary, restore_row_selection, setup_table
+from ...widgets.table import (
+    add_row_context_menu,
+    bind_button_action,
+    fit_table_columns,
+    mark_primary,
+    restore_row_selection,
+    setup_table,
+)
 
 
 class RoutingChangesDialog(QDialog):
@@ -105,7 +113,15 @@ class ReleasedModelsPage(BasePage):
         self.new_release_button = QPushButton("設定を変えて新しいリリースを作る")
         self.new_release_button.setEnabled(False)
         self.new_release_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        self.new_release_button.clicked.connect(self._create_new_release)
+        self.release_actions = {
+            "new": QAction("設定を変えて新しいリリースを作る", self),
+            "detail": QAction("リリースの詳細を表示…", self),
+            "discard": QAction("振り分けの変更を破棄", self),
+        }
+        self.release_actions["new"].triggered.connect(self._create_new_release)
+        self.release_actions["detail"].triggered.connect(self._show_detail_dialog)
+        self.release_actions["discard"].triggered.connect(self.discard_changes)
+        bind_button_action(self.new_release_button, self.release_actions["new"])
         self.detail_values: dict[str, QLabel] = {}
         for label in (
             "実験・途中保存モデル",
@@ -123,9 +139,9 @@ class ReleasedModelsPage(BasePage):
         self.detail_button = QPushButton("詳細を表示…")
         self.detail_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.detail_button.setEnabled(False)
-        self.detail_button.clicked.connect(self._show_detail_dialog)
-        self.detail.form.addRow(self.detail_button)
-        self.detail.form.addRow(self.new_release_button)
+        bind_button_action(self.detail_button, self.release_actions["detail"])
+        self.detail_button.hide()
+        self.new_release_button.hide()
         upper.addWidget(self.detail)
         upper.setSizes([680, 330])
         splitter.addWidget(upper)
@@ -155,13 +171,24 @@ class ReleasedModelsPage(BasePage):
         self.apply_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.discard_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         mark_primary(self.apply_button)
-        self.apply_button.clicked.connect(self._confirm_apply)
-        self.discard_button.clicked.connect(self.discard_changes)
-        actions.addWidget(self.discard_button)
+        self.change_count_label = QLabel()
+        self.apply_action = QAction("変更を適用…", self)
+        self.apply_action.triggered.connect(self._confirm_apply)
+        bind_button_action(self.apply_button, self.apply_action)
+        bind_button_action(self.discard_button, self.release_actions["discard"])
+        actions.addWidget(self.change_count_label)
         actions.addWidget(self.apply_button)
         actions.addStretch(1)
         actions.addWidget(note)
         lower_layout.addLayout(actions)
+        self.context_menu = QMenu(self)
+        self.context_menu.addAction(self.release_actions["detail"])
+        self.context_menu.addAction(self.release_actions["new"])
+        add_row_context_menu(self.model_table, self.context_menu)
+        self.routing_context_menu = QMenu(self)
+        self.routing_context_menu.addAction(self.release_actions["discard"])
+        self.routing_context_menu.addAction(self.apply_action)
+        add_row_context_menu(self.routing_table, self.routing_context_menu)
 
         self.history_table = QTableWidget(0, 4)
         self.history_table.setHorizontalHeaderLabels(["日時", "画像分類", "変更前", "変更後"])
@@ -185,6 +212,17 @@ class ReleasedModelsPage(BasePage):
         setup_table(self.routing_table, stretch_column=2)
         self.routing_table.setColumnWidth(0, 110)
         self.routing_table.setColumnWidth(1, 190)
+
+    def menu_actions(self):
+        return {
+            "release": [
+                self.release_actions["detail"],
+                self.release_actions["new"],
+                None,
+                self.apply_action,
+                self.release_actions["discard"],
+            ]
+        }
 
     def on_enter(self, params: dict) -> None:
         """最新モデル・振り分け・履歴を読み直す。"""
@@ -275,6 +313,10 @@ class ReleasedModelsPage(BasePage):
             self._selected_model = None
             self.new_release_button.setEnabled(False)
             self.detail_button.setEnabled(False)
+            self.release_actions["new"].setEnabled(False)
+            self.release_actions["detail"].setEnabled(False)
+            self.release_actions["new"].setToolTip("リリース済みモデルの行を選ぶと使えます")
+            self.release_actions["detail"].setToolTip("リリース済みモデルの行を選ぶと使えます")
             for index, value in enumerate(self.detail_values.values()):
                 value.setText("モデルを選択してください" if index == 0 else "—")
             return
@@ -309,6 +351,10 @@ class ReleasedModelsPage(BasePage):
         self._selected_model = model
         self.new_release_button.setEnabled(True)
         self.detail_button.setEnabled(True)
+        self.release_actions["new"].setEnabled(True)
+        self.release_actions["detail"].setEnabled(True)
+        self.release_actions["new"].setToolTip("")
+        self.release_actions["detail"].setToolTip("")
 
     def _show_detail_dialog(self) -> None:
         """選択中モデルの全設定を読み取り専用で表示する。"""
@@ -502,7 +548,14 @@ class ReleasedModelsPage(BasePage):
                 set_style(combo, state="changed" if changed else "")
         self.apply_button.setEnabled(bool(changes))
         self.discard_button.setEnabled(bool(changes))
-        self.apply_button.setText(f"変更を適用…（{len(changes)} 件）" if changes else "変更を適用…")
+        self.apply_action.setEnabled(bool(changes))
+        self.release_actions["discard"].setEnabled(bool(changes))
+        self.apply_action.setToolTip("振り分けを変更すると使えます" if not changes else "")
+        self.release_actions["discard"].setToolTip(
+            "破棄する振り分け変更はありません" if not changes else ""
+        )
+        self.change_count_label.setText(f"{len(changes)} 件の変更があります" if changes else "")
+        self.change_count_label.setVisible(bool(changes))
 
     def build_change_rows(self) -> list[tuple[str, str | None, str | None]]:
         """確認ダイアログに渡す振り分け差分を作る。"""

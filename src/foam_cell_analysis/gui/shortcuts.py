@@ -152,7 +152,12 @@ class ShortcutMap(QObject):
     @staticmethod
     def display_key(key: str) -> str:
         """画面で使うキー表記へ変換する。"""
-        return key.replace("Control+", "Ctrl+").replace("Return", "Enter")
+        return (
+            key.replace("Control+", "Ctrl+")
+            .replace("Return", "Enter")
+            .replace("Left", "←")
+            .replace("Right", "→")
+        )
 
     def duplicates(self, action: str, key: str) -> list[str]:
         """指定キーを使う他の操作を返す。"""

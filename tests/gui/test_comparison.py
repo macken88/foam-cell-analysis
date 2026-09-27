@@ -151,7 +151,7 @@ def test_candidate_evaluation_counts_unclassified_images_and_preserves_qtest_sel
         pos=rect.topLeft() + QPoint(12, rect.height() // 2),
     )
     assert page.buttons["evaluate"].isEnabled()
-    QTest.mouseClick(page.buttons["evaluate"], Qt.MouseButton.LeftButton)
+    page.candidate_actions["evaluate"].trigger()
     for _ in range(1000):
         qapp.processEvents()
         if page.validation.currentText() in candidate.evaluations:
@@ -197,7 +197,7 @@ def test_candidate_evaluation_counts_unclassified_images_and_preserves_qtest_sel
         return QDialog.DialogCode.Accepted
 
     monkeypatch.setattr(EvaluationDialog, "exec", save_details)
-    QTest.mouseClick(page.buttons["detail"], Qt.MouseButton.LeftButton)
+    page.candidate_actions["detail"].trigger()
     row = next(
         row
         for row in range(page.table.rowCount())
@@ -219,7 +219,7 @@ def test_release_button_explains_missing_evaluation(qtbot):
     page.table.item(row, 0).setCheckState(Qt.CheckState.Checked)
 
     assert not page.buttons["release"].isEnabled()
-    assert "評価を完了" in page.buttons["release"].toolTip()
+    assert page.buttons["release"].toolTip() == "評価済みの候補を 1 つ選ぶとリリースできます"
 
 
 def test_candidate_dialog_builds_model_specific_fields(qtbot):

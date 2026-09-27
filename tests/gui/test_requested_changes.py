@@ -92,7 +92,7 @@ def test_keymap_window_is_single_non_modal_and_refreshes(qapp):
     ctx = make_context()
     home = HomeWindow(ctx, WindowManager(ctx))
     settings_menu = home.menuBar().actions()[1].menu()
-    action = next(item for item in settings_menu.actions() if item.text() == "キー割り当て一覧…")
+    action = next(item for item in settings_menu.actions() if item.text() == "キー割り当て…")
     action.trigger()
     first = ctx.keymap_window
     action.trigger()
