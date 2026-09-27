@@ -116,6 +116,7 @@ table.rev{font-size:.92rem}
 .mock .btn{border:1px solid #BCC4CB;border-radius:3px;background:var(--slide);font-weight:400;padding:3px 12px;color:var(--graphite)}
 .mock .btn.primary{background:var(--graphite);border-color:var(--graphite);color:#fff}
 .mock .btn.dis{color:#A6AEB5;border-color:var(--rule-soft)}
+.mock .btn.primary.dis{background:var(--idle-bg);color:#A6AEB5;border-color:var(--rule-soft)}
 .mock .btn.ghost{border-color:transparent;background:transparent}
 .mock .input,.mock .sel-combo{border:1px solid #BCC4CB;border-radius:3px;background:var(--slide)}
 .mock .input.ro{background:var(--idle-bg);color:var(--slate)}
@@ -231,6 +232,35 @@ table.rev{font-size:.92rem}
 .sw code{background:none;padding:0}
 .m-split{display:grid;gap:10px}
 @media (max-width:860px){.mock .pipe{grid-template-columns:1fr}.mock .stage{border-right:0;border-bottom:1px solid var(--rule-soft)}.mock .user{grid-template-columns:1fr;gap:6px}.m-split{grid-template-columns:1fr !important}}
+/* ===== v2.7 改良案（見やすさの改善）のモック用 ===== */
+.mock .v27-gap{display:inline-block;width:18px}
+.mock .v27-filters{border-top:1px solid var(--rule);border-bottom:1px solid var(--rule);padding:6px 0;display:flex;flex-direction:column;gap:6px}
+.mock .v27-frow{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.mock .v27-flabel{width:4.5em;font-size:.8rem;color:var(--slate)}
+.mock .v27-seg{display:inline-flex;border:1px solid #BCC4CB;border-radius:3px;overflow:hidden;background:var(--slide)}
+.mock .v27-seg span{padding:2px 10px;border-right:1px solid var(--rule);display:inline-flex;align-items:center;gap:5px;font-size:.84rem;cursor:pointer}
+.mock .v27-seg span:last-child{border-right:0}
+.mock .v27-seg span.on{background:var(--graphite);color:#fff}
+.mock .v27-seg span.strike{text-decoration:line-through;color:var(--slate)}
+.mock .v27-tog{display:inline-flex;align-items:center;gap:5px;border:1px solid #BCC4CB;border-radius:3px;background:var(--slide);padding:2px 10px;font-size:.84rem;cursor:pointer}
+.mock .v27-tog.err{color:var(--error);border-color:#E3B4AE}
+.mock .v27-seg b,.mock .v27-tog b{font-weight:400}
+.mock i.sw{display:inline-block;width:9px;height:9px;border-radius:2px}
+.mock i.sw.train{background:var(--train)}.mock i.sw.val{background:var(--val)}.mock i.sw.idle{background:var(--idle)}.mock i.sw.chg{background:#E9C94A}
+.mock .v27-tablehead{display:flex;align-items:center;margin:0 0 2px}
+.mock td.v27-mark{text-align:center;padding:4px 2px}
+.mock td.v27-mark.chg{color:#B8961A}.mock td.v27-mark.err{color:var(--error)}
+.mock .v27-combos{display:flex;flex-wrap:wrap;gap:6px 20px;font-size:.84rem}
+.mock .v27-summary{display:flex;flex-wrap:wrap;align-items:center;gap:6px 22px;background:var(--slide);border:1px solid var(--rule);border-left:3px solid var(--graphite);padding:7px 12px;margin-bottom:10px;font-size:.86rem}
+.mock .v27-form2{display:grid;grid-template-columns:1fr 1fr;gap:0 28px;background:var(--slide);border:1px solid var(--rule);padding:4px 14px 10px}
+.mock .v27-h{font-size:.98rem;font-weight:700;color:var(--graphite);border-bottom:1px solid var(--rule);margin:16px 0 6px;padding-bottom:2px}
+.mock .v27-form2 .row{grid-template-columns:170px 1fr}
+.mock .v27-actions{display:flex;justify-content:flex-end;align-items:center;gap:8px;border-top:1px solid var(--rule);margin:10px -12px 0;padding:8px 12px 0}
+.mock .v27-why{color:var(--slate);margin-right:4px}
+.mock .v27-empty{background:var(--slide);border:1px dashed #BCC4CB;padding:14px 18px;margin-bottom:8px}
+.mock .v27-empty ol{margin:0 0 6px;padding-left:1.4em;line-height:1.7}
+.mock .v27-empty li{margin:4px 0}
+@media (max-width:860px){.mock .v27-form2{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -287,10 +317,323 @@ table.rev{font-size:.92rem}
 <tr><td>v2.3</td><td>2026-09-25</td><td>見た目の設計（2.6）を追加: 色（色はデータの意味にだけ使う）・フォント・部品の見た目。ホームを管理者の工程の流れとして表示（2.1）。フォルダパスは本文と同じ BIZ UDPゴシックで表示（レビューで決定）。画面モックを新しい見た目に更新し、表表示（4.3）、モデル学習〜本番推論（5〜10章）のモックを追加</td><td>改良案・未実装</td></tr>
 <tr><td>v2.4</td><td>2026-09-26</td><td>タブ切り替えの不具合修正、表示形式のショートカット、サムネイル表示を確定ダイアログへ移動。レビュー指摘の修正: 共有キー設定、既定キー操作、記号キー配列差の吸収、絞り込みと整合性表示、候補メニュー、推論中の二重実行防止、Excel 入出力、連続振り分け、確定サムネイルの件数・空表示、再表示時の状態更新</td><td>今回の対象を実装済み</td></tr>
 <tr><td>v2.5</td><td>2026-09-26</td><td>原画像と設定表示の二択、キー割り当て一覧、画像移動キー、列幅の保存、選択中の自動振り分け、単一チャンネル GUI、ラベルとコンボの間隔、版履歴サムネイル、確定不可理由の表示</td><td>実装済み</td></tr>
+<tr><td>v2.7</td><td>2026-09-27</td><td>見やすさの改善案（認知負荷の低減）: データ準備の絞り込みの整理と既定の列、学習設定の要約・YAML の既定を閉じる・2 列配置、本番推論の手順案内と実行できない理由の表示（「見やすさの改善」の節）</td><td>確認待ち・未実装</td></tr>
 <tr><td>v2.6</td><td>2026-09-26</td><td>学習をK分割交差検証・OOF評価・選択エポックでの全件最終学習へ変更。学習キュー（設定編集・順次実行・失敗後の継続）と待機実験の管理を追加。比較候補をfinal.ptに限定し、検証用mAPとOOF mAPを比較・リリースに追加。再試行の試行履歴保持、同一実験IDでの予約と候補・リリースの試行固定を追記。Mask R-CNN の画像平均・標準偏差を重みに応じて自動決定</td><td>今回の仕様</td></tr>
 </tbody></table></div>
-<nav><strong>目次</strong><ol class="toc"><li><a href="#sec1">1. ソース構成</a></li><li><a href="#sec2">2. アプリ全体の画面構成</a> <span class="badge">改良案</span><br><a href="#sec2-6">2.6 見た目の設計（色・フォント・部品）</a> <span class="badge">v2.3</span></li><li><a href="#sec3">3. 共通部品</a></li><li><a href="#sec4">4. データ準備（PageId.DATA_PREPARATION）</a> <span class="badge">改良案</span></li><li><a href="#sec5">5. モデル学習（PageId.TRAINING）</a></li><li><a href="#sec6">6. 実験一覧（PageId.EXPERIMENTS）</a></li><li><a href="#sec7">7. モデル比較・リリース（PageId.CANDIDATES）</a></li><li><a href="#sec8">8. マスク比較（PageId.MASK_COMPARISON）</a></li><li><a href="#sec9">9. リリース済みモデル・モデル振り分け（PageId.RELEASED_MODELS）</a></li><li><a href="#sec10">10. 本番推論（PageId.INFERENCE）</a></li><li><a href="#sec11">11. MockBackend</a></li><li><a href="#sec12">12. テスト（tests/gui/）</a></li></ol></nav>
+<nav><strong>目次</strong><ol class="toc"><li><a href="#sec-v27">見やすさの改善（v2.7 改良案）</a> <span class="badge">確認待ち</span></li><li><a href="#sec1">1. ソース構成</a></li><li><a href="#sec2">2. アプリ全体の画面構成</a> <span class="badge">改良案</span><br><a href="#sec2-6">2.6 見た目の設計（色・フォント・部品）</a> <span class="badge">v2.3</span></li><li><a href="#sec3">3. 共通部品</a></li><li><a href="#sec4">4. データ準備（PageId.DATA_PREPARATION）</a> <span class="badge">改良案</span></li><li><a href="#sec5">5. モデル学習（PageId.TRAINING）</a></li><li><a href="#sec6">6. 実験一覧（PageId.EXPERIMENTS）</a></li><li><a href="#sec7">7. モデル比較・リリース（PageId.CANDIDATES）</a></li><li><a href="#sec8">8. マスク比較（PageId.MASK_COMPARISON）</a></li><li><a href="#sec9">9. リリース済みモデル・モデル振り分け（PageId.RELEASED_MODELS）</a></li><li><a href="#sec10">10. 本番推論（PageId.INFERENCE）</a></li><li><a href="#sec11">11. MockBackend</a></li><li><a href="#sec12">12. テスト（tests/gui/）</a></li></ol></nav>
 </header>
+<section class="card" id="sec-v27">
+<h2>見やすさの改善（v2.7 改良案）<span class="badge">確認待ち・未実装</span></h2>
+<p>
+目的は、画面を見たときに「どこを見ればよいか」「何を押せばよいか」が分かるようにし、認知負荷を下げることです。
+別エージェントによる画面レビューの改善案（ローカル資料 <code>docs/tasks/ui-improvement-plan.html</code>、Git 管理外）を、今の実装と照らし合わせ、採用するものを選びました。
+</p>
+<p>配色・書体・部品の見た目（2.6）は今のまま使い、次の 3 つで改善します。</p>
+<ul>
+<li><strong>表示を分ける</strong>: いつも見る情報と、必要なときだけ見る情報を分けます。</li>
+<li><strong>強弱を付ける</strong>: 主な操作とそれ以外、見出しと注記で、見た目の重さを変えます。</li>
+<li><strong>押せる見た目にする</strong>: 押せる部品を、押せると分かる見た目にします。</li>
+</ul>
+<div class="note">
+<strong>方針: 確認が目的の画面では情報を省かない</strong>
+<ul>
+<li>学習キューの表は、全パラメータを既定で表示します。列の表示・非表示は、利用者が「表示する列 ▾」で切り替えます。今の実装から変更しません。</li>
+<li>学習設定も、入力項目は隠しません。見出しと余白で区切って読みやすくします。</li>
+<li>表示を絞り、詳しい情報は必要なときに出す形は、データ準備・実験一覧・比較候補など、一覧から探して操作する画面に使います。</li>
+</ul>
+</div>
+
+<h3>V1. データ準備: 絞り込みを種類ごとに分け、表は判断に使う列だけにする</h3>
+<div class="grid-2">
+<div class="flow-box"><div class="flow-title">今（v2.6）</div><ul class="steps">
+<li>1 行の絞り込みに、11 個の件数表示が並ぶ。用途・状態（エラー／変更あり）・画像分類の 3 種類が混ざっている。</li>
+<li>絞り込みの件数表示が文字だけで、押せるように見えない。</li>
+<li>表は 8 列。識別子・取り込み元・マスク版は、選択中の画像ならプレビューの上にも同じ内容が出ている。</li>
+<li>ボタン 4 つと確定ボタンが、同じ重さで並ぶ。</li>
+</ul></div>
+<div class="flow-box good"><div class="flow-title">v2.7</div><ul class="steps">
+<li>絞り込みを 2 行に分ける。
+  <ul>
+  <li>1 行目は「用途」（どれか 1 つを選ぶ）。</li>
+  <li>2 行目は「状態・分類・取り込み元・検索」（組み合わせて使う）。</li>
+  </ul></li>
+<li>絞り込みの部品は、枠のあるボタンの見た目にする。</li>
+<li>表の既定の列は「状態の印・元ファイル名・用途・画像分類・品質」の 5 つにする。ほかの列は「表示する列 ▾」で出す。</li>
+<li>ツールバーは「作業」（取り込み・自動振り分け）と「入出力」（Excel・その他）の 2 つにまとめて離す。主な操作は右端の「確定」1 つだけにする。</li>
+</ul></div>
+</div>
+
+<div class="mock">
+<div class="mock-title">データ準備 — 気泡インスタンスセグメンテーション（v2.7 案）</div>
+<div class="mock-body">
+<div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span class="on">作業中データ</span><span>データセット版履歴</span></span>
+<span class="spacer"></span><span class="small">ベース <span class="num">train_v003</span> / <span class="num">val_v003</span></span></div>
+<div class="m-toolbar">
+<span class="btn">取り込み…</span><span class="btn">自動振り分け…</span>
+<span class="v27-gap"></span>
+<span class="btn">Excel ▾</span><span class="btn">その他 ▾</span>
+<span class="spacer"></span>
+<span class="err">⚠ エラー 2 件を直すと確定できます</span> <span class="btn primary dis">確定…</span>
+</div>
+<div class="v27-filters">
+<div class="v27-frow"><span class="v27-flabel">用途</span>
+<span class="v27-seg"><span class="on">すべて <b class="num">612</b></span><span><i class="sw idle"></i>未振り分け <b class="num">23</b></span><span><i class="sw train"></i>学習 <b class="num">489</b></span><span><i class="sw val"></i>検証 <b class="num">96</b></span><span class="strike"><i class="sw idle"></i>不採用 <b class="num">4</b></span></span>
+</div>
+<div class="v27-frow"><span class="v27-flabel">絞り込み</span>
+<span class="v27-tog err">⚠ エラー <b class="num">2</b></span><span class="v27-tog"><i class="sw chg"></i>変更あり <b class="num">37</b></span>
+<span class="v27-gap"></span>
+<span class="small">画像分類</span> <span class="sel-combo">すべて ▾</span>
+<span class="small">取り込み元</span> <span class="sel-combo">すべて ▾</span>
+<span class="m-search">識別子・ファイル名で検索</span>
+</div>
+</div>
+<div class="m-main tbl" style="grid-template-columns:1.5fr 1fr">
+<div>
+<div class="v27-tablehead"><span class="small"><span class="num">612</span> 件中 <span class="num">612</span> 件を表示</span><span class="spacer"></span><span class="btn ghost">表示する列 ▾</span></div>
+<div class="table-wrap"><table>
+<thead><tr><th style="width:2.2em"></th><th>元ファイル名</th><th>用途</th><th>画像分類</th><th>品質</th></tr></thead>
+<tbody>
+<tr><td></td><td class="num">foam_0121.tif</td><td><span class="tag train">学習</span></td><td>分類A</td><td>良</td></tr>
+<tr class="sel"><td></td><td class="num">foam_0122.tif</td><td><span class="tag val">検証</span></td><td>分類A</td><td>良</td></tr>
+<tr class="sel chg"><td class="v27-mark chg" title="用途変更">●</td><td class="num">foam_0123.tif</td><td><span class="tag train">学習</span></td><td>分類B</td><td>可</td></tr>
+<tr><td></td><td class="num">foam_0124.tif</td><td><span class="tag idle">未振り分け</span></td><td>分類B</td><td>良</td></tr>
+<tr class="chg"><td class="v27-mark err" title="マスクがありません">⚠</td><td class="num">foam_0125.tif</td><td><span class="tag train">学習</span></td><td>分類B</td><td>良</td></tr>
+<tr><td></td><td class="num">foam_0126.tif</td><td><span class="tag excl">不採用</span></td><td>分類B</td><td>不良</td></tr>
+<tr class="chg"><td class="v27-mark chg" title="追加">●</td><td class="num">foam_0127.tif</td><td><span class="tag idle">未振り分け</span></td><td><span class="small">未設定</span></td><td>良</td></tr>
+</tbody></table></div>
+</div>
+<div class="m-preview">
+<div class="m-info" style="line-height:1.6"><span class="num"><b>foam_0123.tif</b></span><br><span class="small"><span class="num">item_000123</span>　取り込み元 <span class="path">2026-09\分類B_lot07</span>　マスク <span class="num">rev_002</span></span></div>
+<div class="row" style="grid-template-columns:1fr 1fr"><span class="btn">原画像</span><span class="btn primary">オーバーレイ</span></div>
+<div class="m-img" style="min-height:210px"><svg><use href="#foam-ovl"/></svg><span class="cap">オーバーレイ</span></div>
+<div class="panel"><p class="ptitle">選択中の <span class="num">2</span> 件を変更</p>
+<div class="v27-combos"><span>用途 <span class="sel-combo">学習 ▾</span></span><span>分類 <span class="sel-combo">分類B ▾</span></span><span>品質 <span class="sel-combo">可 ▾</span></span><span>マスク <span class="sel-combo num">rev_002 ▾</span></span></div>
+</div>
+</div>
+</div>
+<div class="status"><span>foam_0123.tif ほか 1 件を 学習 にしました（Ctrl+Z で元に戻す）</span><span>実行中ジョブ <span class="num">1</span></span><span>自動保存 <span class="num">10:42:08</span></span></div>
+</div></div>
+<ul>
+<li><strong>用途の絞り込み</strong>
+  <ul>
+  <li>1 つだけ選べる、つながったボタン群にする。</li>
+  <li>色見本・名前・件数を並べる。</li>
+  <li>キー操作は今のまま（<code>Alt</code>+<code>1</code>〜）。</li>
+  </ul></li>
+<li><strong>状態の絞り込み</strong>
+  <ul>
+  <li>「⚠ エラー」「変更あり」を、それぞれ入・切できるボタンにする。</li>
+  <li>用途と組み合わせられるようにする（例: 学習 かつ エラー）。</li>
+  <li>今は、用途と状態のどちらか 1 つしか選べない。</li>
+  </ul></li>
+<li><strong>画像分類</strong>
+  <ul>
+  <li>件数表示から、複数選択できるコンボに変える。</li>
+  <li>コンボの項目に件数を出す（例: 分類A　36）。</li>
+  </ul></li>
+<li><strong>表の列</strong>
+  <ul>
+  <li>既定で表示する: 状態の印・元ファイル名・用途・画像分類・品質。</li>
+  <li>「表示する列 ▾」で出す: データ識別子・取り込み元フォルダ・マスク版。</li>
+  <li>表示の状態は保存する。</li>
+  <li>「変更」列はなくす。行の色と、先頭の印（●変更、⚠エラー）とツールチップで示す。</li>
+  </ul></li>
+<li><strong>プレビュー</strong>
+  <ul>
+  <li>上に、選択中の画像の元ファイル名を大きく出す。</li>
+  <li>その下に、識別子・取り込み元・マスク版を小さく出す（表から外した列の情報は、ここで見られる）。</li>
+  <li>一括変更のコンボは「選択中の N 件を変更」という見出しの枠にまとめる。</li>
+  </ul></li>
+<li>表の上に「612 件中 612 件を表示」を出し、絞り込みが効いていることが分かるようにする。</li>
+</ul>
+
+<h3>V2. 学習設定: 要約を上に置き、YAML は既定で閉じる。入力項目は隠さない</h3>
+<div class="grid-2">
+<div class="flow-box"><div class="flow-title">今（v2.6）</div><ul class="steps">
+<li>YAML が右側に常に表示されていて、入力欄と同じ内容を 2 回読むことになる。</li>
+<li>設定の全体像（どのデータで、何分割で、どのモデルを、何エポック）を知るには、長いフォームを上から下まで読む必要がある。</li>
+<li>見出しと入力欄の見た目の重さが近く、区切りが分かりにくい。</li>
+</ul></div>
+<div class="flow-box good"><div class="flow-title">v2.7</div><ul class="steps">
+<li>フォームの上に「設定の要約」を 1 行で置き、入力のたびに更新する。</li>
+<li>YAML は既定で閉じる。「設定プレビュー（YAML）」ボタンで開閉し、開閉の状態は保存する。</li>
+<li>ウィンドウの幅が十分にあるときは、フォームを 2 列に並べ、スクロールを減らす。</li>
+<li>見出しを太く大きくし、見出しの間の余白を広げる。入力項目は、折りたたみを増やさない。</li>
+</ul></div>
+</div>
+
+<div class="mock">
+<div class="mock-title">モデル学習 — 気泡インスタンスセグメンテーション（v2.7 案）</div>
+<div class="mock-body">
+<div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span class="on">学習設定</span><span>学習キュー</span><span>実験一覧</span></span><span class="spacer"></span></div>
+<div class="v27-summary">
+<span><span class="small">データ</span> <span class="num">train_v004</span>・分類A・良／可</span>
+<span><span class="small">交差検証</span> <span class="num">5</span> 分割　学習 <b class="num">412</b> 件（各分割の検証 約 <span class="num">82</span> 件）</span>
+<span><span class="small">モデル</span> Mask R-CNN（coco）</span>
+<span><span class="small">学習</span> <span class="num">100</span> エポック・バッチ <span class="num">8</span>・学習率 <span class="num">0.0001</span></span>
+<span class="spacer"></span><span class="btn">設定プレビュー（YAML）▸</span>
+</div>
+<div class="v27-form2">
+<div>
+<p class="v27-h">実験</p>
+<div class="row"><span>実験群</span><span class="sel-combo">入力画像サイズ比較 ▾</span></div>
+<div class="row"><span>実験識別子</span><span class="input ro num" style="max-width:140px">exp_0047</span></div>
+<div class="row"><span>説明</span><span class="input">分類A / 入力サイズ 1024</span></div>
+<p class="v27-h">データセット</p>
+<div class="row"><span>データセット版</span><span class="sel-combo num">train_v004 ▾</span></div>
+<div class="row"><span>画像分類 / 品質条件</span><span><span class="sel-combo">分類A ▾</span>　<span class="sel-combo">良・可 ▾</span></span></div>
+<div class="row"><span>分割数</span><span class="input num" style="max-width:70px">5</span></div>
+<div class="row"><span>分割の条件</span><span>☑ 画像分類で層別　☑ 取り込み元フォルダ単位</span></div>
+<div class="row"><span>乱数シード</span><span class="input num" style="max-width:90px">42</span></div>
+<p class="small">交差検証は学習用データセットの中だけで分割します。検証用データセット（val 版）は使いません。</p>
+<p class="v27-h">共通学習設定</p>
+<div class="row"><span>エポック数 / バッチサイズ</span><span><span class="input num">100</span>　<span class="input num">8</span></span></div>
+<div class="row"><span>学習率 / 重み減衰</span><span><span class="input focus num">0.0001</span>　<span class="input num">0.0001</span></span></div>
+<div class="row"><span>早期終了</span><span>☑ 有効　待機 <span class="input num">15</span> エポック</span></div>
+</div>
+<div>
+<p class="v27-h">モデル</p>
+<div class="row"><span>モデル種類</span><span class="sel-combo">Mask R-CNN ▾</span></div>
+<div class="row"><span>事前学習済み重み</span><span class="sel-combo">coco ▾</span></div>
+<div class="row"><span>バックボーン / 学習層数</span><span><span class="sel-combo">resnet50_fpn_v2 ▾</span>　<span class="input num">3</span></span></div>
+<div class="row"><span>入力画像の短辺 / 最大辺</span><span><span class="input num">800</span>　<span class="input num">1333</span></span></div>
+<div class="row"><span>画像平均・標準偏差</span><span class="small">重みから自動決定　<span class="num">0.485, 0.456, 0.406 / 0.229, 0.224, 0.225</span></span></div>
+<div class="row"><span>アンカー</span><span class="small">サイズ <span class="num">32, 64, 128, 256, 512</span>　縦横比 <span class="num">0.5, 1.0, 2.0</span></span></div>
+<p class="small">▶ RPN 詳細設定　▶ ROI 詳細設定</p>
+<p class="v27-h">データ拡張</p>
+<div class="row"><span>プロファイル</span><span><span class="sel-combo num">aug_v003 ▾</span> <span class="btn">表示 / 編集…</span></span></div>
+<p class="v27-h">途中保存モデル / 評価</p>
+<div class="row"><span>保存間隔 / 検証間隔</span><span><span class="input num">10</span>　<span class="input num">5</span> エポック</span></div>
+<div class="row"><span>エポックの選び方</span><span class="small">OOF 平均適合率（mAP）が最大のエポック</span></div>
+</div>
+</div>
+<div class="v27-actions"><span class="btn">設定を検証</span><span class="btn">下書き保存</span><span class="v27-gap"></span><span class="btn">キューに追加</span><span class="btn primary">学習開始</span></div>
+<div class="status"><span>準備完了</span><span>実行中ジョブ <span class="num">1</span></span><span>自動保存 <span class="num">10:42:08</span></span></div>
+</div></div>
+<ul>
+<li><strong>設定の要約</strong>
+  <ul>
+  <li>データ・交差検証・モデル・学習の 4 つを 1 行で出し、入力のたびに更新する。</li>
+  <li>見込み件数（今のフォーム内の橙色の行）は、この要約に移す。</li>
+  <li>「設定を検証」で警告・エラーがある場合は、要約の右端に「⚠ 警告 1 件」のように出す。</li>
+  </ul></li>
+<li><strong>YAML</strong>
+  <ul>
+  <li>既定で閉じる。</li>
+  <li>開くと、今と同じく右側に表示し、フォーカス中の項目の行を強調する。</li>
+  <li>開閉の状態は保存する。</li>
+  </ul></li>
+<li><strong>2 列の配置</strong>
+  <ul>
+  <li>YAML を閉じていて、フォームの幅が約 1100px 以上のときは 2 列にする。</li>
+  <li>左の列は「実験・データセット・共通学習設定」、右の列は「モデル・データ拡張・途中保存モデル / 評価」。</li>
+  <li>幅が狭いときは 1 列にする。</li>
+  </ul></li>
+<li><strong>見出し</strong>
+  <ul>
+  <li>セクションの見出しは、本文より大きく太い文字にし、下に罫線を引く。</li>
+  <li>見出しの上は、本文の行間の約 2 倍の余白をとる。</li>
+  </ul></li>
+<li><strong>折りたたみ</strong>
+  <ul>
+  <li>「モデル固有設定」「データ拡張」「途中保存モデル / 評価」の折りたたみはやめて、常に表示する（全項目の確認を優先）。</li>
+  <li>RPN・ROI の詳細設定だけは、項目数が多く変えることがまれなので、今の折りたたみを残す。</li>
+  </ul></li>
+<li><strong>ボタン</strong>
+  <ul>
+  <li>下部に固定する（今と同じ）。</li>
+  <li>「設定を検証・下書き保存」と「キューに追加・学習開始」の 2 つにまとめて離す。</li>
+  </ul></li>
+</ul>
+
+<h3>V3. 本番推論: 空の画面で手順を示し、実行できない理由をボタンの横に出す</h3>
+<div class="grid-2">
+<div class="flow-box"><div class="flow-title">今（v2.6）</div><ul class="steps">
+<li>画像を入れる前は、空の表と「画像なし」のプレビューだけが表示され、何から始めればよいか分からない。</li>
+<li>「推論を実行（0 枚）」は無効の灰色になるが、理由が出ない。</li>
+</ul></div>
+<div class="flow-box good"><div class="flow-title">v2.7</div><ul class="steps">
+<li>空の表に、手順（画像を追加 → 分類を確かめる → 出力先を選ぶ → 実行）と、追加ボタンを出す。</li>
+<li>実行できないときは、主ボタンの左に理由を 1 行で出す。</li>
+<li>空のプレビューは「画像を選ぶと、ここに結果が出ます」とする。</li>
+</ul></div>
+</div>
+
+<div class="mock">
+<div class="mock-title">本番推論 — 気泡インスタンスセグメンテーション（v2.7 案・画像を入れる前）</div>
+<div class="mock-body">
+<div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="spacer"></span></div>
+<div class="m-split" style="grid-template-columns:1.3fr 1fr">
+<div>
+<div class="m-toolbar" style="margin-top:0"><span class="btn">画像を追加…</span><span class="btn">フォルダを追加…</span><span class="btn dis">選択を削除</span><span class="spacer"></span><span class="small"><span class="num">0</span> 枚</span></div>
+<div class="v27-empty">
+<ol>
+<li><b>画像を追加します</b><br><span class="small">ファイルかフォルダを選ぶか、ここにドラッグします。</span></li>
+<li><b>画像分類を確かめます</b><br><span class="small">分類に応じて、使うモデルが自動で決まります。</span></li>
+<li><b>出力先と出力する内容を選びます</b></li>
+<li><b>推論を実行します</b></li>
+</ol>
+<div class="btns" style="justify-content:flex-start"><span class="btn">画像を追加…</span><span class="btn">フォルダを追加…</span></div>
+</div>
+<div class="panel"><p class="ptitle">出力</p>
+<div class="row"><span>出力先</span><span><span class="input" style="display:inline-block;min-width:200px;color:var(--slate)">未選択</span> <span class="btn">参照…</span></span></div>
+<div class="row"><span>出力する内容</span><span>☑ インスタンスラベルマスク　☑ 粒子解析用二値マスク　☐ オーバーレイ画像</span></div>
+<div class="row"><span>形式</span><span>◉ PNG　○ TIFF</span></div>
+<div class="v27-actions" style="border:0;margin:0;padding:6px 0 0"><span class="small v27-why">画像を追加し、出力先を選ぶと実行できます</span><span class="btn primary dis">推論を実行（0 枚）</span></div></div>
+</div>
+<div><div class="m-toolbar" style="margin-top:0"><span class="mtabs"><span class="on">オーバーレイ</span><span>ラベル</span><span>二値</span></span></div>
+<div class="img" style="aspect-ratio:4/3;display:flex;align-items:center;justify-content:center"><span style="color:#AEB6BD;font-size:.84rem;position:relative">画像を選ぶと、ここに結果が出ます</span></div></div>
+</div>
+<div class="status"><span>準備完了</span><span>実行中ジョブ <span class="num">0</span></span><span>自動保存 <span class="num">10:42:08</span></span></div>
+</div></div>
+<ul>
+<li><strong>手順の案内</strong>
+  <ul>
+  <li>入力の表が空のときだけ、表の場所に出す。</li>
+  <li>画像を 1 枚でも追加したら、通常の表に切り替える。</li>
+  <li>ドラッグ＆ドロップにも対応する。</li>
+  </ul></li>
+<li><strong>実行できない理由</strong>
+  <ul>
+  <li>足りない条件を、まとめて 1 行で出す。
+    <ul>
+    <li>「画像を追加し、出力先を選ぶと実行できます」</li>
+    <li>「出力先を選ぶと実行できます」</li>
+    <li>「出力する内容を 1 つ以上選んでください」</li>
+    </ul></li>
+  <li>分類にモデルが割り当てられていない画像があるときは、今のエラーの帯（振り分け画面へ）を出したまま、実行できる枚数だけで実行する。</li>
+  </ul></li>
+<li>同じ「押せない理由を横に出す」形は、データ準備の確定（v2.5 で実装済み）に続いて、ほかの主ボタンにも広げる（比較候補の「選択候補をリリース…」など）。</li>
+</ul>
+
+<h3>V4. このあとに行う改善（モックは次の段階で作る）</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>優先度</th><th>画面</th><th>改善</th></tr></thead>
+<tbody>
+<tr><td>中</td><td>全画面</td><td>V1〜V3 と同じ強弱の付け方（主な操作は 1 つだけ強い色、操作のまとまりの間に余白、注記は控えめ）を、ほかの画面にも広げる。</td></tr>
+<tr><td>中</td><td>全画面</td><td>押せる部品を、押せると分かる見た目にする。ホームの工程パネルは、マウスを乗せたときとキーボードフォーカス時に枠と「開く」の文字を出す。</td></tr>
+<tr><td>中</td><td>比較候補</td><td>
+  <ul>
+  <li>「最終学習モデル」とコメントを既定の列から外し、候補の詳細へ移す。</li>
+  <li>推論設定は、ID ではなく主な値の要約で見せる。</li>
+  <li>「検証 mAP」「OOF mAP」の見出しに、違いを説明するツールチップを付ける。</li>
+  </ul></td></tr>
+<tr><td>中</td><td>実験一覧</td><td>既定の列を絞る。実験群・データ拡張・途中保存モデルは「表示する列 ▾」で出す。</td></tr>
+<tr><td>低</td><td>ホーム</td><td>「最近の操作」が空のとき、何が表示される場所かを案内する。</td></tr>
+<tr><td>低</td><td>全体</td><td>文字サイズ「標準／大きめ」。</td></tr>
+<tr><td>見送り</td><td>全体</td><td>ダークテーマ、SVG アイコン。スタイルの切り替えを入れる場合は、今の見た目を「標準」として残す。</td></tr>
+<tr><td>変更なし</td><td>学習キュー</td><td>全パラメータの列を既定で表示し、利用者が「表示する列 ▾」で切り替える（今のまま）。</td></tr>
+</tbody></table></div>
+
+<h3>V5. 確認していただきたい点</h3>
+<ol>
+<li><strong>データ準備の状態の絞り込み</strong>: 「エラー」「変更あり」を用途と組み合わせられるようにする変更で、よいか。</li>
+<li><strong>データ準備の画像分類</strong>: 件数表示のボタンから、複数選択のコンボに変える案でよいか（分類が 3 つ程度なら、ボタンのままでもよい）。</li>
+<li><strong>学習設定の折りたたみ</strong>: 「モデル固有設定」「データ拡張」「途中保存モデル / 評価」を常に表示し、RPN・ROI だけ折りたたみを残す案でよいか。</li>
+<li><strong>学習設定の 2 列配置</strong>: 幅があるときにフォームを 2 列にする案でよいか。</li>
+</ol>
+</section>
+
 <section class="card" id="sec1">
 <h2>1. ソース構成</h2>
 <pre><code>src/foam_cell_analysis/
