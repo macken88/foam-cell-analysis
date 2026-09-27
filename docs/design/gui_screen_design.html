@@ -260,6 +260,23 @@ table.rev{font-size:.92rem}
 .mock .v27-empty{background:var(--slide);border:1px dashed #BCC4CB;padding:14px 18px;margin-bottom:8px}
 .mock .v27-empty ol{margin:0 0 6px;padding-left:1.4em;line-height:1.7}
 .mock .v27-empty li{margin:4px 0}
+.mock .v27-menubar{display:flex;gap:2px;margin:-10px -12px 0;padding:2px 8px;border-bottom:1px solid var(--rule-soft);font-size:.82rem}
+.mock .v27-menubar span{padding:2px 9px;border-radius:2px}
+.mock .v27-menubar span.on{background:var(--sel)}
+.mock .v27-menubar+.topbar{margin-top:6px}
+.mock .v27-dd{position:absolute;z-index:2;min-width:250px;background:var(--slide);border:1px solid #B9C1C8;box-shadow:0 3px 10px rgba(28,38,48,.18);padding:4px 0;font-size:.84rem}
+.mock .v27-dd div{display:flex;justify-content:space-between;gap:24px;padding:3px 14px}
+.mock .v27-dd div:first-child{background:var(--sel)}
+.mock .v27-dd div.dis{color:#A6AEB5}
+.mock .v27-dd kbd{font-family:Bahnschrift,"Segoe UI",sans-serif;color:var(--slate);font-size:.8rem}
+.mock .v27-dd hr{border:0;border-top:1px solid var(--rule-soft);margin:4px 0}
+.v27-menus{display:grid;grid-template-columns:repeat(auto-fill,minmax(245px,1fr));gap:10px;margin:8px 0 18px;align-items:start}
+.v27-menu{border:1px solid #B9C1C8;background:#fff;font-size:.84rem;line-height:1.45}
+.v27-menu .mh{background:#E2E6E9;padding:4px 10px;font-weight:700;color:#1C2630}
+.v27-menu .grp{padding:3px 0;border-top:1px solid #E4E8EB}
+.v27-menu .mh+.grp{border-top:0}
+.v27-menu .grp div{display:flex;justify-content:space-between;gap:12px;padding:2px 10px}
+.v27-menu kbd{font-family:Bahnschrift,"Segoe UI",sans-serif;color:#5E6B76;font-size:.8rem;white-space:nowrap}
 @media (max-width:860px){.mock .v27-form2{grid-template-columns:1fr}}
 </style>
 </head>
@@ -317,7 +334,7 @@ table.rev{font-size:.92rem}
 <tr><td>v2.3</td><td>2026-09-25</td><td>見た目の設計（2.6）を追加: 色（色はデータの意味にだけ使う）・フォント・部品の見た目。ホームを管理者の工程の流れとして表示（2.1）。フォルダパスは本文と同じ BIZ UDPゴシックで表示（レビューで決定）。画面モックを新しい見た目に更新し、表表示（4.3）、モデル学習〜本番推論（5〜10章）のモックを追加</td><td>改良案・未実装</td></tr>
 <tr><td>v2.4</td><td>2026-09-26</td><td>タブ切り替えの不具合修正、表示形式のショートカット、サムネイル表示を確定ダイアログへ移動。レビュー指摘の修正: 共有キー設定、既定キー操作、記号キー配列差の吸収、絞り込みと整合性表示、候補メニュー、推論中の二重実行防止、Excel 入出力、連続振り分け、確定サムネイルの件数・空表示、再表示時の状態更新</td><td>今回の対象を実装済み</td></tr>
 <tr><td>v2.5</td><td>2026-09-26</td><td>原画像と設定表示の二択、キー割り当て一覧、画像移動キー、列幅の保存、選択中の自動振り分け、単一チャンネル GUI、ラベルとコンボの間隔、版履歴サムネイル、確定不可理由の表示</td><td>実装済み</td></tr>
-<tr><td>v2.7</td><td>2026-09-27</td><td>見やすさの改善案（認知負荷の低減）: データ準備の絞り込みの整理と既定の列、学習設定の要約・YAML の既定を閉じる・2 列配置。本番推論は測定フローの確定まで保留とし、確定時に決めることを記載（「見やすさの改善」の節）</td><td>確認待ち・未実装</td></tr>
+<tr><td>v2.7</td><td>2026-09-27</td><td>見やすさの改善案（認知負荷の低減）: データ準備の絞り込みの整理と既定の列、学習設定の要約・YAML の既定を閉じる・2 列配置。本番推論以外の全モードにメニューバー（ファイル・編集・表示・モード固有・ツール・ヘルプ）と右クリックのメニューを追加し、ボタンの行をなくす。本番推論は測定フローの確定まで保留とし、確定時に決めることを記載（「見やすさの改善」の節）</td><td>確認待ち・未実装</td></tr>
 <tr><td>v2.6</td><td>2026-09-26</td><td>学習をK分割交差検証・OOF評価・選択エポックでの全件最終学習へ変更。学習キュー（設定編集・順次実行・失敗後の継続）と待機実験の管理を追加。比較候補をfinal.ptに限定し、検証用mAPとOOF mAPを比較・リリースに追加。再試行の試行履歴保持、同一実験IDでの予約と候補・リリースの試行固定を追記。Mask R-CNN の画像平均・標準偏差を重みに応じて自動決定</td><td>今回の仕様</td></tr>
 </tbody></table></div>
 <nav><strong>目次</strong><ol class="toc"><li><a href="#sec-v27">見やすさの改善（v2.7 改良案）</a> <span class="badge">確認待ち</span></li><li><a href="#sec1">1. ソース構成</a></li><li><a href="#sec2">2. アプリ全体の画面構成</a> <span class="badge">改良案</span><br><a href="#sec2-6">2.6 見た目の設計（色・フォント・部品）</a> <span class="badge">v2.3</span></li><li><a href="#sec3">3. 共通部品</a></li><li><a href="#sec4">4. データ準備（PageId.DATA_PREPARATION）</a> <span class="badge">改良案</span></li><li><a href="#sec5">5. モデル学習（PageId.TRAINING）</a></li><li><a href="#sec6">6. 実験一覧（PageId.EXPERIMENTS）</a></li><li><a href="#sec7">7. モデル比較・リリース（PageId.CANDIDATES）</a></li><li><a href="#sec8">8. マスク比較（PageId.MASK_COMPARISON）</a></li><li><a href="#sec9">9. リリース済みモデル・モデル振り分け（PageId.RELEASED_MODELS）</a></li><li><a href="#sec10">10. 本番推論（PageId.INFERENCE）</a></li><li><a href="#sec11">11. MockBackend</a></li><li><a href="#sec12">12. テスト（tests/gui/）</a></li></ol></nav>
@@ -328,11 +345,12 @@ table.rev{font-size:.92rem}
 目的は、画面を見たときに「どこを見ればよいか」「何を押せばよいか」が分かるようにし、認知負荷を下げることです。
 別エージェントによる画面レビューの改善案（ローカル資料 <code>docs/tasks/ui-improvement-plan.html</code>、Git 管理外）を、今の実装と照らし合わせ、採用するものを選びました。
 </p>
-<p>配色・書体・部品の見た目（2.6）は今のまま使い、次の 3 つで改善します。</p>
+<p>配色・書体・部品の見た目（2.6）は今のまま使い、次の 4 つで改善します。</p>
 <ul>
 <li><strong>表示を分ける</strong>: いつも見る情報と、必要なときだけ見る情報を分けます。</li>
 <li><strong>強弱を付ける</strong>: 主な操作とそれ以外、見出しと注記で、見た目の重さを変えます。</li>
 <li><strong>押せる見た目にする</strong>: 押せる部品を、押せると分かる見た目にします。</li>
+<li><strong>機能をメニューバーにまとめる</strong>: ボタンの行をなくし、表や画像など作業中に確認するものの場所を広げます（V4）。</li>
 </ul>
 <div class="note">
 <strong>方針: 確認が目的の画面では情報を省かない</strong>
@@ -359,22 +377,16 @@ table.rev{font-size:.92rem}
   </ul></li>
 <li>絞り込みの部品は、枠のあるボタンの見た目にする。</li>
 <li>表の既定の列は「状態の印・元ファイル名・用途・画像分類・品質」の 5 つにする。ほかの列は「表示する列 ▾」で出す。</li>
-<li>ツールバーは「作業」（取り込み・自動振り分け）と「入出力」（Excel・その他）の 2 つにまとめて離す。主な操作は右端の「確定」1 つだけにする。</li>
+<li>ボタンの行とベース版の行はなくし、機能はメニューバーへ移す（V4）。「確定」とエラーの案内は、タブの行の右端に置く（V4 の案 A）。</li>
 </ul></div>
 </div>
 
 <div class="mock">
 <div class="mock-title">データ準備 — 気泡インスタンスセグメンテーション（v2.7 案）</div>
 <div class="mock-body">
+<div class="v27-menubar"><span>ファイル(F)</span><span>編集(E)</span><span>表示(V)</span><span>データセット(D)</span><span>ツール(T)</span><span>ヘルプ(H)</span></div>
 <div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span class="on">作業中データ</span><span>データセット版履歴</span></span>
-<span class="spacer"></span><span class="small">ベース <span class="num">train_v003</span> / <span class="num">val_v003</span></span></div>
-<div class="m-toolbar">
-<span class="btn">取り込み…</span><span class="btn">自動振り分け…</span>
-<span class="v27-gap"></span>
-<span class="btn">Excel ▾</span><span class="btn">その他 ▾</span>
-<span class="spacer"></span>
-<span class="err">⚠ エラー 2 件を直すと確定できます</span> <span class="btn primary dis">確定…</span>
-</div>
+<span class="spacer"></span><span class="small" style="margin-right:10px">ベース <span class="num">train_v003</span> / <span class="num">val_v003</span></span><span class="err" style="margin-bottom:6px">⚠ エラー 2 件を直すと確定できます</span> <span class="btn primary dis">確定…</span></div>
 <div class="v27-filters">
 <div class="v27-frow"><span class="v27-flabel">用途</span>
 <span class="v27-seg"><span class="on">すべて <b class="num">612</b></span><span><i class="sw idle"></i>未振り分け <b class="num">23</b></span><span><i class="sw train"></i>学習 <b class="num">489</b></span><span><i class="sw val"></i>検証 <b class="num">96</b></span><span class="strike"><i class="sw idle"></i>不採用 <b class="num">4</b></span></span>
@@ -465,6 +477,7 @@ table.rev{font-size:.92rem}
 <div class="mock">
 <div class="mock-title">モデル学習 — 気泡インスタンスセグメンテーション（v2.7 案）</div>
 <div class="mock-body">
+<div class="v27-menubar"><span>ファイル(F)</span><span>編集(E)</span><span>表示(V)</span><span>学習(L)</span><span>ツール(T)</span><span>ヘルプ(H)</span></div>
 <div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span class="on">学習設定</span><span>学習キュー</span><span>実験一覧</span></span><span class="spacer"></span></div>
 <div class="v27-summary">
 <span><span class="small">データ</span> <span class="num">train_v004</span>・分類A・良／可</span>
@@ -630,11 +643,416 @@ table.rev{font-size:.92rem}
   </ul></li>
 </ul>
 
-<h3>V4. このあとに行う改善（モックは次の段階で作る）</h3>
+<h3>V4. メニューバー: 機能をメニューにまとめ、表と画像の場所を広げる（本番推論を除く全モード）</h3>
+<p>
+今は、各タブの上にボタンの行があり、作業中に見る表と画像の場所を狭めています。
+また、機能の置き場所がタブごとにばらばらで、「どこに何があるか」を覚えにくい状態です。
+一般的なソフトウェアと同じ並びのメニューバーに機能をまとめ、ボタンの行をなくします。
+本番推論は、測定フローが確定するまで今のまま（ヘルプだけ）とします（V3）。
+</p>
+
+<h4>1. 共通の並び</h4>
+<p><strong>ファイル(F) ・ 編集(E) ・ 表示(V) ・ ［モード固有］ ・ ツール(T) ・ ヘルプ(H)</strong></p>
+<ul>
+<li>「ファイル」「編集」「表示」「ツール」「ヘルプ」は、どのモードでも同じ位置に置き、同じ種類の機能を入れます。</li>
+<li>モード固有のメニューは、そのモードの仕事の名前にします。
+  <ul>
+  <li>データ準備は「データセット(D)」。</li>
+  <li>モデル学習は「学習(L)」（キューの操作も含む）。</li>
+  <li>モデル比較・リリースは「候補(C)」「リリース(R)」。</li>
+  </ul></li>
+<li>入れる項目がないメニューは置きません（モデル比較・リリースには「編集」を置かない）。</li>
+<li>各項目の右には割り当てキーを表示します。キー割り当てを変えたら、表示も追従させます。</li>
+<li>Alt キーからたどれるように、(F) などのアクセスキーを付けます。</li>
+<li>いま選んでいる行やタブでは使えない項目は、灰色にします。項目を選べない理由は、ツールチップで示します。</li>
+<li>ホームのメニューは「ファイル・設定・ヘルプ」から「ファイル・ツール・ヘルプ」に名前を変え、「設定」の中身を「ツール」へ移して、ほかのモードとそろえます。</li>
+</ul>
+
+<h4>2. 右クリックのメニュー</h4>
+<p>
+表の行に対する操作（複製・削除・再実行・非採用など）は、メニューバーに加えて、行の右クリックからも使えるようにします。
+表を見ながら操作するときに、画面の上端まで目を動かさずに済みます。
+入れる項目は、メニューバーの同じ項目と同じ名前・同じ割り当てキーにします。
+</p>
+
+<h4>3. 画面に残す主な操作（確認待ち）</h4>
+<p>
+ボタンを全部メニューに移すと、次に押すものが画面から見えなくなります。
+そこで、各タブの主な操作を 1 つだけ画面に残す案（案 A）と、すべてメニューに移す案（案 B）を並べます。
+下のモックは案 A で描いています。
+</p>
+<div class="table-wrap"><table>
+<thead><tr><th>モード</th><th>タブ</th><th>案 A で画面に残す操作</th><th>置き場所</th></tr></thead>
+<tbody>
+<tr><td rowspan="2">データ準備</td><td>作業中データ</td><td>「⚠ エラー N 件を直すと確定できます」と「確定…」</td><td>タブの行の右端。ベース版の表示もタブの行へ移す</td></tr>
+<tr><td>データセット版履歴</td><td>「サムネイルで確認…」</td><td>表の上の行の右端</td></tr>
+<tr><td rowspan="3">モデル学習</td><td>学習設定</td><td>設定を検証・下書き保存・キューに追加・学習開始</td><td>下部（今のまま。フォームの続きとして使うため）</td></tr>
+<tr><td>学習キュー</td><td>「キューを実行」／「実行を停止」</td><td>状態の行の右端</td></tr>
+<tr><td>実験一覧</td><td>「モデル比較へ送る…」</td><td>絞り込みの行の右端</td></tr>
+<tr><td rowspan="3">モデル比較・リリース</td><td>リリース候補</td><td>「選択候補をリリース…」</td><td>絞り込みの行の右端</td></tr>
+<tr><td>マスク比較</td><td>画像の切り替え（前へ・次へ・全体表示）</td><td>今のまま（表示の操作のため）</td></tr>
+<tr><td>リリース済みモデル・振り分け</td><td>「変更を適用…」</td><td>振り分けの表の下（今のまま）</td></tr>
+</tbody></table></div>
+
+<div class="mock">
+<div class="mock-title">データ準備（案 A）— 「データセット」メニューを開いたところ</div>
+<div class="mock-body" style="position:relative">
+<div class="v27-menubar"><span>ファイル(F)</span><span>編集(E)</span><span>表示(V)</span><span class="on">データセット(D)</span><span>ツール(T)</span><span>ヘルプ(H)</span></div>
+<div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span class="on">作業中データ</span><span>データセット版履歴</span></span>
+<span class="spacer"></span><span class="small" style="margin-right:10px">ベース <span class="num">train_v003</span> / <span class="num">val_v003</span></span><span class="err" style="margin-bottom:6px">⚠ エラー 2 件を直すと確定できます</span> <span class="btn primary dis">確定…</span></div>
+<div class="v27-dd" style="left:196px;top:30px">
+<div><span>自動振り分け…</span><kbd>Ctrl+D</kbd></div>
+<div><span>連続振り分け…</span><kbd>Enter</kbd></div>
+<hr>
+<div><span>エラーのある画像を表示</span><kbd></kbd></div>
+<div class="dis"><span>データセットを確定…</span><kbd>Ctrl+Enter</kbd></div>
+<hr>
+<div class="dis"><span>選択した版をサムネイルで確認…</span><kbd></kbd></div>
+</div>
+<div class="v27-filters">
+<div class="v27-frow"><span class="v27-flabel">用途</span>
+<span class="v27-seg"><span class="on">すべて <b class="num">612</b></span><span><i class="sw idle"></i>未振り分け <b class="num">23</b></span><span><i class="sw train"></i>学習 <b class="num">489</b></span><span><i class="sw val"></i>検証 <b class="num">96</b></span><span class="strike"><i class="sw idle"></i>不採用 <b class="num">4</b></span></span>
+</div>
+<div class="v27-frow"><span class="v27-flabel">絞り込み</span>
+<span class="v27-tog err">⚠ エラー <b class="num">2</b></span><span class="v27-tog"><i class="sw chg"></i>変更あり <b class="num">37</b></span>
+<span class="v27-gap"></span><span class="small">画像分類</span> <span class="sel-combo">すべて ▾</span>
+<span class="small">取り込み元</span> <span class="sel-combo">すべて ▾</span>
+<span class="m-search">識別子・ファイル名で検索</span>
+</div>
+</div>
+<div class="small" style="padding:40px 0 30px;text-align:center">（以下、V1 のモックと同じ表とプレビュー）</div>
+</div></div>
+
+<div class="mock">
+<div class="mock-title">データ準備（案 B）— すべての操作をメニューに移した場合</div>
+<div class="mock-body">
+<div class="v27-menubar"><span>ファイル(F)</span><span>編集(E)</span><span>表示(V)</span><span>データセット(D)</span><span>ツール(T)</span><span>ヘルプ(H)</span></div>
+<div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span class="on">作業中データ</span><span>データセット版履歴</span></span>
+<span class="spacer"></span><span class="small" style="margin-right:10px">ベース <span class="num">train_v003</span> / <span class="num">val_v003</span></span><span class="err" style="margin-bottom:6px">⚠ エラー 2 件（確定できません）</span></div>
+<div class="small" style="padding:24px 0;text-align:center">（以下、案 A と同じ）</div>
+</div></div>
+<ul>
+<li><strong>案 A</strong>: 次にする操作が画面上で分かり、押せない理由もボタンの横に出せます。代わりに、ボタンの分だけ場所を使います。ただし、どれも既存の行の右端に置くので、新しい行は増えません。</li>
+<li><strong>案 B</strong>: 画面が最も簡素になります。代わりに、確定など、工程の区切りになる操作を探すのに、メニューを開く必要があります。押せない理由は、メニューの項目のツールチップで示すことになります。</li>
+<li>どちらの案でも、データ準備の画面上部のベース版の行とボタンの行はなくなります。V1 で絞り込みを 2 行にしたので、差し引きで 1 行分、表と画像の場所が広がります。</li>
+</ul>
+
+<div class="mock">
+<div class="mock-title">モデル学習（案 A）— 学習キュー。行を右クリックしたところ</div>
+<div class="mock-body" style="position:relative">
+<div class="v27-menubar"><span>ファイル(F)</span><span>編集(E)</span><span>表示(V)</span><span>学習(L)</span><span>ツール(T)</span><span>ヘルプ(H)</span></div>
+<div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span>学習設定</span><span class="on">学習キュー</span><span>実験一覧</span></span><span class="spacer"></span></div>
+<div class="v27-frow" style="margin-bottom:6px"><span>待機 <span class="num">3</span> 件・実行中 <span class="num">exp_0047</span>（分割 <span class="num">2/5</span>・epoch <span class="num">40/100</span>）・完了 <span class="num">1</span> 件・失敗 <span class="num">0</span> 件</span><span class="spacer"></span><span class="btn ghost">表示する列 ▾</span><span class="btn primary">実行を停止</span></div>
+<div class="table-wrap"><table>
+<thead><tr><th class="n">順番</th><th>状態</th><th>実験識別子</th><th>説明</th><th>データセット版</th><th>画像分類</th><th class="n">分割数</th><th>モデル種類</th><th class="n">エポック数</th><th class="n">バッチ</th><th class="n">学習率</th><th>プロファイル</th><th>…</th></tr></thead>
+<tbody>
+<tr><td class="n">1</td><td><span class="tag run">実行中</span></td><td class="num">exp_0047</td><td>分類A / 基準設定</td><td class="num">train_v004</td><td>分類A</td><td class="n">5</td><td>Mask R-CNN</td><td class="n">100</td><td class="n">8</td><td class="n">0.0001</td><td class="num">aug_v003</td><td></td></tr>
+<tr class="sel"><td class="n">2</td><td>待機</td><td class="num">exp_0048</td><td>サイズ比較</td><td class="num">train_v004</td><td>全分類</td><td class="n">5</td><td>Cellpose</td><td class="n">80</td><td class="n">4</td><td class="n">0.001</td><td class="num">aug_v003</td><td></td></tr>
+<tr><td class="n">3</td><td>待機</td><td class="num">exp_0049</td><td>学習率 0.0005</td><td class="num">train_v004</td><td>分類A</td><td class="n">5</td><td>Mask R-CNN</td><td class="n">100</td><td class="n">8</td><td class="n">0.0005</td><td class="num">aug_v003</td><td></td></tr>
+</tbody></table></div>
+<div class="v27-dd" style="left:250px;top:150px">
+<div><span>設定を開いて編集…</span><kbd></kbd></div>
+<div><span>複製</span><kbd></kbd></div>
+<div><span>削除</span><kbd></kbd></div>
+<hr>
+<div><span>上へ移動</span><kbd>Ctrl+↑</kbd></div>
+<div><span>下へ移動</span><kbd>Ctrl+↓</kbd></div>
+</div>
+<p class="small" style="margin-top:60px">列は今のまま、全パラメータを既定で表示する（「表示する列 ▾」で利用者が切り替え）。表の下のボタンの行はなくす。</p>
+</div></div>
+
+<div class="mock">
+<div class="mock-title">モデル学習（案 A）— 実験一覧</div>
+<div class="mock-body">
+<div class="v27-menubar"><span>ファイル(F)</span><span>編集(E)</span><span>表示(V)</span><span>学習(L)</span><span>ツール(T)</span><span>ヘルプ(H)</span></div>
+<div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span>学習設定</span><span>学習キュー</span><span class="on">実験一覧</span></span><span class="spacer"></span></div>
+<div class="v27-frow" style="margin-bottom:6px"><span class="small">実験群</span> <span class="sel-combo">すべて ▾</span> <span class="small">モデル</span> <span class="sel-combo">すべて ▾</span> <span class="small">状態</span> <span class="sel-combo">すべて ▾</span><span class="spacer"></span><span class="btn ghost">表示する列 ▾</span><span class="btn primary">モデル比較へ送る…</span></div>
+<div class="table-wrap"><table>
+<thead><tr><th class="ck"></th><th>ID</th><th>モデル</th><th>データセット</th><th>状態</th><th>進捗</th><th class="n">OOF mAP</th></tr></thead>
+<tbody>
+<tr class="sel"><td class="ck">☑</td><td class="num">exp_0042</td><td>Mask R-CNN</td><td class="num">train_v003</td><td><span class="tag okk">完了</span></td><td>—</td><td class="n"><b>0.949</b></td></tr>
+<tr><td class="ck">☐</td><td class="num">exp_0043</td><td>Cellpose</td><td class="num">train_v003</td><td><span class="tag okk">完了</span></td><td>—</td><td class="n">0.944</td></tr>
+<tr><td class="ck">☐</td><td class="num">exp_0047</td><td>Mask R-CNN</td><td class="num">train_v004</td><td><span class="tag run">実行中</span></td><td>分割 <span class="num">2/5</span>・epoch <span class="num">40/100</span></td><td class="n">—</td></tr>
+</tbody></table></div>
+<div class="v27-frow"><span class="mtabs" style="border:0"><span class="on">概要</span><span>学習曲線</span><span>交差検証</span><span>途中保存モデル</span><span>実行試行</span><span>実使用データ</span></span></div>
+<p class="small">「選択した実験を比較」「設定を複製して新規実験」「学習を中断」「再実行」などは、「学習」メニューと行の右クリックへ移す。</p>
+</div></div>
+
+<div class="mock">
+<div class="mock-title">モデル比較・リリース（案 A）— リリース候補</div>
+<div class="mock-body">
+<div class="v27-menubar"><span>ファイル(F)</span><span>表示(V)</span><span>候補(C)</span><span>リリース(R)</span><span>ツール(T)</span><span>ヘルプ(H)</span></div>
+<div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span class="on">リリース候補</span><span>マスク比較</span><span>リリース済みモデル・振り分け</span></span><span class="spacer"></span></div>
+<div class="v27-frow" style="margin-bottom:6px"><span class="small">検証用データセット</span> <span class="sel-combo num">val_v003 ▾</span> <span class="small">状態</span> <span class="sel-combo">すべて ▾</span><span class="spacer"></span><span class="small v27-why">評価済みの候補を 1 つ選ぶとリリースできます</span><span class="btn primary dis">選択候補をリリース…</span></div>
+<div class="table-wrap"><table>
+<thead><tr><th class="ck"></th><th>候補ID</th><th>モデル</th><th>実験</th><th>推論設定</th><th class="n">検証 mAP</th><th class="n">OOF mAP</th><th>状態</th><th>外部解析</th></tr></thead>
+<tbody>
+<tr><td class="ck">☐</td><td class="num">RC-001</td><td>Mask R-CNN</td><td class="num">exp_0042</td><td class="num">infer_v005</td><td class="n"><b>0.910</b></td><td class="n">0.947</td><td>候補</td><td>—</td></tr>
+<tr><td class="ck">☐</td><td class="num">RC-002</td><td>Cellpose</td><td class="num">exp_0043</td><td class="num">infer_v006</td><td class="n">0.890</td><td class="n">0.944</td><td>候補</td><td>—</td></tr>
+<tr><td class="ck">☐</td><td class="num">RC-003</td><td>Mask R-CNN</td><td class="num">exp_0042</td><td class="num">infer_v007</td><td class="n"><span class="small">未評価</span></td><td class="n"><b>0.952</b></td><td>候補</td><td>—</td></tr>
+</tbody></table></div>
+<p class="small">「候補を追加」「評価を実行」「詳細評価を見る」「マスク比較」「非採用にする」は「候補」メニューと行の右クリックへ、「粒子解析用マスクを出力…」は「ファイル」メニューへ移す。表の下のボタンの行はなくす。</p>
+</div></div>
+
+<div class="mock">
+<div class="mock-title">モデル比較・リリース（案 A）— リリース済みモデル・振り分け</div>
+<div class="mock-body">
+<div class="v27-menubar"><span>ファイル(F)</span><span>表示(V)</span><span>候補(C)</span><span>リリース(R)</span><span>ツール(T)</span><span>ヘルプ(H)</span></div>
+<div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span>リリース候補</span><span>マスク比較</span><span class="on">リリース済みモデル・振り分け</span></span><span class="spacer"></span></div>
+<div class="m-split" style="grid-template-columns:1.4fr 1fr">
+<div><p class="ptitle">リリース済みモデル</p>
+<div class="table-wrap"><table>
+<thead><tr><th>モデルID</th><th>モデル</th><th class="n">検証 mAP</th><th class="n">OOF mAP</th><th>割り当て中</th></tr></thead>
+<tbody><tr class="sel"><td class="num">model_007</td><td>Mask R-CNN</td><td class="n">0.913</td><td class="n">0.949</td><td>分類A・分類C</td></tr><tr><td class="num">model_012</td><td>Cellpose</td><td class="n">0.887</td><td class="n">0.944</td><td>分類B</td></tr></tbody></table></div></div>
+<div><p class="ptitle">モデル振り分け</p>
+<div class="table-wrap"><table>
+<thead><tr><th>画像分類</th><th>使うモデル</th></tr></thead>
+<tbody><tr><td>分類A</td><td><span class="sel-combo num">model_007 ▾</span></td></tr><tr class="chg"><td>分類B</td><td><span class="sel-combo num">model_007 ▾</span></td></tr><tr><td>分類C</td><td><span class="sel-combo num">model_007 ▾</span></td></tr></tbody></table></div>
+<div class="btns"><span class="small v27-why">1 件の変更があります</span><span class="btn primary">変更を適用…</span></div></div>
+</div>
+<p class="small">「変更を破棄」「リリースの詳細を表示」「設定を変えて新しいリリースを作る」は「リリース」メニューへ移す。</p>
+</div></div>
+
+<h4>4. モードごとのメニュー</h4>
+<p class="small">メニューを開いたときの並びで書く。罫線は項目の区切り。右は割り当てキー（ないものは空欄）。</p>
+<p class="small">「▸」はサブメニュー。データ準備の「用途を変更」は未振り分け・学習・検証・不採用、「画像分類を変更」は各分類（<code>1</code>〜<code>9</code>）・未設定（<code>0</code>）・一覧から選ぶ…（<code>K</code>）、「品質を変更」は良・可・不良、「絞り込み」はすべて（<code>Alt+1</code>）〜エラー（<code>Alt+6</code>）・変更あり。各項目の割り当てキーは今の設定のまま。</p>
+
+<p><strong>データ準備（作業中データ／データセット版履歴）</strong></p>
+<div class="v27-menus">
+<div class="v27-menu"><div class="mh">ファイル(F)</div>
+<div class="grp">
+<div><span>画像を取り込む…</span><kbd>Ctrl+I</kbd></div>
+<div><span>新しいマスク版を取り込む…</span></div>
+</div>
+<div class="grp">
+<div><span>Excel に出力…</span><kbd>Ctrl+E</kbd></div>
+<div><span>Excel から取り込む…</span><kbd>Ctrl+Shift+E</kbd></div>
+</div>
+<div class="grp">
+<div><span>アーカイブを作成…</span></div>
+</div>
+<div class="grp">
+<div><span>ホームに戻る</span><kbd>Ctrl+H</kbd></div>
+<div><span>ウィンドウを閉じる</span></div>
+</div>
+</div>
+<div class="v27-menu"><div class="mh">編集(E)</div>
+<div class="grp">
+<div><span>元に戻す</span><kbd>Ctrl+Z</kbd></div>
+<div><span>やり直す</span><kbd>Ctrl+Y</kbd></div>
+</div>
+<div class="grp">
+<div><span>すべて選択</span><kbd>Ctrl+A</kbd></div>
+<div><span>選択を解除</span><kbd>Esc</kbd></div>
+<div><span>検索</span><kbd>Ctrl+F</kbd></div>
+</div>
+<div class="grp">
+<div><span>用途を変更 ▸</span></div>
+<div><span>画像分類を変更 ▸</span><kbd>1〜9・0・K</kbd></div>
+<div><span>品質を変更 ▸</span></div>
+</div>
+</div>
+<div class="v27-menu"><div class="mh">表示(V)</div>
+<div class="grp">
+<div><span>作業中データ</span></div>
+<div><span>データセット版履歴</span></div>
+</div>
+<div class="grp">
+<div><span>絞り込み ▸</span><kbd>Alt+1〜6</kbd></div>
+<div><span>表示する列 ▸</span></div>
+</div>
+<div class="grp">
+<div><span>原画像と切り替える</span><kbd>M</kbd></div>
+<div><span>前の画像</span><kbd>←</kbd></div>
+<div><span>次の画像</span><kbd>→</kbd></div>
+</div>
+<div class="grp">
+<div><span>拡大</span><kbd>+</kbd></div>
+<div><span>縮小</span><kbd>-</kbd></div>
+<div><span>全体表示</span><kbd>F</kbd></div>
+</div>
+</div>
+<div class="v27-menu"><div class="mh">データセット(D)</div>
+<div class="grp">
+<div><span>自動振り分け…</span><kbd>Ctrl+D</kbd></div>
+<div><span>連続振り分け…</span><kbd>Enter</kbd></div>
+</div>
+<div class="grp">
+<div><span>エラーのある画像を表示</span></div>
+<div><span>データセットを確定…</span><kbd>Ctrl+Enter</kbd></div>
+</div>
+<div class="grp">
+<div><span>選択した版をサムネイルで確認…（版履歴タブ）</span></div>
+</div>
+</div>
+<div class="v27-menu"><div class="mh">ツール(T)</div>
+<div class="grp">
+<div><span>キー割り当て…</span></div>
+<div><span>設定…（原画像と切り替える表示など）</span></div>
+</div>
+</div>
+<div class="v27-menu"><div class="mh">ヘルプ(H)</div>
+<div class="grp">
+<div><span>キー割り当て一覧</span><kbd>?</kbd></div>
+</div>
+</div>
+</div>
+
+<p><strong>モデル学習（学習設定／学習キュー／実験一覧）</strong></p>
+<div class="v27-menus">
+<div class="v27-menu"><div class="mh">ファイル(F)</div>
+<div class="grp">
+<div><span>新しい実験</span></div>
+<div><span>下書き保存</span></div>
+</div>
+<div class="grp">
+<div><span>設定 YAML を表示…（選択中の実験）</span></div>
+</div>
+<div class="grp">
+<div><span>ホームに戻る</span><kbd>Ctrl+H</kbd></div>
+<div><span>ウィンドウを閉じる</span></div>
+</div>
+</div>
+<div class="v27-menu"><div class="mh">編集(E)</div>
+<div class="grp">
+<div><span>複製</span></div>
+<div><span>削除（学習キューの選択行）</span></div>
+</div>
+<div class="grp">
+<div><span>上へ移動</span><kbd>Ctrl+↑</kbd></div>
+<div><span>下へ移動</span><kbd>Ctrl+↓</kbd></div>
+</div>
+<div class="grp">
+<div><span>設定を開いて編集…（学習キューの行）</span></div>
+<div><span>下書きを編集（実験一覧）</span></div>
+</div>
+</div>
+<div class="v27-menu"><div class="mh">表示(V)</div>
+<div class="grp">
+<div><span>学習設定</span></div>
+<div><span>学習キュー</span></div>
+<div><span>実験一覧</span></div>
+</div>
+<div class="grp">
+<div><span>設定プレビュー（YAML）</span></div>
+</div>
+<div class="grp">
+<div><span>表示する列 ▸（学習キュー・実験一覧）</span></div>
+<div><span>実験の絞り込み ▸（実験群・モデル・状態）</span></div>
+</div>
+</div>
+<div class="v27-menu"><div class="mh">学習(L)</div>
+<div class="grp">
+<div><span>設定を検証</span></div>
+<div><span>キューに追加</span></div>
+<div><span>学習開始</span></div>
+</div>
+<div class="grp">
+<div><span>キューを実行（実行中は「実行を停止」）</span></div>
+<div><span>終了した行を片付ける</span></div>
+</div>
+<div class="grp">
+<div><span>学習を中断</span></div>
+<div><span>再実行</span></div>
+</div>
+<div class="grp">
+<div><span>設定を複製して新規実験</span></div>
+<div><span>複製してキューに追加</span></div>
+</div>
+<div class="grp">
+<div><span>選択した実験を比較</span></div>
+<div><span>結果を開く</span></div>
+<div><span>モデル比較へ送る…</span></div>
+</div>
+</div>
+<div class="v27-menu"><div class="mh">ツール(T)</div>
+<div class="grp">
+<div><span>データ拡張プロファイルの編集…</span></div>
+</div>
+<div class="grp">
+<div><span>キー割り当て…</span></div>
+<div><span>設定…</span></div>
+</div>
+</div>
+<div class="v27-menu"><div class="mh">ヘルプ(H)</div>
+<div class="grp">
+<div><span>キー割り当て一覧</span><kbd>?</kbd></div>
+</div>
+</div>
+</div>
+
+<p><strong>モデル比較・リリース（リリース候補／マスク比較／リリース済みモデル・振り分け）</strong></p>
+<div class="v27-menus">
+<div class="v27-menu"><div class="mh">ファイル(F)</div>
+<div class="grp">
+<div><span>粒子解析用マスクを出力…</span></div>
+</div>
+<div class="grp">
+<div><span>ホームに戻る</span><kbd>Ctrl+H</kbd></div>
+<div><span>ウィンドウを閉じる</span></div>
+</div>
+</div>
+<div class="v27-menu"><div class="mh">表示(V)</div>
+<div class="grp">
+<div><span>リリース候補</span></div>
+<div><span>マスク比較</span></div>
+<div><span>リリース済みモデル・振り分け</span></div>
+</div>
+<div class="grp">
+<div><span>検証用データセット ▸</span></div>
+<div><span>候補の状態で絞り込み ▸</span></div>
+</div>
+<div class="grp">
+<div><span>原画像と切り替える</span><kbd>M</kbd></div>
+<div><span>前の画像</span><kbd>←</kbd></div>
+<div><span>次の画像</span><kbd>→</kbd></div>
+<div><span>全体表示（マスク比較）</span><kbd>F</kbd></div>
+</div>
+</div>
+<div class="v27-menu"><div class="mh">候補(C)</div>
+<div class="grp">
+<div><span>候補を追加…</span></div>
+<div><span>評価を実行</span></div>
+<div><span>詳細評価を見る…</span></div>
+<div><span>マスク比較</span></div>
+</div>
+<div class="grp">
+<div><span>非採用にする</span></div>
+<div><span>選択候補をリリース…</span></div>
+</div>
+</div>
+<div class="v27-menu"><div class="mh">リリース(R)</div>
+<div class="grp">
+<div><span>リリースの詳細を表示…</span></div>
+<div><span>設定を変えて新しいリリースを作る</span></div>
+</div>
+<div class="grp">
+<div><span>振り分けの変更を適用…</span></div>
+<div><span>振り分けの変更を破棄</span></div>
+</div>
+</div>
+<div class="v27-menu"><div class="mh">ツール(T)</div>
+<div class="grp">
+<div><span>キー割り当て…</span></div>
+<div><span>設定…</span></div>
+</div>
+</div>
+<div class="v27-menu"><div class="mh">ヘルプ(H)</div>
+<div class="grp">
+<div><span>キー割り当て一覧</span><kbd>?</kbd></div>
+</div>
+</div>
+</div>
+<ul>
+<li>タブの切り替えの項目は、選ぶとそのタブへ移ります。ほかのタブの行を対象にする項目（例: 学習設定のタブで「複製」）は灰色にし、ツールチップで対象のタブを示します。</li>
+<li>メニューからの操作とボタン・右クリックからの操作は、同じ処理（同じ QAction）を使い、有効・無効や表示名を 1 か所で管理します。</li>
+</ul>
+
+<h3>V5. このあとに行う改善（モックは次の段階で作る）</h3>
 <div class="table-wrap"><table>
 <thead><tr><th>優先度</th><th>画面</th><th>改善</th></tr></thead>
 <tbody>
-<tr><td>中</td><td>全画面</td><td>V1〜V3 と同じ強弱の付け方（主な操作は 1 つだけ強い色、操作のまとまりの間に余白、注記は控えめ）を、ほかの画面にも広げる。</td></tr>
+<tr><td>中</td><td>全画面</td><td>V1・V2・V4 と同じ強弱の付け方（主な操作は 1 つだけ強い色、操作のまとまりの間に余白、注記は控えめ）を、ほかの画面にも広げる。</td></tr>
 <tr><td>中</td><td>全画面</td><td>押せる部品を、押せると分かる見た目にする。ホームの工程パネルは、マウスを乗せたときとキーボードフォーカス時に枠と「開く」の文字を出す。</td></tr>
 <tr><td>中</td><td>全画面</td><td>押せない主ボタンは、理由をボタンの横に出す（データ準備の確定と同じ形。比較候補の「選択候補をリリース…」など）。</td></tr>
 <tr><td>中</td><td>比較候補</td><td>
@@ -650,13 +1068,15 @@ table.rev{font-size:.92rem}
 <tr><td>変更なし</td><td>学習キュー</td><td>全パラメータの列を既定で表示し、利用者が「表示する列 ▾」で切り替える（今のまま）。</td></tr>
 </tbody></table></div>
 
-<h3>V5. 確認していただきたい点</h3>
+<h3>V6. 確認していただきたい点</h3>
 <ol>
 <li><strong>データ準備の状態の絞り込み</strong>: 「エラー」「変更あり」を用途と組み合わせられるようにする変更で、よいか。</li>
 <li><strong>データ準備の画像分類</strong>: 件数表示のボタンから、複数選択のコンボに変える案でよいか（分類が 3 つ程度なら、ボタンのままでもよい）。</li>
 <li><strong>学習設定の折りたたみ</strong>: 「モデル固有設定」「データ拡張」「途中保存モデル / 評価」を常に表示し、RPN・ROI だけ折りたたみを残す案でよいか。</li>
 <li><strong>学習設定の 2 列配置</strong>: 幅があるときにフォームを 2 列にする案でよいか。</li>
+<li><strong>画面に残す主な操作</strong>: 各タブの主な操作を 1 つだけ画面に残す案 A と、すべてメニューに移す案 B のどちらにするか（V4 の 3）。</li>
 </ol>
+<p class="small">決定済み（2026-09-27）: 学習キューの操作はモード固有の「学習」メニューにまとめる。モデル比較・リリースには「編集」メニューを置かない。本番推論は測定フローの確定まで保留。</p>
 </section>
 
 <section class="card" id="sec1">
