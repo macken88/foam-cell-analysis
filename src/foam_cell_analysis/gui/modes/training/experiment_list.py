@@ -91,7 +91,7 @@ class ExperimentListPage(BasePage):
                 "データ拡張",
                 "状態",
                 "進捗",
-                "OOF mAP",
+                "OOF AP",
                 "途中保存モデル",
             ]
         )
@@ -109,7 +109,7 @@ class ExperimentListPage(BasePage):
             "データ拡張",
             "状態",
             "進捗",
-            "OOF mAP",
+            "OOF AP",
             "途中保存モデル",
         )
         for column, label in enumerate(column_labels):
@@ -163,7 +163,7 @@ class ExperimentListPage(BasePage):
         self.chart = QWidget()
         chart_layout = QVBoxLayout(self.chart)
         chart_layout.setContentsMargins(0, 0, 0, 0)
-        chart_layout.addWidget(QLabel("交差検証（OOF）mAP"))
+        chart_layout.addWidget(QLabel("交差検証（OOF）AP"))
         self.chart_map = LineChart()
         chart_layout.addWidget(self.chart_map, 1)
         chart_layout.addWidget(QLabel("学習 loss"))
@@ -171,7 +171,7 @@ class ExperimentListPage(BasePage):
         chart_layout.addWidget(self.chart_loss, 1)
         self.cv_table = QTableWidget(0, 4)
         self.cv_table.setHorizontalHeaderLabels(
-            ["フォールド", "学習件数", "検証件数", "選択エポック mAP"]
+            ["フォールド", "学習件数", "検証件数", "選択エポック AP"]
         )
         setup_table(self.cv_table, stretch_column=0)
         self.cv_page = QWidget()
@@ -188,12 +188,12 @@ class ExperimentListPage(BasePage):
         cv_layout.addWidget(self.oof_table)
         self.checkpoint_table = QTableWidget(0, 5)
         self.checkpoint_table.setHorizontalHeaderLabels(
-            ["フォールド（1〜K / 最終）", "ファイル名", "エポック", "mAP", "保存日時"]
+            ["フォールド（1〜K / 最終）", "ファイル名", "エポック", "AP", "保存日時"]
         )
         setup_table(self.checkpoint_table, stretch_column=0)
         self.run_table = QTableWidget(0, 7)
         self.run_table.setHorizontalHeaderLabels(
-            ["試行", "開始", "終了", "結果", "OOF mAP", "選択エポック", "実行環境"]
+            ["試行", "開始", "終了", "結果", "OOF AP", "選択エポック", "実行環境"]
         )
         self.run_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.run_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
@@ -274,6 +274,7 @@ class ExperimentListPage(BasePage):
         self._timer.setInterval(1000)
         self._timer.timeout.connect(self.refresh)
         self._timer.start()
+        self.ctx.training_runner.progressed.connect(lambda _experiment_id: self.refresh())
         self.refresh()
 
     def menu_actions(self):
@@ -496,7 +497,7 @@ class ExperimentListPage(BasePage):
             self.overview_table.setItem(row, 1, value_item)
         map_series = [
             (
-                "OOF mAP",
+                "OOF AP",
                 QColor(Color.GRAPHITE),
                 [float(p.epoch) for p in experiment.oof_history if p.map is not None],
                 [float(p.map) for p in experiment.oof_history if p.map is not None],
@@ -570,7 +571,7 @@ class ExperimentListPage(BasePage):
             classifications.append("未分類")
         self.oof_table.setColumnCount(2 + len(classifications))
         self.oof_table.setHorizontalHeaderLabels(["OOF評価", "全体", *classifications])
-        self.oof_table.setItem(0, 0, QTableWidgetItem("OOF mAP"))
+        self.oof_table.setItem(0, 0, QTableWidgetItem("OOF AP（Cellpose 方式、IoU 0.50–0.95）"))
         self.oof_table.setItem(1, 0, QTableWidgetItem("対象件数"))
         self.oof_table.setItem(
             0, 1, QTableWidgetItem(format_score(oof_eval.overall_map) if oof_eval else "—")
@@ -746,7 +747,7 @@ class ExperimentListPage(BasePage):
         if key == "data.quality_filter":
             return quality_filter_label(str(value))
         if key == "checkpoint.best_metric" and value == "oof_instance_map":
-            return "OOF 平均適合率（mAP）・最大"
+            return "OOF 平均適合率（AP）・最大"
         if key == "model.pretrained_weights":
             return {"coco": "COCO", "imagenet": "ImageNet"}.get(str(value), str(value))
         if key == "model.backbone":
@@ -836,10 +837,8 @@ class ExperimentListPage(BasePage):
             != QMessageBox.StandardButton.Yes
         ):
             return
-        job = self.ctx.jobs.find(f"training:{experiment.experiment_id}")
-        if job:
-            job.cancel()
-        self.ctx.backend.finish_training(experiment.experiment_id, "stopped")
+        if self.ctx.training_runner.is_busy:
+            self.ctx.training_runner.request_stop("user_stop")
         self.refresh()
 
     def retry_selected(self) -> None:
@@ -847,10 +846,9 @@ class ExperimentListPage(BasePage):
         if not experiment or experiment.status not in {"failed", "stopped"}:
             return
         controller = self.ctx.queue_controller
-        active_jobs = self.ctx.jobs.training_jobs
-        if active_jobs or controller.executing:
-            if active_jobs:
-                active_id = active_jobs[0].key.removeprefix("training:")
+        if self.ctx.training_runner.is_busy or controller.executing:
+            if self.ctx.training_runner.is_busy:
+                active_id = self.ctx.training_runner.experiment_id
                 prompt = f"学習を実行中です（{active_id}）。この学習をキューの末尾に追加しますか？"
             else:
                 prompt = "キューを実行中です。再実行をキューの末尾に追加しますか？"
@@ -872,29 +870,17 @@ class ExperimentListPage(BasePage):
             return
         try:
             experiment = self.ctx.backend.retry_experiment(experiment.experiment_id)
+            self.ctx.training_runner.start(experiment.experiment_id, retry=True)
         except ValueError as error:
             QMessageBox.warning(self, "再実行できません", str(error))
             return
-        self._start_job(experiment.experiment_id)
         self.refresh()
-
-    def _start_job(self, experiment_id: str) -> None:
-        experiment = self.ctx.backend.get_experiment(experiment_id)
-
-        def finished(ok, _message):
-            status = (
-                "failed"
-                if experiment_id in getattr(self.ctx.backend, "fail_training_ids", set())
-                else "completed"
-                if ok
-                else "stopped"
-            )
-            self.ctx.backend.finish_training(experiment_id, status)
-
-        self.ctx.queue_controller.launch_training(experiment, finished)
 
     def send_selected(self) -> SendToCandidatesDialog | None:
         experiment = self._current_experiment()
+        if getattr(self.ctx.backend, "is_hybrid", False):
+            QMessageBox.information(self, "比較へ送る", "この機能はまだ利用できません。")
+            return None
         if not experiment or experiment.status != "completed" or not experiment.checkpoints:
             return None
         dialog = SendToCandidatesDialog(experiment, self)

@@ -178,14 +178,59 @@ def test_training_options_refresh_and_preserve_selection(shell):
 def test_model_type_switch_changes_model_specific_controls(shell):
     page = shell.page(PageId.TRAINING)
 
-    page.model_type.setCurrentIndex(1)
+    page.model_type.setFocus()
+    QTest.keyClick(page.model_type, Qt.Key.Key_End)
 
     assert page.config["model"]["type"] == "cellpose"
     assert "model.pretrained_model" in page._model_widgets["cellpose"]
     assert "model.backbone" not in page._model_widgets["cellpose"]
-    page.model_type.setCurrentIndex(0)
+    page.model_type.setFocus()
+    QTest.keyClick(page.model_type, Qt.Key.Key_Home)
     assert page.config["model"]["type"] == "mask_rcnn"
     assert "model.backbone" in page._model_widgets["mask_rcnn"]
+
+
+def test_model_switch_updates_only_untouched_shared_defaults(shell, qapp):
+    page = shell.page(PageId.TRAINING)
+    page.model_type.setFocus()
+    QTest.keyClick(page.model_type, Qt.Key.Key_End)
+    qapp.processEvents()
+    assert page.config["training"]["batch_size"] == 1
+    assert page.config["training"]["learning_rate"] == 1e-5
+    assert page.config["training"]["weight_decay"] == 0.1
+
+    page.fields["training.learning_rate"].setValue(0.0003)
+    page.model_type.setFocus()
+    QTest.keyClick(page.model_type, Qt.Key.Key_Home)
+    qapp.processEvents()
+    assert page.config["training"]["learning_rate"] == 0.0003
+    assert page.config["training"]["batch_size"] == 2
+    assert page.config["training"]["weight_decay"] == 0.0001
+    assert "既定値と異なる値を保持しました" in shell.status_text.text()
+
+
+def test_cellpose_form_uses_user_facing_fixed_value_descriptions(shell, qapp):
+    page = shell.page(PageId.TRAINING)
+    page.model_type.setFocus()
+    QTest.keyClick(page.model_type, Qt.Key.Key_End)
+    fields = page._model_widgets["cellpose"]
+    assert fields["model.bsize"].text() == "256（cpsam 系は固定）"
+    assert fields["model.nimg_per_epoch"].placeholderText() == "自動（フォールドの学習画像数）"
+    assert "model.input_channels" not in fields
+    assert fields["model.input.normalization.method"].text().startswith("画像ごとのパーセンタイル")
+    assert page.fields["data.input_channels"].text() == "A（単一チャンネル）"
+    assert "Cellpose（cpsam）" in page.summary_label.text()
+    assert "Cellpose（Cellpose SAM" not in page.summary_label.text()
+    assert not page.model_note.isHidden()
+    page.model_type.setFocus()
+    QTest.keyClick(page.model_type, Qt.Key.Key_Home)
+    qapp.processEvents()
+    assert page.model_note.isHidden()
+    assert (
+        page._model_widgets["mask_rcnn"]["model.input.normalization.method"]
+        .text()
+        .startswith("画像ごとのパーセンタイル")
+    )
 
 
 def test_mask_rcnn_normalization_is_read_only_and_tracks_pretrained_weights(shell, qapp):
@@ -302,7 +347,7 @@ def test_epoch_selection_is_read_only_oof_map_maximum(shell, qapp, monkeypatch):
     selection_label = next(
         label
         for label in page.findChildren(QLabel)
-        if label.text() == "エポック選択の指標：OOF 平均適合率（mAP）・最大"
+        if label.text() == "エポック選択の指標：OOF 平均適合率（AP）・最大"
     )
     assert selection_label
     assert "checkpoint.best_metric" not in page.fields

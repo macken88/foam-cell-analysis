@@ -248,7 +248,7 @@ def test_single_channel_gui_and_continuous_triage_mouse_actions(qapp, qtbot):
     assert dialog.image_edit is not None
     ctx = make_context()
     training = TrainingPage(ctx)
-    assert "data.input_channels" not in training.fields
+    assert training.fields["data.input_channels"].text() == "A（単一チャンネル）"
     assert training._collect_config()["data"]["input_channels"] == ["A"]
     training.close()
     unassigned = next(

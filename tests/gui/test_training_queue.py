@@ -252,3 +252,30 @@ def test_training_queue_order_and_page_navigation(shell):
     shell.navigate(PageId.TRAINING_QUEUE)
     assert shell.manager.current_page_id("training") == PageId.TRAINING_QUEUE
     assert queue.empty_label.text().startswith("キューは空です")
+
+
+def test_terminal_save_failure_stops_queue_and_reports_reason(shell, qapp, qtbot, monkeypatch):
+    backend = shell.ctx.backend
+    first_config = backend.default_experiment_config("mask_rcnn")
+    first = backend.add_training_queue_item(first_config)
+    second_config = backend.default_experiment_config("mask_rcnn")
+    second = backend.add_training_queue_item(second_config)
+    original_conclude = backend.conclude_training_run
+
+    def fail_first_conclusion(experiment_id, attempt, job_exit):
+        if experiment_id == first.experiment_id:
+            raise OSError("status.json の保存に失敗")
+        return original_conclude(experiment_id, attempt, job_exit)
+
+    monkeypatch.setattr(backend, "conclude_training_run", fail_first_conclusion)
+    shell.navigate(PageId.TRAINING_QUEUE)
+    queue = shell.page(PageId.TRAINING_QUEUE)
+    with qtbot.waitSignal(shell.ctx.training_runner.ended, timeout=20000):
+        QTest.mouseClick(queue.run_button, Qt.MouseButton.LeftButton)
+    qapp.processEvents()
+
+    assert not shell.ctx.queue_controller.executing
+    assert queue.model.rowCount() == 2
+    assert backend.get_experiment(second.experiment_id).status == "queued"
+    assert "終端状態を保存できないため、キューを停止しました" in shell.status_text.text()
+    assert "status.json の保存に失敗" in shell.status_text.text()

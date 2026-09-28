@@ -89,6 +89,16 @@ _CONFIG_LABELS = {
     "image_mean": "画像平均",
     "model.input.image_std": "画像標準偏差",
     "image_std": "画像標準偏差",
+    "model.input.normalization": "画像正規化",
+    "model.input.normalization.method": "正規化方式",
+    "model.input.normalization.low": "下位パーセンタイル",
+    "model.input.normalization.high": "上位パーセンタイル",
+    "model.input.normalization.low_percentile": "下位パーセンタイル",
+    "model.input.normalization.high_percentile": "上位パーセンタイル",
+    "normalization": "画像正規化",
+    "method": "方式",
+    "low": "下位パーセンタイル",
+    "high": "上位パーセンタイル",
     "model.anchors.sizes": "アンカーサイズ",
     "anchor_sizes": "アンカーサイズ",
     "model.anchors.aspect_ratios": "アンカー縦横比",
@@ -189,6 +199,7 @@ def training_choice_label(path: str, value: str) -> str:
             "cyto3": "細胞質（cyto3）",
             "nuclei": "核（nuclei）",
             "cpsam": "Cellpose SAM（cpsam）",
+            "cpsam_v2": "Cellpose SAM v2（cpsam_v2）",
         }.get(value, value)
     if path == "augmentation.profile" and value.startswith("aug_v"):
         return f"プロファイル {value.removeprefix('aug_v')}"

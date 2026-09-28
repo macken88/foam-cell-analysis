@@ -149,7 +149,7 @@ class LineChart(QWidget):
             if name.startswith("分割 "):
                 color = QColor(Color.SLATE).lighter(165)
             coords = [map_point(x, y) for x, y in zip(xs, ys, strict=False)]
-            width = 3 if name == "OOF mAP" else 1 if name.startswith("分割 ") else 2
+            width = 3 if name == "OOF AP" else 1 if name.startswith("分割 ") else 2
             painter.setPen(QPen(color, width))
             for left, right in pairwise(coords):
                 painter.drawLine(left, right)

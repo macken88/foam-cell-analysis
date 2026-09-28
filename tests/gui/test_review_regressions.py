@@ -494,15 +494,15 @@ def test_review_15_reopening_current_mode_from_home_keeps_active_tab(shell, qapp
 
 
 def test_review_16_home_refreshes_progress_from_started_training(shell, qapp, monkeypatch):
-    from foam_cell_analysis.gui.modes.training import page as training_module
+    from foam_cell_analysis.gui import training_runner as training_module
 
-    real_fake_job = training_module.FakeJob
+    real_fake_job = training_module.FakeTrainingJob
 
     def quick_job(*args, **kwargs):
         kwargs["interval_ms"] = 20
         return real_fake_job(*args, **kwargs)
 
-    monkeypatch.setattr(training_module, "FakeJob", quick_job)
+    monkeypatch.setattr(training_module, "FakeTrainingJob", quick_job)
     shell.navigate(PageId.TRAINING)
     page = shell.page(PageId.TRAINING)
     with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
@@ -514,7 +514,7 @@ def test_review_16_home_refreshes_progress_from_started_training(shell, qapp, mo
     assert shell.home._summary.running_experiment
     assert shell.home._summary.running_epoch >= 1
     assert shell.home.pipeline._values[1].text() == str(shell.home._summary.running_epoch)
-    shell.ctx.jobs.jobs()[0].cancel()
+    shell.ctx.training_runner.job.cancel()
 
 
 def test_review_17_triage_returns_current_item_and_stops_at_exhaustion(shell, qapp, qtbot):

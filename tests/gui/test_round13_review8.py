@@ -5,7 +5,6 @@ from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QMessageBox
 
-from foam_cell_analysis.gui.jobs import FakeJob
 from foam_cell_analysis.gui.navigation import PageId
 from foam_cell_analysis.gui.theme import Color
 
@@ -29,17 +28,20 @@ def wait_for(qapp, condition, timeout=3000):
 
 
 def training_jobs(shell):
-    return [job for job in shell.ctx.jobs.jobs() if job.key and job.key.startswith("training:")]
+    return shell.ctx.jobs.training_jobs
 
 
-def test_job_manager_rejects_a_second_training_job(shell):
-    first = FakeJob("first", key="training:exp_0046")
-    second = FakeJob("second", key="training:exp_0047")
-    shell.ctx.jobs.start(first)
-    with pytest.raises(RuntimeError, match="同時に 1 件"):
-        shell.ctx.jobs.start(second)
-    assert shell.ctx.jobs.training_jobs == [first]
-    first.cancel()
+def test_training_runner_owns_the_single_training_slot(shell):
+    backend = shell.ctx.backend
+    experiment = backend.start_training(backend.default_experiment_config("mask_rcnn"))
+    shell.ctx.training_runner.start(experiment.experiment_id)
+
+    with pytest.raises(RuntimeError, match="別の学習"):
+        shell.ctx.training_runner.start("exp_other")
+
+    assert shell.ctx.jobs.has_training_job
+    assert shell.ctx.jobs.jobs() == []
+    shell.ctx.training_runner.request_stop()
 
 
 def test_second_single_training_is_queued_while_first_runs(shell, monkeypatch, qapp):

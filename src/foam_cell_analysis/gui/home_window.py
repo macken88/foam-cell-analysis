@@ -295,6 +295,8 @@ class HomeWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self.job_count)
         self.ctx.status.message.connect(self._status_message)
         self.ctx.jobs.jobs_changed.connect(self._jobs_changed)
+        self.ctx.training_runner.progressed.connect(lambda _experiment_id: self.refresh_summary())
+        self.ctx.training_runner.ended.connect(self._training_ended)
         self._jobs_changed(self.ctx.jobs.running_count)
         self.manager.set_home_callback(self.show_home)
         self.manager.mode_closed.connect(lambda _mode: self.refresh_summary())
@@ -360,6 +362,23 @@ class HomeWindow(QMainWindow):
                 job.progress.connect(lambda *_args: self.refresh_summary())
         self.refresh_summary()
 
+    def _training_ended(self, outcome) -> None:
+        """学習の終端状態を日本語で通知する。"""
+        if outcome.reason == "conclusion_failed":
+            self.ctx.status.show_message(
+                f"{outcome.experiment_id} の終端状態を保存できず、キューを停止しました: "
+                f"{outcome.message}"
+            )
+            self.refresh_summary()
+            return
+        status = {
+            "completed": "完了しました",
+            "failed": "失敗しました",
+            "stopped": "中断しました",
+        }.get(outcome.status, "終了しました")
+        self.ctx.status.show_message(f"{outcome.experiment_id} の学習が{status}")
+        self.refresh_summary()
+
     def _status_message(self, message: str) -> None:
         self.status_text.setText(message)
         self._recent.appendleft((datetime.now().astimezone(), message))
@@ -421,7 +440,9 @@ class HomeWindow(QMainWindow):
         result = QMessageBox.question(
             self,
             "終了の確認",
-            "開いているモード画面または実行中ジョブがあります。アプリを終了しますか？",
+            "学習を中断して終了しますか？"
+            if self.ctx.training_runner.is_busy
+            else "開いているモード画面または実行中ジョブがあります。アプリを終了しますか？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -433,13 +454,41 @@ class HomeWindow(QMainWindow):
             "home/geometry", [rect.x(), rect.y(), rect.width(), rect.height()]
         )
         self.manager.settings.sync()
-        if self.confirm_exit():
+        queue = self.ctx.queue_controller
+        queue_state = queue.suspend_for_shutdown() if queue else None
+        needs_confirmation = (
+            bool(self.manager.open_modes())
+            or self.ctx.training_runner.is_busy
+            or bool(queue and queue_state and queue_state[0])
+        )
+        answer = True
+        if needs_confirmation:
+            prompt = (
+                "学習を中断して終了しますか？"
+                if self.ctx.training_runner.is_busy
+                else "実行中の画面または学習があります。アプリを終了しますか？"
+            )
+            answer = (
+                QMessageBox.question(
+                    self,
+                    "終了の確認",
+                    prompt,
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                == QMessageBox.StandardButton.Yes
+            )
+        if answer:
+            if self.ctx.training_runner.is_busy:
+                self.ctx.training_runner.request_stop("app_exit", timeout_ms=10_000)
             self.manager.save_all_windows()
             event.accept()
             from PySide6.QtWidgets import QApplication
 
             QApplication.instance().quit()
         else:
+            if queue and queue_state is not None:
+                queue.restore_after_shutdown(queue_state)
             event.ignore()
 
     def changeEvent(self, event) -> None:

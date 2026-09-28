@@ -69,7 +69,8 @@ def test_learning_curves_use_separate_map_and_loss_charts(shell):
         pos=cell.topLeft() + QPoint(15, cell.height() // 2),
     )
 
-    assert [series[0] for series in page.chart_map.series][0] == "OOF mAP"
+    assert [series[0] for series in page.chart_map.series][0] == "OOF AP"
+    assert page.oof_table.item(0, 0).text() == "OOF AP（Cellpose 方式、IoU 0.50–0.95）"
     assert len(page.chart_map.series) == 6
     oof_values = page.chart_map.series[0][3]
     assert any(series[3][-1] != oof_values[-1] for series in page.chart_map.series[1:])
@@ -147,7 +148,7 @@ def test_overview_translates_all_cv_config_keys_and_model_details_distinguish_se
     }
     assert "画像分類で層別" in labels
     assert "取り込み元フォルダ単位で分割" in labels
-    assert all("_" not in label and "." not in label for label in labels)
+    assert all("_" not in label and "." not in label for label in labels), labels
     assert all(
         page.overview_table.item(row, 0).text()
         not in {"stratify_by_classification", "group_by_source_folder"}

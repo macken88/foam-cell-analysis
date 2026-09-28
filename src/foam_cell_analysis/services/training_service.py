@@ -517,6 +517,55 @@ class TrainingService:
         self._write_experiment(experiment, True)
         return experiment
 
+    def start_training(
+        self, config: dict[str, Any], experiment_id: str | None = None
+    ) -> Experiment:
+        """設定を実験へ保存して実行待ちにする。試行は prepare_training_run が作る。"""
+        experiment = self.save_experiment_draft(config, experiment_id)
+        experiment.status = "running"
+        self._write_experiment(experiment, False)
+        return experiment
+
+    def retry_experiment(self, experiment_id: str) -> Experiment:
+        """既存実験を再実行待ちに戻す。試行の作成は行わない。"""
+        experiment = self.experiments[experiment_id]
+        config, _migrated = self.migrate_experiment_config(experiment.config.values)
+        if self._is_legacy_config(config):
+            raise ValueError("旧形式設定は再試行できません。設定を複製して新規実験にしてください")
+        if not experiment.runs:
+            raise ValueError("再試行できる学習試行がありません")
+        experiment.config = ExperimentConfig(config)
+        experiment.status = "running"
+        self._reset_experiment_history(experiment)
+        self._write_experiment(experiment, False)
+        return experiment
+
+    def record_training_process(
+        self, experiment_id: str, attempt: int, pid: int, creation_time: float
+    ) -> None:
+        """子プロセスの PID と作成時刻を復旧用ファイルへ保存する。"""
+        directory = self.root / experiment_id / "runs" / f"attempt_{attempt:03d}"
+        atomic_write_json(
+            directory / "process.json",
+            {"pid": int(pid), "creation_time": float(creation_time)},
+        )
+
+    def fail_training_preparation(self, experiment_id: str) -> None:
+        """試行ディレクトリを作る前の準備失敗を実験へ記録する。"""
+        experiment = self.experiments.get(experiment_id)
+        if experiment is None or experiment.runs:
+            return
+        experiment.status = "failed"
+        self._write_experiment(experiment, False)
+
+    def get_dataset_item_image(self, version: str, item_id: str, channel: str | None = None):
+        """確定済み学習版の画像を返す。"""
+        return self.dataset_store.get_image(version, item_id, channel)
+
+    def get_dataset_item_mask(self, version: str, item_id: str, revision: str | None = None):
+        """確定済み学習版の整数ラベルを返す。"""
+        return self.dataset_store.get_mask(version, item_id, revision)
+
     def add_training_queue_item(self, config: dict[str, Any]) -> Experiment:
         migrated, _ = self.migrate_experiment_config(config)
         expid = migrated.get("experiment", {}).get("id") or self.next_experiment_id()

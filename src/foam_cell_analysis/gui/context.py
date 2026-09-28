@@ -67,3 +67,14 @@ class AppContext:
     display: DisplayPreference = field(default_factory=DisplayPreference)
     keymap_window: QObject | None = None
     queue_controller: QObject | None = None
+    training_runner: QObject | None = None
+    workspace_lock: QObject | None = None
+
+    def __post_init__(self) -> None:
+        """すべての画面が共有する学習 runner を準備する。"""
+        if self.training_runner is None:
+            from .training_runner import TrainingRunner
+
+            self.training_runner = TrainingRunner(self.backend)
+        if hasattr(self.jobs, "set_training_runner"):
+            self.jobs.set_training_runner(self.training_runner)

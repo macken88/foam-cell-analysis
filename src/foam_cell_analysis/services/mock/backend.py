@@ -55,7 +55,7 @@ class MockBackend:
         "参照先が一意に確定",
     ]
 
-    def __init__(self) -> None:
+    def __init__(self, seed_samples: bool = True) -> None:
         self.working: dict[str, WorkingDataset] = {}
         self.versions: list[DatasetVersion] = []
         self.experiments: dict[str, Experiment] = {}
@@ -65,14 +65,20 @@ class MockBackend:
         self.fail_training_ids: set[str] = set()
         self._prepared_queue_runs: dict[str, PreparedRun] = {}
         self._stop_requests: dict[tuple[str, int], str] = {}
+        self._retry_prepared: set[str] = set()
         self.profiles: dict[str, AugmentationProfile] = {}
         self.inference_configs: dict[str, InferenceConfig] = {}
         self.candidates: dict[str, Candidate] = {}
         self.released: dict[str, ReleasedModel] = {}
         self.routing: dict[str, str | None] = {name: None for name in self.classifications}
         self.routing_history: list[RoutingHistory] = []
-        self._seed()
-        items_by_id = {item.item_id: item for item in self.working["all"].items}
+        if seed_samples:
+            self._seed()
+        else:
+            empty = WorkingDataset("all", "", [])
+            self.working = {purpose: empty for purpose in ("all", "train", "val")}
+        empty_dataset = WorkingDataset("all", "", [])
+        items_by_id = {item.item_id: item for item in self.working.get("all", empty_dataset).items}
         self._version_items = {
             version.version: [
                 copy.deepcopy(items_by_id[item_id])
@@ -1126,8 +1132,8 @@ class MockBackend:
             "channels": ["A", "B", "C"],
             "backbones": ["resnet50_fpn_v2", "resnet101_fpn"],
             "pretrained": ["coco", "imagenet"],
-            "cellpose_models": ["cyto3", "nuclei", "cpsam"],
-            "optimizers": ["Adam", "SGD"],
+            "cellpose_models": ["cpsam", "cpsam_v2"],
+            "optimizers": ["SGD", "AdamW"],
             "profiles": list(self.profiles),
         }
 
@@ -1149,7 +1155,7 @@ class MockBackend:
                 "used_item_ids": [],
             },
             "training": {
-                "epochs": 100,
+                "epochs": 40,
                 "batch_size": 2,
                 "learning_rate": 0.001,
                 "weight_decay": 0.0001,
@@ -1170,11 +1176,17 @@ class MockBackend:
                 "backbone": "resnet50_fpn_v2",
                 "trainable_backbone_layers": 3,
                 "num_classes": 2,
+                "optimizer": "SGD",
                 "input": {
                     "min_size": 800,
                     "max_size": 1333,
                     "image_mean": [0.485, 0.456, 0.406],
                     "image_std": [0.229, 0.224, 0.225],
+                    "normalization": {
+                        "method": "percentile",
+                        "low_percentile": 1.0,
+                        "high_percentile": 99.0,
+                    },
                 },
                 "anchors": {"sizes": [32, 64, 128, 256, 512], "aspect_ratios": [0.5, 1.0, 2.0]},
                 "rpn": {
@@ -1194,17 +1206,24 @@ class MockBackend:
                 },
             }
         elif model_type == "cellpose":
+            common["training"].update(
+                {"batch_size": 1, "learning_rate": 0.00001, "weight_decay": 0.1}
+            )
             model = {
                 "type": "cellpose",
-                "pretrained_model": "cyto3",
-                "optimizer": "Adam",
-                "normalize": True,
+                "pretrained_model": "cpsam",
                 "scale_range": 0.5,
-                "rescale": None,
                 "bsize": 256,
-                "nimg_per_epoch": 100,
-                "min_train_masks": 0,
-                "class_weights": [1.0],
+                "nimg_per_epoch": None,
+                "min_train_masks": 5,
+                "input_channels": ["A"],
+                "input": {
+                    "normalization": {
+                        "method": "percentile",
+                        "low_percentile": 1.0,
+                        "high_percentile": 99.0,
+                    }
+                },
             }
         else:
             raise ValueError(f"未対応のモデル種類です: {model_type}")
@@ -1491,9 +1510,9 @@ class MockBackend:
                 reservation = self.training_retry_reservations[key]
                 if reservation["status"] != "queued":
                     continue
-                experiment = self.retry_experiment(reservation["experiment_id"])
+                experiment = self.get_experiment(reservation["experiment_id"])
                 reservation["status"] = "running"
-                reservation["attempt"] = len(experiment.runs)
+                reservation["attempt"] = len(experiment.runs) + 1
                 queue_item = copy.deepcopy(experiment)
                 queue_item.queue_id = key
                 queue_item.queue_is_retry = True
@@ -1564,15 +1583,27 @@ class MockBackend:
         self, config: dict[str, Any], experiment_id: str | None = None
     ) -> Experiment:
         """下書きを新規保存または更新する。"""
+        if experiment_id in self.experiments and self.experiments[experiment_id].runs:
+            raise ValueError("試行がある実験の設定は上書きできません")
         return self._save_experiment(config, experiment_id, "draft")
 
     def start_training(
         self, config: dict[str, Any], experiment_id: str | None = None
     ) -> Experiment:
-        """実行試行を追加して学習を開始状態にする。"""
-        experiment = self._save_experiment(config, experiment_id, "running")
-        experiment.runs.append(RunAttempt(len(experiment.runs) + 1, self._now()))
-        return experiment
+        """設定を保存して実行待ち状態にする。試行は prepare で作る。"""
+        return self._save_experiment(config, experiment_id, "running")
+
+    def fail_training_preparation(self, experiment_id: str) -> None:
+        """試行作成前の失敗を実験へ反映する。"""
+        experiment = self.experiments.get(experiment_id)
+        if experiment is not None and not experiment.runs:
+            experiment.status = "failed"
+
+    def record_training_process(
+        self, experiment_id: str, attempt: int, pid: int, creation_time: float
+    ) -> None:
+        """メモリ内モックではプロセス識別情報を保持しない。"""
+        del experiment_id, attempt, pid, creation_time
 
     def prepare_training_run(
         self, experiment_id: str, queue_id: str | None = None, retry: bool = False
@@ -1594,12 +1625,16 @@ class MockBackend:
         if not experiment.runs:
             started = self._save_experiment(config, experiment_id, "running")
             experiment = started
-            experiment.runs.append(RunAttempt(1, self._now()))
         elif retry:
-            experiment = self.retry_experiment(experiment_id)
+            if experiment_id in self._retry_prepared:
+                self._retry_prepared.remove(experiment_id)
+            else:
+                experiment = self.retry_experiment(experiment_id)
+                self._retry_prepared.discard(experiment_id)
         else:
             raise ValueError("この実験にはすでに試行があります")
-        attempt = len(experiment.runs)
+        attempt = len(experiment.runs) + 1
+        experiment.runs.append(RunAttempt(attempt, self._now()))
         run_id = f"{experiment_id}/attempt_{attempt:03d}"
         run = PreparedRun(run_id, f"mock://{run_id}", "mock", [], {}, fake=True)
         if queue_id:
@@ -1928,7 +1963,7 @@ class MockBackend:
         experiment.selected_epoch = None
         experiment.oof_evaluation = None
         experiment.oof_predictions.clear()
-        experiment.runs.append(RunAttempt(len(experiment.runs) + 1, self._now()))
+        self._retry_prepared.add(experiment_id)
         return experiment
 
     def list_experiments(self) -> list[Experiment]:

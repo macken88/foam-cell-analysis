@@ -247,6 +247,14 @@ class Backend(Protocol):
     ) -> PreparedRun:
         """設定を固定し、試行を一度だけ準備する。"""
 
+    def record_training_process(
+        self, experiment_id: str, attempt: int, pid: int, creation_time: float
+    ) -> None:
+        """子プロセス識別情報を復旧用ファイルへ保存する。"""
+
+    def fail_training_preparation(self, experiment_id: str) -> None:
+        """試行の準備前に失敗した実験を失敗状態にする。"""
+
     def apply_training_event(self, experiment_id: str, event: dict[str, Any]) -> Experiment:
         """学習イベントを実験履歴へ反映する。"""
 
