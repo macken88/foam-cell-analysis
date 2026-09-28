@@ -3,6 +3,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -17,6 +18,7 @@ from foam_cell_analysis.evaluation.ap import METRIC
 from foam_cell_analysis.services.models import (
     Experiment,
     ExperimentConfig,
+    JobExit,
     RunAttempt,
 )
 from foam_cell_analysis.services.training_service import TrainingService
@@ -148,11 +150,13 @@ def _environment() -> dict[str, str]:
     return env
 
 
-def _launch(run_dir: Path) -> tuple[int, list[dict], str]:
+def _launch(
+    run_dir: Path, *, timeout: int = 60, process_env: dict[str, str] | None = None
+) -> tuple[int, list[dict], str]:
     process = subprocess.Popen(
         [sys.executable, "-m", "foam_cell_analysis.training.run", "--run-dir", str(run_dir)],
         cwd=run_dir,
-        env=_environment(),
+        env=process_env or _environment(),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -171,12 +175,51 @@ def _launch(run_dir: Path) -> tuple[int, list[dict], str]:
     reader.start()
     process.stdin.write("go\n")
     process.stdin.flush()
-    returncode = process.wait(timeout=60)
+    returncode = process.wait(timeout=timeout)
     process.stdin.close()
     reader.join(timeout=5)
     stderr = process.stderr.read()
     events = [json.loads(line) for line in stdout_lines if line]
     return returncode, [hello, *events], stderr
+
+
+@pytest.mark.ml
+@pytest.mark.slow
+def test_mask_rcnn_process_smoke_on_train_v000(tmp_path):
+    repository = Path(__file__).resolve().parents[2]
+    shutil.copytree(
+        repository / "workspace" / "datasets" / "train_v000",
+        tmp_path / "datasets" / "train_v000",
+    )
+    service = TrainingService(tmp_path, process_alive=lambda _record: False)
+    config = service.default_experiment_config("mask_rcnn")
+    config["data"]["cv"]["n_folds"] = 2
+    config["training"].update(epochs=2, batch_size=2)
+    config["training"]["early_stopping"]["enabled"] = False
+    config["checkpoint"].update(validation_interval=1, save_every=1)
+    config["model"]["pretrained_weights"] = None
+    config["model"]["input"].update(min_size=256, max_size=256)
+    experiment = service.start_training(config)
+    prepared = service.prepare_training_run(experiment.experiment_id)
+
+    environment = _environment()
+    environment.update(prepared.env)
+    environment["TORCH_HOME"] = str(tmp_path / "pretrained" / "torch")
+    returncode, output, stderr = _launch(
+        Path(prepared.run_dir), timeout=600, process_env=environment
+    )
+
+    assert returncode == 0, stderr
+    events = [row for row in output if row["type"] != "hello"]
+    assert events[0]["type"] == "started"
+    assert events[-1]["type"] == "completed"
+    assert (Path(prepared.run_dir) / "checkpoints" / "final.pt").is_file()
+    outcome = service.conclude_training_run(
+        experiment.experiment_id,
+        1,
+        JobExit(returncode=returncode),
+    )
+    assert outcome.status == "completed"
 
 
 @pytest.mark.ml
@@ -373,7 +416,9 @@ def test_preflight_rejects_hash_mismatch_and_injected_capacity_shortage(tmp_path
             free_bytes_fn=lambda _path: 0,
             weight_size_fn=lambda _adapter: 100,
         )
-    assert adapter.weight_configurations == [spec["config"]["model"]] * 2
+    expected_model_config = dict(spec["config"]["model"])
+    expected_model_config["eval_params"] = spec["eval_params"]
+    assert adapter.weight_configurations == [expected_model_config] * 2
 
 
 @pytest.mark.ml

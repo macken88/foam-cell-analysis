@@ -177,7 +177,8 @@ def run_preflight(
     missing_ids = sorted(set(used_ids) - items.keys())
     if missing_ids:
         raise ValueError(f"run_spec の学習画像がデータセットにありません: {missing_ids}")
-    model_config = spec["config"]["model"]
+    model_config = dict(spec["config"]["model"])
+    model_config["eval_params"] = spec["eval_params"]
     paths: dict[str, tuple[Path, Path]] = {}
     image_shapes: dict[str, tuple[int, int]] = {}
     instance_counts: dict[str, int] = {}

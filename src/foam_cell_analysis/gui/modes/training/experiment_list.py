@@ -394,17 +394,19 @@ class ExperimentListPage(BasePage):
                 None,
             )
             cv_folds = config.get("data", {}).get("cv", {}).get("n_folds", 5)
-            progress = (
-                "最終学習・epoch "
-                f"{experiment.current_epoch}/{experiment.selected_epoch or experiment.total_epochs}"
-                if experiment.phase == "final_training"
-                else (
-                    f"分割 {max(experiment.fold_histories, default=1)}/{cv_folds}・epoch "
+            if experiment.status != "running":
+                progress = "—"
+            elif experiment.phase == "final_training":
+                progress = (
+                    "最終学習・エポック "
+                    f"{experiment.current_epoch}/"
+                    f"{experiment.selected_epoch or experiment.total_epochs}"
+                )
+            else:
+                progress = (
+                    f"分割 {max(experiment.fold_histories, default=1)}/{cv_folds}・エポック "
                     f"{experiment.current_epoch}/{experiment.total_epochs}"
                 )
-                if experiment.status == "running"
-                else "—"
-            )
             values = [
                 experiment.experiment_id,
                 experiment.study_id,

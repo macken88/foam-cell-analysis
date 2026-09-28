@@ -299,7 +299,7 @@ def test_qtest_final_training_uses_selected_epoch_for_first_run_and_retry(shell,
             7,
         )
         .text()
-        .startswith("最終学習・epoch ")
+        .startswith("最終学習・エポック ")
     )
     assert (
         results.table.item(

@@ -19,15 +19,15 @@ torch は CPU 版と CUDA 版で取得元が異なるため、**先に torch を
 GPU なし（CPU 版）:
 
 ```
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-pip install -e ".[ml]"
+pip install -c constraints-ml.txt torch torchvision --index-url https://download.pytorch.org/whl/cpu
+pip install -c constraints-ml.txt -e ".[ml]"
 ```
 
 CUDA あり（例: CUDA 12.6。`nvidia-smi` のドライバ対応に合わせて cu126 などを選ぶ）:
 
 ```
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
-pip install -e ".[ml]"
+pip install -c constraints-ml.txt torch torchvision --index-url https://download.pytorch.org/whl/cu126
+pip install -c constraints-ml.txt -e ".[ml]"
 ```
 
 確認: `python -c "import torch; print(torch.cuda.is_available())"`

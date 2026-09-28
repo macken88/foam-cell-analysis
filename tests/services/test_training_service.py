@@ -77,6 +77,24 @@ def _queued_service(tmp_path):
     return service, experiment
 
 
+def test_mask_rcnn_configuration_validation_covers_backbone_and_anchor_count(tmp_path):
+    _workspace(tmp_path)
+    service = TrainingService(tmp_path)
+    config = service.default_experiment_config("mask_rcnn")
+    config["data"]["cv"]["n_folds"] = 2
+
+    config["model"]["backbone"] = "resnet101_fpn"
+    config["model"]["pretrained_weights"] = "coco"
+    issues = service.validate_experiment_config(config)
+    assert any("ResNet101 と COCO" in issue["message"] for issue in issues)
+
+    config["model"]["backbone"] = "resnet50_fpn_v2"
+    config["model"]["pretrained_weights"] = "imagenet"
+    config["model"]["anchors"]["sizes"] = [32, 64, 128, 256]
+    issues = service.validate_experiment_config(config)
+    assert any("アンカーサイズは 5 個" in issue["message"] for issue in issues)
+
+
 def _write_valid_result(run_dir):
     checkpoint = run_dir / "checkpoints" / "final.pt"
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
@@ -155,7 +173,6 @@ def test_result_requires_checkpoint_sidecar_and_matching_metadata(tmp_path):
     assert service._valid_result(run_dir)
     sidecar.unlink()
     assert not service._valid_result(run_dir)
-
     _write_valid_result(run_dir)
     metadata = json.loads(sidecar.read_text(encoding="utf-8"))
     metadata["kind"] = "selected"
@@ -167,6 +184,26 @@ def test_result_requires_checkpoint_sidecar_and_matching_metadata(tmp_path):
     metadata["sha256"] = "z" * 64
     sidecar.write_text(json.dumps(metadata), encoding="utf-8")
     assert not service._valid_result(run_dir)
+
+
+def test_recovery_restores_result_per_class_object_shape(tmp_path):
+    service, experiment = _queued_service(tmp_path)
+    prepared = service.prepare_training_run(experiment.experiment_id, experiment.experiment_id)
+    run_dir = Path(prepared.run_dir)
+    _write_valid_result(run_dir)
+    result_path = run_dir / "result.json"
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    result["oof"]["per_class"] = {"A": {"ap": 0.75, "n_images": 2}}
+    result_path.write_text(json.dumps(result), encoding="utf-8")
+    completed = service.conclude_training_run(experiment.experiment_id, 1, JobExit(returncode=0))
+    assert completed.status == "completed"
+
+    restored = TrainingService(tmp_path, process_alive=lambda _record: False)
+    restored.recover()
+    evaluation = restored.get_experiment(experiment.experiment_id).oof_evaluation
+    assert evaluation is not None
+    assert evaluation.overall_map == 0.75
+    assert evaluation.per_class == {"A": (0.75, 2)}
 
 
 @pytest.mark.parametrize(
@@ -585,8 +622,8 @@ def test_checkpoint_ap_and_final_epoch_are_reflected(tmp_path):
     event_list = [
         _event(prepared.run_id, 1, "phase", phase="cv", fold=1, total_epochs=3),
         _event(prepared.run_id, 2, "epoch", phase="cv", fold=1, epoch=1, loss=0.3, lr=0.01),
-        _event(prepared.run_id, 3, "val", fold=1, epoch=1, ap=0.8, n_images=2),
-        _event(prepared.run_id, 4, "checkpoint", fold=1, epoch=1, kind="periodic", path="fold.pt"),
+        _event(prepared.run_id, 3, "checkpoint", fold=1, epoch=1, kind="periodic", path="fold.pt"),
+        _event(prepared.run_id, 4, "val", fold=1, epoch=1, ap=0.8, n_images=2),
         _event(prepared.run_id, 5, "epoch", phase="cv", fold=1, epoch=2, loss=0.2, lr=0.01),
         _event(prepared.run_id, 6, "checkpoint", fold=1, epoch=2, kind="periodic", path="fold2.pt"),
         _event(prepared.run_id, 7, "phase", phase="final", fold=None, total_epochs=3),
@@ -602,10 +639,15 @@ def test_checkpoint_ap_and_final_epoch_are_reflected(tmp_path):
         ),
     ]
     for event in event_list:
+        append_event(Path(prepared.run_dir) / "events.jsonl", event)
         service.apply_training_event(experiment.experiment_id, event)
     assert [item.map for item in experiment.checkpoints] == [0.8, None, None]
     assert experiment.current_epoch == 3
     assert experiment.phase == "final_training"
+
+    service._reset_experiment_history(experiment)
+    service._replay_attempt(experiment.experiment_id, int(prepared.run_id[-3:]))
+    assert [item.map for item in experiment.checkpoints] == [0.8, None, None]
 
 
 def test_hello_validates_common_fields_without_seq():

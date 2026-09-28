@@ -1043,6 +1043,9 @@ class TrainingService:
             point = next((item for item in points if item.epoch == epoch), None)
             if point:
                 point.map = float(event["ap"])
+            for checkpoint in experiment.checkpoints:
+                if checkpoint.fold == fold and checkpoint.epoch == epoch:
+                    checkpoint.map = float(event["ap"])
         elif kind == "oof":
             from foam_cell_analysis.services.models import EpochMetrics
 
@@ -1392,10 +1395,17 @@ class TrainingService:
             if isinstance(oof, dict) and oof.get("ap") is not None:
                 from foam_cell_analysis.services.models import Evaluation
 
-                per_class = {
-                    key: (value[0], int(value[1]))
-                    for key, value in oof.get("per_class", {}).items()
-                }
+                per_class = {}
+                for key, value in oof.get("per_class", {}).items():
+                    if isinstance(value, dict):
+                        score = value.get("ap")
+                        count = value.get("n_images", 0)
+                    elif isinstance(value, list | tuple) and len(value) == 2:
+                        score, count = value
+                    else:
+                        continue
+                    if score is not None:
+                        per_class[str(key)] = (float(score), int(count))
                 experiment.oof_evaluation = Evaluation(float(oof["ap"]), per_class)
             if result.get("selected_epoch") is not None:
                 experiment.selected_epoch = int(result["selected_epoch"])

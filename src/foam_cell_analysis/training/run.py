@@ -339,12 +339,19 @@ def run_job(
         )
 
         model_type = spec["config"]["model"].get("type")
-        if model_type != "fake":
-            raise ValueError(f"段階 B で利用できるアダプタではありません: {model_type}")
-        from foam_cell_analysis.training.adapters.fake import FakeAdapter
+        if model_type == "fake":
+            from foam_cell_analysis.training.adapters.fake import FakeAdapter
+
+            default_factory = FakeAdapter
+        elif model_type == "mask_rcnn":
+            from foam_cell_analysis.training.adapters.mask_rcnn import MaskRCNNAdapter
+
+            default_factory = MaskRCNNAdapter
+        else:
+            raise ValueError(f"段階 D で利用できるアダプタではありません: {model_type}")
         from foam_cell_analysis.training.loop import execute_training
 
-        model_factory = adapter_factory or FakeAdapter
+        model_factory = adapter_factory or default_factory
         adapter = model_factory()
         preflight_data = run_preflight(
             run_path,

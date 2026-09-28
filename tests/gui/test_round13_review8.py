@@ -265,6 +265,33 @@ def test_queue_status_line_reports_latest_active_progress(shell, qapp):
     job.cancel()
 
 
+def test_experiment_list_hides_terminal_progress_and_localizes_epoch(shell):
+    experiment = add_queue_item(shell.ctx.backend)
+    shell.navigate(PageId.EXPERIMENTS)
+    page = shell.page(PageId.EXPERIMENTS)
+
+    experiment.status = "running"
+    experiment.phase = "cross_validation"
+    experiment.current_epoch = 2
+    page.refresh()
+    row = next(
+        row
+        for row in range(page.table.rowCount())
+        if page.table.item(row, 1).text() == experiment.experiment_id
+    )
+    assert "エポック 2/" in page.table.item(row, 7).text()
+    assert "epoch" not in page.table.item(row, 7).text()
+
+    experiment.status = "completed"
+    page.refresh()
+    row = next(
+        row
+        for row in range(page.table.rowCount())
+        if page.table.item(row, 1).text() == experiment.experiment_id
+    )
+    assert page.table.item(row, 7).text() == "—"
+
+
 def test_double_clicking_nonwaiting_fixed_column_opens_experiment_list(shell, qapp):
     item = add_queue_item(shell.ctx.backend, epochs=100)
     shell.navigate(PageId.TRAINING_QUEUE)

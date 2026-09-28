@@ -145,7 +145,8 @@ def execute_training(
     config = spec["config"]
     training_config = config["training"]
     checkpoint_config = config["checkpoint"]
-    model_config = config["model"]
+    model_config = dict(config["model"])
+    model_config["eval_params"] = spec["eval_params"]
     epochs = int(training_config["epochs"])
     validation_interval = int(checkpoint_config["validation_interval"])
     save_every = int(checkpoint_config["save_every"])
