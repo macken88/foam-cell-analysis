@@ -21,3 +21,6 @@ workspace/**
 .vscode/
 .idea/
 Thumbs.db
+
+# ローカルの改善案・作業計画
+/docs/tasks/

@@ -38,8 +38,8 @@ pre{background:#111827;color:#f9fafb;padding:18px;border-radius:10px;overflow-x:
 <section class="card">
 <h2>1. 目的</h2>
 <ul>
-<li>学習済み実験と途中保存モデルからリリース候補を登録する。</li>
-<li>同一途中保存モデルでも推論設定が異なる場合は別候補として扱う。</li>
+<li>完了済み実験のfinal.ptと推論設定の組み合わせからリリース候補を登録する。</li>
+<li>同一最終学習モデル（final.pt）でも推論設定が異なる場合は別候補として扱う。</li>
 <li>複数候補を同一画像上で比較する。</li>
 <li>必要に応じて外部粒子解析結果を手入力で候補へ記録する。</li>
 <li>平均適合率（mAP）を全体および画像分類ごとに算出し、各分類の件数を保持する。</li>
@@ -50,7 +50,7 @@ pre{background:#111827;color:#f9fafb;padding:18px;border-radius:10px;overflow-x:
 <h2>2. 基本フロー</h2>
 <div class="flow">学習実験
     ↓
-途中保存モデル選択
+最終学習モデル（final.pt）選択
     ↓
 推論設定を決定
     ↓
@@ -80,18 +80,18 @@ pre{background:#111827;color:#f9fafb;padding:18px;border-radius:10px;overflow-x:
 <tr><td>候補識別子</td><td>RC-001等の一意な識別子。</td></tr>
 <tr><td>モデル</td><td>Mask R-CNN / Cellpose。</td></tr>
 <tr><td>実験</td><td>元となる学習実験。</td></tr>
-<tr><td>途中保存モデル</td><td>best.pt等。</td></tr>
+<tr><td>最終学習モデル</td><td>完了済み実験のfinal.ptのみ。</td></tr>
 <tr><td>推論設定</td><td>モデル固有の閾値等を保存した設定。</td></tr>
-<tr><td>評価値</td><td>外部粒子解析から得た値。</td></tr>
+<tr><td>検証用データセットmAP</td><td>モデル比較段階で自動評価する。</td></tr><tr><td>OOF mAP</td><td>学習段階で算出済み。候補作成時に引き継ぐ。</td></tr><tr><td>外部解析結果</td><td>粒子径の差などを手入力する。</td></tr>
 <tr><td>コメント</td><td>目視所見・注意事項。</td></tr>
 <tr><td>状態</td><td>候補 / リリース済み / 非採用等。</td></tr>
 </tbody>
 </table>
-<div class="note">学習実験と比較候補は分離する。同一の途中保存モデルでも推論閾値などが異なれば別候補として比較できる。画像分類は候補固有の属性ではなく、画像データ側の共通メタデータとして分類別評価や本番のモデル振り分けに使用する。</div>
+<div class="note">学習実験と比較候補は分離する。同一の最終学習モデル（final.pt）でも推論閾値などが異なれば別候補として比較できる。画像分類は候補固有の属性ではなく、画像データ側の共通メタデータとして分類別評価や本番のモデル振り分けに使用する。</div>
 </section>
 <section class="card">
 <h2>4. 推論設定</h2>
-<p>推論設定は学習設定とは分離して保存し、途中保存モデルと組み合わせてリリース候補を構成する。</p>
+<p>推論設定は学習設定とは分離して保存し、final.ptと組み合わせてリリース候補を構成する。</p>
 <h3>Mask R-CNNの例</h3>
 <ul><li>検出スコア閾値</li><li>ボックス重複抑制閾値</li><li>最大検出数</li></ul>
 <h3>Cellposeの例</h3>
@@ -128,7 +128,7 @@ pre{background:#111827;color:#f9fafb;padding:18px;border-radius:10px;overflow-x:
 </section>
 <section class="card">
 <h2>7. 検証データセット</h2>
-<p>外部粒子解析および正式なモデル比較に使用するデータは、学習用データセットとは別に検証用データセットとして版管理する。学習中の交差検証分割とは別概念である。</p>
+<p>外部粒子解析および正式なモデル比較に使用するデータは、学習用データセットとは別に検証用データセットとして版管理する。学習中の交差検証とは別概念である。</p>
 <pre>検証用データセット
 val_v001
 val_v002
@@ -155,7 +155,7 @@ Validation Set   : val_v003</pre>
 </table>
 <div class="note">相対パスは「どこから来たデータか」、ハッシュは「その時点の中身が何だったか」を示す。</div>
 </section>
-<section class="card"><h2>9. 評価指標</h2><p>アプリ内で自動算出する主要評価指標は平均適合率（mAP）とする。全検証データでの値に加え、画像分類ごとの値と件数を保持する。</p><table><thead><tr><th>指標</th><th>全体</th><th>分類A</th><th>分類B</th><th>分類C</th></tr></thead><tbody><tr><td>平均適合率（mAP）</td><td>...</td><td>...</td><td>...</td><td>...</td></tr><tr><td>対象件数</td><td>233</td><td>120</td><td>18</td><td>95</td></tr></tbody></table><h3>9.1 外部粒子解析結果</h3><p>粒子径などの解析は外部ソフトウェアで実施し、必要に応じて結果とコメントを比較候補へ手入力する。外部粒子解析結果は補助評価とし、アプリ内では自動算出しない。</p></section>
+<section class="card"><h2>9. 評価指標</h2><p>検証用データセットmAPと学習段階で算出したOOF mAPを並べる。いずれも全体・画像分類別の値と対象件数を保持する。</p><table><thead><tr><th>指標</th><th>全体</th><th>分類A</th><th>分類B</th><th>分類C</th></tr></thead><tbody><tr><td>検証用データセットmAP</td><td>...</td><td>...</td><td>...</td><td>...</td></tr><tr><td>検証用対象件数</td><td>233</td><td>120</td><td>18</td><td>95</td></tr><tr><td>OOF mAP</td><td>...</td><td>...</td><td>...</td><td>...</td></tr><tr><td>OOF対象件数</td><td>412</td><td>200</td><td>80</td><td>132</td></tr></tbody></table><h3>9.1 外部粒子解析結果</h3><p>粒子径などの解析は外部ソフトウェアで実施し、必要に応じて結果とコメントを比較候補へ手入力する。外部粒子解析結果は補助評価とし、アプリ内では自動算出しない。</p></section>
 <section class="card">
 <h2>10. マスク比較</h2>
 <ul>
@@ -198,11 +198,11 @@ Type C → model_007</pre>
 <div class="title">モデル比較・リリース</div>
 <div class="body">
 <table>
-<thead><tr><th>選択</th><th>候補識別子</th><th>モデル</th><th>実験</th><th>途中保存モデル</th><th>平均適合率</th><th>状態</th></tr></thead>
+<thead><tr><th>選択</th><th>候補識別子</th><th>モデル</th><th>実験</th><th>最終学習モデル</th><th>検証mAP</th><th>OOF mAP</th><th>状態</th></tr></thead>
 <tbody>
-<tr><td>☑</td><td>RC-001</td><td>Mask R-CNN</td><td>exp_0042</td><td>best.pt</td><td>0.91</td><td>候補</td></tr>
-<tr><td>☑</td><td>RC-002</td><td>Cellpose</td><td>exp_0051</td><td>best</td><td>0.89</td><td>候補</td></tr>
-<tr><td>☐</td><td>RC-003</td><td>Mask R-CNN</td><td>exp_0060</td><td>epoch_080</td><td>0.93</td><td>候補</td></tr>
+<tr><td>☑</td><td>RC-001</td><td>Mask R-CNN</td><td>exp_0042</td><td>final.pt</td><td>0.91</td><td>0.89</td><td>0.87</td><td>候補</td></tr>
+<tr><td>☑</td><td>RC-002</td><td>Cellpose</td><td>exp_0051</td><td>final.pt</td><td>0.89</td><td>0.87</td><td>候補</td></tr>
+<tr><td>☐</td><td>RC-003</td><td>Mask R-CNN</td><td>exp_0060</td><td>final.pt</td><td>未評価</td><td>0.91</td><td>候補</td></tr>
 </tbody>
 </table>
 <div class="btns">
@@ -242,7 +242,7 @@ Type C → model_007</pre>
 <div class="row"><div>リリースモデル識別子</div><div class="input">model_007</div></div>
 <div class="row"><div>リリース候補</div><div class="input">RC-001</div></div>
 <div class="row"><div>実験</div><div class="input">exp_0042</div></div>
-<div class="row"><div>途中保存モデル</div><div class="input">best.pt</div></div>
+<div class="row"><div>最終学習モデル（final.pt）</div><div class="input">final.pt</div></div>
 <div class="row"><div>推論設定</div><div class="input">infer_v005</div></div>
 <div class="row"><div>検証データセット</div><div class="input">val_v003</div></div>
 <div class="row"><div>コメント</div><div class="input">分類A 本番用モデル</div></div>
@@ -253,6 +253,7 @@ Type C → model_007</pre>
 </section>
 <section class="card">
 <h2>16. 設計原則まとめ</h2>
-<ol><li>比較候補は一行単位で管理し、同じ途中保存モデルでも推論設定が異なれば別候補とする。</li><li>複数候補を選択し、同一画像上でマスクを比較する。</li><li>本アプリ内の後処理は隣接気泡の分離のみとし、通常のモデル設定には含めない。</li><li>アプリ内の主要自動評価指標は平均適合率（mAP）とする。</li><li>評価は全体、画像分類別、件数を基本とする。</li><li>外部粒子解析結果は必要に応じて手入力する。</li><li>検証用データセットは学習用データセットとは別に版管理する。</li><li>学習用データセットと検証用データセットの重複混入を確認する。</li><li>正式採用時はリリース済みモデルとして固定し、後から上書きしない。</li><li>画像分類はデータ側の共通メタデータとして扱い、本番モデルの割り当てはモデル振り分けで管理する。</li></ol>
+<ol><li>比較候補は完了済み実験のfinal.ptと推論設定の組み合わせで作る。</li><li>複数候補を選択し、同一画像上でマスクを比較する。</li><li>本アプリ内の後処理は隣接気泡の分離のみとし、通常のモデル設定には含めない。</li><li>検証用データセットmAPと学習段階で算出済みのOOF mAPを併記する。</li><li>評価は全体、画像分類別、件数を基本とする。</li><li>外部粒子解析結果は必要に応じて手入力する。</li><li>検証用データセットは学習用データセットとは別に版管理する。</li><li>学習用データセットと検証用データセットの重複混入を確認する。</li><li>正式採用時はリリース済みモデルとして固定し、後から上書きしない。</li><li>画像分類はデータ側の共通メタデータとして扱い、本番モデルの割り当てはモデル振り分けで管理する。</li></ol>
 </section>
+<section class="card"><h2>17. 検証用mAPとOOF mAP</h2><p>比較候補は完了済み実験のfinal.ptと推論設定の組み合わせに限る。候補作成時点で、実験の選択エポックにおけるOOF mAPを保持する。推論設定が異なる場合は保存済みOOF予測から再計算し、候補表では検証用データセットmAPの隣に表示する。検証用mAPは「評価を実行」で算出し、外部粒子解析結果は手入力する。</p><p>候補詳細・リリースには検証用データセット名、OOFの実験ID・選択エポック、全体・画像分類別のmAPと対象件数を保存する。正式リリース済みモデルにも両方の評価を引き継ぐ。</p></section>
 </div></body></html>
