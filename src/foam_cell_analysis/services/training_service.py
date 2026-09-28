@@ -1101,6 +1101,7 @@ class TrainingService:
                 return False
             root = run_dir.resolve()
             final_found = False
+            checkpoint_artifacts: dict[str, dict[str, Any]] = {}
             for artifact in artifacts:
                 if not isinstance(artifact, dict):
                     return False
@@ -1130,8 +1131,45 @@ class TrainingService:
                     return False
                 if windows_path.as_posix() == "checkpoints/final.pt":
                     final_found = True
+                if windows_path.suffix.lower() == ".pt":
+                    checkpoint_artifacts[windows_path.as_posix()] = artifact
             if not final_found:
                 return False
+            spec = read_run_spec(run_dir)
+            for relative, artifact in checkpoint_artifacts.items():
+                checkpoint_path = root / Path(*PurePosixPath(relative).parts)
+                sidecar = checkpoint_path.with_suffix(checkpoint_path.suffix + ".json")
+                if not sidecar.is_file():
+                    return False
+                metadata = read_json(sidecar)
+                if not isinstance(metadata, dict) or not {
+                    "model_type",
+                    "fold",
+                    "epoch",
+                    "kind",
+                    "run_id",
+                    "sha256",
+                }.issubset(metadata):
+                    return False
+                if (
+                    metadata["model_type"] != spec.get("config", {}).get("model", {}).get("type")
+                    or metadata["run_id"] != spec.get("run_id")
+                    or type(metadata["epoch"]) is not int
+                    or metadata["epoch"] < 1
+                    or not isinstance(metadata["kind"], str)
+                    or not isinstance(metadata["sha256"], str)
+                    or re.fullmatch(r"[0-9a-fA-F]{64}", metadata["sha256"]) is None
+                    or metadata["sha256"].lower() != artifact["sha256"].lower()
+                ):
+                    return False
+                if metadata["kind"] == "final":
+                    if metadata["fold"] is not None or relative != "checkpoints/final.pt":
+                        return False
+                elif metadata["kind"] in {"periodic", "selected"}:
+                    if type(metadata["fold"]) is not int or metadata["fold"] < 1:
+                        return False
+                else:
+                    return False
             return True
         except (OSError, ValueError, KeyError, TypeError):
             return False

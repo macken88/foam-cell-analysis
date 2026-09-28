@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import json
 from pathlib import Path
 
@@ -80,6 +81,20 @@ def _write_valid_result(run_dir):
     checkpoint = run_dir / "checkpoints" / "final.pt"
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
     checkpoint.write_bytes(b"weights")
+    spec = json.loads((run_dir / "run_spec.json").read_text(encoding="utf-8"))
+    (checkpoint.with_suffix(".pt.json")).write_text(
+        json.dumps(
+            {
+                "model_type": spec["config"]["model"]["type"],
+                "fold": None,
+                "epoch": 1,
+                "kind": "final",
+                "run_id": spec["run_id"],
+                "sha256": hashlib.sha256(b"weights").hexdigest(),
+            }
+        ),
+        encoding="utf-8",
+    )
     result = {
         "selected_epoch": 1,
         "oof": {"ap": 0.75, "per_class": {"A": [0.75, 2]}, "n_images": 2},
@@ -93,7 +108,7 @@ def _write_valid_result(run_dir):
             {
                 "path": "checkpoints/final.pt",
                 "size": 7,
-                "sha256": "a" * 64,
+                "sha256": hashlib.sha256(b"weights").hexdigest(),
             }
         ],
     }
@@ -129,6 +144,29 @@ def test_prepare_is_idempotent_after_queue_write_failure(tmp_path, monkeypatch):
             ).read_text(encoding="utf-8")
         )
     )
+
+
+def test_result_requires_checkpoint_sidecar_and_matching_metadata(tmp_path):
+    service, experiment = _queued_service(tmp_path)
+    prepared = service.prepare_training_run(experiment.experiment_id, experiment.experiment_id)
+    run_dir = Path(prepared.run_dir)
+    _write_valid_result(run_dir)
+    sidecar = run_dir / "checkpoints" / "final.pt.json"
+    assert service._valid_result(run_dir)
+    sidecar.unlink()
+    assert not service._valid_result(run_dir)
+
+    _write_valid_result(run_dir)
+    metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+    metadata["kind"] = "selected"
+    sidecar.write_text(json.dumps(metadata), encoding="utf-8")
+    assert not service._valid_result(run_dir)
+
+    _write_valid_result(run_dir)
+    metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+    metadata["sha256"] = "z" * 64
+    sidecar.write_text(json.dumps(metadata), encoding="utf-8")
+    assert not service._valid_result(run_dir)
 
 
 @pytest.mark.parametrize(

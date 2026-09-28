@@ -31,6 +31,18 @@ def test_image_mean_is_distinct_from_pooled_reference_and_empty_classification()
     assert result["per_class"]["C"] == {"ap": None, "n_images": 0}
 
 
+def test_unequal_fold_sizes_use_image_mean_not_fold_mean():
+    rows = [
+        {"item_id": "a", "tp": np.ones(10), "fp": np.zeros(10), "fn": np.zeros(10)},
+        {"item_id": "b", "tp": np.ones(10), "fp": np.zeros(10), "fn": np.zeros(10)},
+        {"item_id": "c", "tp": np.zeros(10), "fp": np.zeros(10), "fn": np.ones(10)},
+    ]
+    result = aggregate(rows, {"a": "A", "b": "A", "c": "B"}, ["A", "B"])
+    fold_mean = (1.0 + 0.0) / 2
+    assert result["ap"] == pytest.approx(2 / 3)
+    assert result["ap"] != fold_mean
+
+
 @pytest.mark.ml
 def test_match_counts_handles_noncontiguous_labels_and_empty_rules():
     pytest.importorskip("cellpose")
