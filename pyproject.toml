@@ -45,3 +45,7 @@ select = ["E", "W", "F", "I", "B", "UP"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "slow: 実行時間の長い学習・統合テスト",
+    "ml: torch/cellpose など ML 依存が必要なテスト",
+]

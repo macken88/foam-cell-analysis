@@ -17,8 +17,11 @@ from .models import (
     ExternalResult,
     ImportCandidate,
     InferenceConfig,
+    JobExit,
+    PreparedRun,
     ReleasedModel,
     RoutingHistory,
+    TrainingOutcome,
     ValidationReport,
     WorkingDataset,
 )
@@ -162,6 +165,12 @@ class Backend(Protocol):
     def get_item_mask(self, purpose: str, item_id: str, revision: str) -> np.ndarray:
         """画像項目の指定マスク版を返す。"""
 
+    def get_dataset_item_image(self, version: str, item_id: str, channel: str) -> np.ndarray:
+        """確定済み学習版の画像を返す。"""
+
+    def get_dataset_item_mask(self, version: str, item_id: str, revision: str) -> np.ndarray:
+        """確定済み学習版のラベル画像を返す。"""
+
     def get_candidate_prediction(self, candidate_id: str, item_id: str) -> np.ndarray:
         """候補モデルの予測ラベルを返す。"""
 
@@ -232,6 +241,22 @@ class Backend(Protocol):
         self, config: dict[str, Any], experiment_id: str | None = None
     ) -> Experiment:
         """学習実行試行を追加して実験を開始状態にする。"""
+
+    def prepare_training_run(
+        self, experiment_id: str, queue_id: str | None = None, retry: bool = False
+    ) -> PreparedRun:
+        """設定を固定し、試行を一度だけ準備する。"""
+
+    def apply_training_event(self, experiment_id: str, event: dict[str, Any]) -> Experiment:
+        """学習イベントを実験履歴へ反映する。"""
+
+    def request_training_stop(self, experiment_id: str, attempt: int, reason: str) -> None:
+        """プロセス終了前に中断要求を記録する。"""
+
+    def conclude_training_run(
+        self, experiment_id: str, attempt: int, job_exit: JobExit | None = None
+    ) -> TrainingOutcome:
+        """終了成果物と要求を確認して試行状態を確定する。"""
 
     def record_epoch(
         self,

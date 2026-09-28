@@ -8,6 +8,51 @@ from typing import Any
 
 
 @dataclass
+class PreparedRun:
+    """起動可能な学習試行の説明。"""
+
+    run_id: str
+    run_dir: str
+    program: str
+    args: list[str]
+    env: dict[str, str]
+    fake: bool = False
+
+
+@dataclass
+class JobExit:
+    """学習プロセス終了時の補助情報。"""
+
+    returncode: int | None = None
+    start_failed: bool = False
+    process_alive: bool = False
+    message: str = ""
+
+
+@dataclass
+class TrainingOutcome:
+    """確定した試行結果。"""
+
+    experiment_id: str
+    attempt: int
+    queue_id: str | None
+    status: str
+    reason: str | None = None
+    message: str = ""
+
+
+@dataclass
+class CandidateSnapshot:
+    """比較候補へ送る時点の学習結果スナップショット。"""
+
+    experiment_id: str
+    attempt: int
+    run_id: str
+    checkpoint_path: str
+    result: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class DataItem:
     """作業データセット内の画像とマスク。"""
 
@@ -193,6 +238,7 @@ class RunAttempt:
     oof_evaluation: Evaluation | None = None
     oof_predictions: dict[str, float] = field(default_factory=dict)
     total_epochs: int = 0
+    phase: str = "cross_validation"
 
     @property
     def checkpoint_reference(self) -> str:

@@ -10,6 +10,7 @@ from typing import Any, ClassVar
 
 import numpy as np
 
+from ...training.folds import assign_folds
 from ..backend import normalization_for_weights
 from ..models import (
     AugmentationProfile,
@@ -25,9 +26,12 @@ from ..models import (
     ExternalResult,
     ImportCandidate,
     InferenceConfig,
+    JobExit,
+    PreparedRun,
     ReleasedModel,
     RoutingHistory,
     RunAttempt,
+    TrainingOutcome,
     TransformSetting,
     ValidationIssue,
     ValidationReport,
@@ -59,6 +63,8 @@ class MockBackend:
         self.training_retry_reservations: dict[str, dict[str, Any]] = {}
         self._retry_reservation_seq = 0
         self.fail_training_ids: set[str] = set()
+        self._prepared_queue_runs: dict[str, PreparedRun] = {}
+        self._stop_requests: dict[tuple[str, int], str] = {}
         self.profiles: dict[str, AugmentationProfile] = {}
         self.inference_configs: dict[str, InferenceConfig] = {}
         self.candidates: dict[str, Candidate] = {}
@@ -1060,6 +1066,21 @@ class MockBackend:
             return labels.copy()
         return predict_like(labels, item.seed + self._seed_number(revision)).copy()
 
+    def get_dataset_item_image(self, version: str, item_id: str, channel: str) -> np.ndarray:
+        """確定版の指定画像を返す。"""
+        item = next(item for item in self._items_for_version(version) if item.item_id == item_id)
+        if channel not in item.channels:
+            raise ValueError(f"指定チャンネルがありません: {channel}")
+        images, _ = make_sample(item.seed, channels=(channel,))
+        return images[channel].copy()
+
+    def get_dataset_item_mask(self, version: str, item_id: str, revision: str) -> np.ndarray:
+        """確定版の指定ラベル画像を返す。"""
+        purpose = next(
+            (dataset.purpose for dataset in self.versions if dataset.version == version), "train"
+        )
+        return self.get_item_mask(purpose, item_id, revision)
+
     def get_candidate_prediction(self, candidate_id: str, item_id: str) -> np.ndarray:
         """候補別に決定的な予測ラベルを返す。"""
         if candidate_id not in self.candidates:
@@ -1553,6 +1574,144 @@ class MockBackend:
         experiment.runs.append(RunAttempt(len(experiment.runs) + 1, self._now()))
         return experiment
 
+    def prepare_training_run(
+        self, experiment_id: str, queue_id: str | None = None, retry: bool = False
+    ) -> PreparedRun:
+        """新契約で試行を準備し、同じキュー要求には同じ fake job を返す。"""
+        if queue_id and queue_id in self._prepared_queue_runs:
+            return self._prepared_queue_runs[queue_id]
+        experiment = self.get_experiment(experiment_id)
+        config, legacy = self.migrate_experiment_config(experiment.config.values)
+        if retry and legacy:
+            raise ValueError("旧形式設定は再試行できません")
+        errors = [
+            item["message"]
+            for item in self.validate_experiment_config(config)
+            if item["level"] == "error"
+        ]
+        if errors:
+            raise ValueError("設定エラー: " + "、".join(errors))
+        if not experiment.runs:
+            started = self._save_experiment(config, experiment_id, "running")
+            experiment = started
+            experiment.runs.append(RunAttempt(1, self._now()))
+        elif retry:
+            experiment = self.retry_experiment(experiment_id)
+        else:
+            raise ValueError("この実験にはすでに試行があります")
+        attempt = len(experiment.runs)
+        run_id = f"{experiment_id}/attempt_{attempt:03d}"
+        run = PreparedRun(run_id, f"mock://{run_id}", "mock", [], {}, fake=True)
+        if queue_id:
+            self._prepared_queue_runs[queue_id] = run
+            self.finish_training_queue_item(queue_id, "running")
+        return run
+
+    def apply_training_event(self, experiment_id: str, event: dict[str, Any]) -> Experiment:
+        """イベントをモック実験の履歴へ反映する。"""
+        experiment = self.get_experiment(experiment_id)
+        kind = event["type"]
+        if kind == "phase":
+            experiment.phase = "cross_validation" if event["phase"] == "cv" else "final_training"
+            experiment.current_epoch = 0
+        elif kind == "epoch":
+            point = EpochMetrics(event["epoch"], float(event["loss"]), None)
+            if event["phase"] == "cv":
+                experiment.fold_histories.setdefault(int(event["fold"]), []).append(point)
+            else:
+                experiment.final_history.append(point)
+                experiment.phase = "final_training"
+            experiment.current_epoch = event["epoch"]
+        elif kind == "val":
+            points = experiment.fold_histories.setdefault(int(event["fold"]), [])
+            point = next((value for value in points if value.epoch == event["epoch"]), None)
+            if point:
+                point.map = float(event["ap"])
+        elif kind == "oof":
+            losses = []
+            for fold_key in event.get("per_fold", {}):
+                fold = int(fold_key)
+                point = next(
+                    (
+                        value
+                        for value in experiment.fold_histories.get(fold, [])
+                        if value.epoch == event["epoch"]
+                    ),
+                    None,
+                )
+                if point:
+                    losses.append(point.loss)
+            loss = sum(losses) / len(losses) if losses else 0.0
+            experiment.oof_history.append(
+                EpochMetrics(int(event["epoch"]), loss, float(event["ap"]))
+            )
+            experiment.history = experiment.oof_history
+        elif kind == "selected":
+            per_class = {
+                label: (value[0], int(value[1])) for label, value in event["per_class"].items()
+            }
+            experiment.selected_epoch = int(event["epoch"])
+            experiment.oof_evaluation = Evaluation(float(event["ap"]), per_class)
+        elif kind == "checkpoint":
+            name = event["path"].replace("\\", "/").rsplit("/", maxsplit=1)[-1]
+            fold = event.get("fold")
+            epoch = int(event["epoch"])
+            score = (
+                next(
+                    (
+                        value.map
+                        for value in experiment.fold_histories.get(int(fold), [])
+                        if value.epoch == epoch
+                    ),
+                    None,
+                )
+                if fold is not None
+                else None
+            )
+            if not any(item.name == name and item.fold == fold for item in experiment.checkpoints):
+                experiment.checkpoints.append(
+                    Checkpoint(name, epoch, score, self._now(), fold=fold)
+                )
+        self._capture_current_attempt(experiment, detach=False)
+        return experiment
+
+    def request_training_stop(self, experiment_id: str, attempt: int, reason: str) -> None:
+        """中断要求をモック内部に記録する。"""
+        if reason not in {"user_stop", "app_exit"}:
+            raise ValueError("中断理由は user_stop または app_exit です")
+        self._stop_requests[(experiment_id, attempt)] = reason
+
+    def conclude_training_run(
+        self, experiment_id: str, attempt: int, job_exit: JobExit | None = None
+    ) -> TrainingOutcome:
+        """モックの失敗注入と停止要求を試行の終端状態にする。"""
+        experiment = self.get_experiment(experiment_id)
+        reason = self._stop_requests.get((experiment_id, attempt))
+        if reason:
+            status = "stopped"
+        elif experiment_id in self.fail_training_ids or (job_exit and job_exit.start_failed):
+            status, reason = (
+                "failed",
+                "start_failed" if job_exit and job_exit.start_failed else "error",
+            )
+        else:
+            status = "completed"
+        experiment.status = status
+        if experiment.runs and len(experiment.runs) >= attempt:
+            experiment.runs[attempt - 1].result = status
+            experiment.runs[attempt - 1].finished_at = self._now()
+        queue_id = next(
+            (
+                key
+                for key, run in self._prepared_queue_runs.items()
+                if run.run_id == f"{experiment_id}/attempt_{attempt:03d}"
+            ),
+            None,
+        )
+        if queue_id:
+            self.finish_training_queue_item(queue_id, status)
+        return TrainingOutcome(experiment_id, attempt, queue_id, status, reason)
+
     def _capture_current_attempt(self, experiment: Experiment, *, detach: bool = True) -> None:
         """実験の現在結果を最新の実行試行へスナップショットする。"""
         if not experiment.runs:
@@ -1581,70 +1740,20 @@ class MockBackend:
                 run.oof_evaluation = self._oof_evaluation(experiment, selected.map)
 
     def _assign_folds(self, config: dict[str, Any], item_ids: list[str]) -> dict[str, int]:
-        """分類別件数を均しながら、同じ取込元フォルダを同じ fold に置く。"""
+        """共通の group_greedy_v1 実装へ fold 割り当てを委譲する。"""
         cv = config.get("data", {}).get("cv", {})
-        count = int(cv.get("n_folds", 5))
-        if len(item_ids) < count:
-            raise ValueError(f"交差検証には画像が最低 {count} 件必要です")
         by_id = {
             item.item_id: item
             for item in self._items_for_version(config["data"]["dataset_version"])
         }
-        groups: dict[str, list[DataItem]] = {}
-        for item_id in item_ids:
-            item = by_id.get(item_id)
-            if item is not None:
-                key = item.source_folder if cv.get("group_by_source_folder", True) else item_id
-                groups.setdefault(key, []).append(item)
-        if len(groups) < count:
-            raise ValueError(f"交差検証には異なる取込元フォルダが最低 {count} 個必要です")
-        rng = np.random.default_rng(int(config.get("data", {}).get("seed", 42)))
-        keys = list(groups)
-        rng.shuffle(keys)
-        keys.sort(key=lambda key: len(groups[key]), reverse=True)
-        fold_counts = [0] * count
-        class_counts: list[dict[str, int]] = [dict() for _ in range(count)]
-        target_count = len(item_ids) / count
-        class_totals: dict[str, int] = {}
-        for group in groups.values():
-            for item in group:
-                label = item.classification or "未分類"
-                class_totals[label] = class_totals.get(label, 0) + 1
-        assignments: dict[str, int] = {}
-        for key in keys:
-            group = groups[key]
-            classes: dict[str, int] = {}
-            for item in group:
-                label = item.classification or "未分類"
-                classes[label] = classes.get(label, 0) + 1
-
-            def placement_cost(
-                fold_index: int,
-                group_size: int = len(group),
-                group_classes: dict[str, int] = classes,
-            ) -> float:
-                previous_total = (fold_counts[fold_index] - target_count) ** 2
-                next_total = (fold_counts[fold_index] + group_size - target_count) ** 2
-                cost = next_total - previous_total
-                if cv.get("stratify_by_classification", True):
-                    for label, class_total in class_totals.items():
-                        target_class = class_total / count
-                        before = (class_counts[fold_index].get(label, 0) - target_class) ** 2
-                        after = (
-                            class_counts[fold_index].get(label, 0)
-                            + group_classes.get(label, 0)
-                            - target_class
-                        ) ** 2
-                        cost += after - before
-                return cost
-
-            fold = min(range(count), key=placement_cost)
-            for item in group:
-                assignments[item.item_id] = fold + 1
-                label = item.classification or "未分類"
-                class_counts[fold][label] = class_counts[fold].get(label, 0) + 1
-                fold_counts[fold] += 1
-        return assignments
+        items = [by_id[item_id] for item_id in sorted(item_ids) if item_id in by_id]
+        return assign_folds(
+            items,
+            int(cv.get("n_folds", 5)),
+            int(config.get("data", {}).get("seed", 42)),
+            group_by_source_folder=cv.get("group_by_source_folder", True),
+            stratify_by_classification=cv.get("stratify_by_classification", True),
+        )
 
     def _filtered_training_items(self, config: dict[str, Any]) -> list[DataItem]:
         """学習版、分類、品質条件を適用した画像を返す。"""
