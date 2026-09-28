@@ -114,8 +114,26 @@ def _validate_spec(run_dir: Path, spec: dict[str, Any]) -> None:
     data = config["data"]
     if not isinstance(model, dict) or not isinstance(model.get("type"), str) or not model["type"]:
         raise ValueError("config.model.type が不正です")
+    if model["type"] == "cellpose":
+        scale_range = model.get("scale_range")
+        nimg_per_epoch = model.get("nimg_per_epoch")
+        minimum_masks = model.get("min_train_masks")
+        if model.get("pretrained_model") not in {"cpsam", "cpsam_v2"}:
+            raise ValueError("config.model.pretrained_model が不正です")
+        if type(model.get("bsize")) is not int or model["bsize"] != 256:
+            raise ValueError("config.model.bsize は 256 固定です")
+        if not _is_finite_number(scale_range) or not 0 <= scale_range <= 1:
+            raise ValueError("config.model.scale_range が不正です")
+        if nimg_per_epoch is not None and (type(nimg_per_epoch) is not int or nimg_per_epoch < 1):
+            raise ValueError("config.model.nimg_per_epoch が不正です")
+        if type(minimum_masks) is not int or minimum_masks < 0:
+            raise ValueError("config.model.min_train_masks が不正です")
     if not isinstance(training, dict):
         raise ValueError("config.training が不正です")
+    if model["type"] == "cellpose" and (
+        type(training.get("batch_size")) is not int or training["batch_size"] < 1
+    ):
+        raise ValueError("config.training.batch_size は 1 以上が必要です")
     if type(training.get("epochs")) is not int or training["epochs"] < 1:
         raise ValueError("config.training.epochs が不正です")
     learning_rate = training.get("learning_rate")
@@ -347,8 +365,12 @@ def run_job(
             from foam_cell_analysis.training.adapters.mask_rcnn import MaskRCNNAdapter
 
             default_factory = MaskRCNNAdapter
+        elif model_type == "cellpose":
+            from foam_cell_analysis.training.adapters.cellpose import CellposeAdapter
+
+            default_factory = CellposeAdapter
         else:
-            raise ValueError(f"段階 D で利用できるアダプタではありません: {model_type}")
+            raise ValueError(f"学習アダプタがありません: {model_type}")
         from foam_cell_analysis.training.loop import execute_training
 
         model_factory = adapter_factory or default_factory
@@ -362,6 +384,7 @@ def run_job(
             free_bytes_fn=free_bytes_fn,
             weight_size_fn=weight_size_fn,
         )
+        del adapter
         phase = "cross_validation"
         execute_training(run_path, spec, preflight_data, model_factory, device, emit)
         return 0

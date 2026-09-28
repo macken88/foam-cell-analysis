@@ -224,6 +224,54 @@ def test_mask_rcnn_process_smoke_on_train_v000(tmp_path):
 
 @pytest.mark.ml
 @pytest.mark.slow
+def test_cellpose_process_smoke_runs_to_completion(tmp_path):
+    repository = Path(__file__).resolve().parents[2]
+    weight_file = repository / "workspace" / "pretrained" / "cellpose" / "cpsam"
+    if not weight_file.is_file():
+        pytest.skip("cpsam 重みが workspace/pretrained/cellpose にありません")
+    _workspace(tmp_path, n_items=4)
+    shutil.rmtree(tmp_path / "experiments")
+    model_dir = tmp_path / "pretrained" / "cellpose"
+    model_dir.mkdir(parents=True)
+    try:
+        os.link(weight_file, model_dir / "cpsam")
+    except OSError:
+        shutil.copy2(weight_file, model_dir / "cpsam")
+
+    service = TrainingService(tmp_path, process_alive=lambda _record: False)
+    config = service.default_experiment_config("cellpose")
+    config["data"]["cv"]["n_folds"] = 2
+    config["training"].update(epochs=2, batch_size=1)
+    config["training"]["early_stopping"]["enabled"] = False
+    config["checkpoint"].update(validation_interval=2, save_every=2)
+    config["model"].update(
+        pretrained_model="cpsam",
+        bsize=256,
+        scale_range=0,
+        nimg_per_epoch=2,
+        min_train_masks=1,
+    )
+    experiment = service.add_training_queue_item(config)
+    prepared = service.prepare_training_run(experiment.experiment_id, experiment.experiment_id)
+    environment = _environment()
+    environment.update(prepared.env)
+    returncode, output, stderr = _launch(
+        Path(prepared.run_dir), timeout=1800, process_env=environment
+    )
+
+    assert returncode == 0, stderr
+    events = [row for row in output if row["type"] != "hello"]
+    assert events[0]["type"] == "started"
+    assert events[-1]["type"] == "completed"
+    assert (Path(prepared.run_dir) / "checkpoints" / "final.pt").is_file()
+    outcome = service.conclude_training_run(
+        experiment.experiment_id, 1, JobExit(returncode=returncode)
+    )
+    assert outcome.status == "completed"
+
+
+@pytest.mark.ml
+@pytest.mark.slow
 def test_process_e2e_completes_and_training_service_accepts_manifest(tmp_path):
     run_dir, spec = _workspace(tmp_path)
     returncode, output, stderr = _launch(run_dir)

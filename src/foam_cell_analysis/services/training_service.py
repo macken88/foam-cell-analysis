@@ -8,6 +8,7 @@ import hashlib
 import importlib.util
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -428,9 +429,29 @@ class TrainingService:
                 )
             if model.get("bsize") != 256:
                 issues.append({"level": "error", "message": "Cellpose の bsize は 256 固定です"})
-            if not 0 <= float(model.get("scale_range", -1)) <= 1:
+            scale_range = model.get("scale_range", -1)
+            if (
+                type(scale_range) not in {int, float}
+                or not math.isfinite(scale_range)
+                or not 0 <= scale_range <= 1
+            ):
                 issues.append(
                     {"level": "error", "message": "scale_range は 0〜1 で指定してください"}
+                )
+            nimg_per_epoch = model.get("nimg_per_epoch")
+            if nimg_per_epoch is not None and (
+                type(nimg_per_epoch) is not int or nimg_per_epoch < 1
+            ):
+                issues.append(
+                    {"level": "error", "message": "nimg_per_epoch は正の整数または自動です"}
+                )
+            min_train_masks = model.get("min_train_masks", 5)
+            if type(min_train_masks) is not int or min_train_masks < 0:
+                issues.append({"level": "error", "message": "min_train_masks は 0 以上の整数です"})
+            batch_size = config.get("training", {}).get("batch_size")
+            if type(batch_size) is not int or batch_size < 1:
+                issues.append(
+                    {"level": "error", "message": "Cellpose の学習 batch_size は 1 以上です"}
                 )
         if model_type == "mask_rcnn" and model.get("optimizer", "SGD") not in {"SGD", "AdamW"}:
             issues.append({"level": "error", "message": "最適化手法は SGD または AdamW です"})

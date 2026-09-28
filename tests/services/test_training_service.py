@@ -95,6 +95,29 @@ def test_mask_rcnn_configuration_validation_covers_backbone_and_anchor_count(tmp
     assert any("アンカーサイズは 5 個" in issue["message"] for issue in issues)
 
 
+def test_cellpose_configuration_validation_covers_batch_and_sampling(tmp_path):
+    _workspace(tmp_path)
+    service = TrainingService(tmp_path)
+    config = service.default_experiment_config("cellpose")
+    config["data"]["cv"]["n_folds"] = 2
+    assert service.validate_experiment_config(config) == []
+
+    config["model"]["nimg_per_epoch"] = 0
+    config["model"]["min_train_masks"] = -1
+    config["model"]["scale_range"] = float("nan")
+    config["training"]["batch_size"] = 0
+    issues = service.validate_experiment_config(config)
+    messages = [issue["message"] for issue in issues]
+    assert any("nimg_per_epoch" in message for message in messages)
+    assert any("min_train_masks" in message for message in messages)
+    assert any("scale_range" in message for message in messages)
+    assert any("batch_size" in message for message in messages)
+    config["training"]["batch_size"] = 2
+    assert not any(
+        "batch_size" in issue["message"] for issue in service.validate_experiment_config(config)
+    )
+
+
 def _write_valid_result(run_dir):
     checkpoint = run_dir / "checkpoints" / "final.pt"
     checkpoint.parent.mkdir(parents=True, exist_ok=True)

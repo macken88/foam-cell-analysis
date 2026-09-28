@@ -15,6 +15,7 @@ from PIL import Image
 from foam_cell_analysis.services.models import DataItem
 
 logger = logging.getLogger(__name__)
+MAX_ARRAY_CACHE_BYTES = 2 * 1024**3
 
 
 class DatasetStore:
@@ -23,9 +24,13 @@ class DatasetStore:
     def __init__(self, workspace_root: str | Path, cache_bytes: int = 2 * 1024**3) -> None:
         self.workspace_root = Path(workspace_root)
         self.datasets_root = self.workspace_root / "datasets"
-        self.cache_bytes = max(0, int(cache_bytes))
-        self._cache: OrderedDict[Path, np.ndarray] = OrderedDict()
-        self._cache_size = 0
+        self.cache_bytes = min(MAX_ARRAY_CACHE_BYTES, max(0, int(cache_bytes)))
+        self._cache = ArrayLRU(self.cache_bytes)
+
+    @property
+    def _cache_size(self) -> int:
+        """画像と外部キャッシュを合わせた使用量を返す。"""
+        return self._cache.size
 
     def list_versions(self) -> list[str]:
         """読み込み可能な学習用 RELEASED 版を版名順に返す。"""
@@ -94,20 +99,15 @@ class DatasetStore:
         return folder / row["image_path"], folder / row["mask_path"]
 
     def _read_array(self, path: Path) -> np.ndarray:
-        cached = self._cache.get(path)
+        key = ("dataset", path)
+        cached = self._cache.get(key)
         if cached is not None:
-            self._cache.move_to_end(path)
             return cached
         with Image.open(path) as image:
             array = np.asarray(image).copy()
         if array.ndim != 2 or array.dtype not in (np.uint8, np.uint16, np.int32, np.uint32):
             raise ValueError(f"画像は 2 次元 uint8/uint16 整数である必要があります: {path}")
-        if array.nbytes <= self.cache_bytes:
-            while self._cache and self._cache_size + array.nbytes > self.cache_bytes:
-                _, removed = self._cache.popitem(last=False)
-                self._cache_size -= removed.nbytes
-            self._cache[path] = array
-            self._cache_size += array.nbytes
+        self._cache.put(key, array)
         return array
 
     def get_image(self, version: str, item_id: str, channel: str | None = None) -> np.ndarray:
@@ -155,3 +155,33 @@ class DatasetStore:
             selected = [item for item in selected if item.quality in {"良", "可"}]
         selected = [item for item in selected if item.channels == channels]
         return sorted(selected, key=lambda item: item.item_id)
+
+
+class ArrayLRU:
+    """配列種別をまたいで容量を共有する重み付き LRU キャッシュ。"""
+
+    def __init__(self, capacity_bytes: int) -> None:
+        self.capacity_bytes = max(0, int(capacity_bytes))
+        self._items: OrderedDict[Any, np.ndarray] = OrderedDict()
+        self.size = 0
+
+    def get(self, key: Any) -> np.ndarray | None:
+        """配列を返し、使用順を最新にする。"""
+        value = self._items.get(key)
+        if value is not None:
+            self._items.move_to_end(key)
+        return value
+
+    def put(self, key: Any, value: np.ndarray) -> None:
+        """配列を追加し、共有容量を超えた古い項目を追い出す。"""
+        value_size = int(value.nbytes)
+        if value_size > self.capacity_bytes:
+            return
+        existing = self._items.pop(key, None)
+        if existing is not None:
+            self.size -= int(existing.nbytes)
+        while self._items and self.size + value_size > self.capacity_bytes:
+            _, removed = self._items.popitem(last=False)
+            self.size -= int(removed.nbytes)
+        self._items[key] = value
+        self.size += value_size

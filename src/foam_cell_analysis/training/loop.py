@@ -152,6 +152,9 @@ def execute_training(
     save_every = int(checkpoint_config["save_every"])
     save_fold_models = bool(checkpoint_config.get("save_fold_models", True))
     profile = spec["augmentation_profile"]["value"]
+    model_config["augmentation_profile"] = profile
+    if model_config.get("type") == "cellpose":
+        model_config["_shared_array_cache"] = arrays.store._cache
     normalization = spec.get("preprocessing")
     dataset_store_items = {item.item_id: item for item in preflight["items"]}
     classifications = {item_id: dataset_store_items[item_id].classification for item_id in arrays}
