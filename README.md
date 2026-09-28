@@ -38,3 +38,18 @@ pip install -e ".[ml]"
 foam-cell-analysis
 pytest
 ```
+
+## 学習デバッグ用のダミーデータ
+
+次のコマンドで `workspace/datasets/train_v000/` に512×512のグレースケール画像5枚と、
+対応する16bitインスタンスマスク（背景0、気泡1〜25）を生成する。全画像が学習用。
+画像・マスクのパスとハッシュは `manifest.csv`、用途・分類・品質・生成シードは
+`metadata.csv`、版情報は `dataset_info.json` に保存する。
+
+```powershell
+.venv\Scripts\python.exe scripts\generate_dummy_dataset.py
+```
+
+既存フォルダは上書きしない。別の場所へ再生成する場合は `--output <保存先>` を指定する。
+既定シードは42（`--seed` で変更可能）。取り込み元は画像ごとに別グループとして記録する。
+生成物はGit管理外。アプリへの読み込み・版登録はバックエンド実装時に接続する。
