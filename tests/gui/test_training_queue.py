@@ -259,6 +259,8 @@ def test_training_queue_order_and_page_navigation(shell):
 def test_terminal_save_failure_stops_queue_and_reports_reason(shell, qapp, qtbot, monkeypatch):
     backend = shell.ctx.backend
     first_config = backend.default_experiment_config("mask_rcnn")
+    first_config["training"]["epochs"] = 1
+    first_config["data"]["cv"]["n_folds"] = 2
     first = backend.add_training_queue_item(first_config)
     second_config = backend.default_experiment_config("mask_rcnn")
     second = backend.add_training_queue_item(second_config)
@@ -272,7 +274,7 @@ def test_terminal_save_failure_stops_queue_and_reports_reason(shell, qapp, qtbot
     monkeypatch.setattr(backend, "conclude_training_run", fail_first_conclusion)
     shell.navigate(PageId.TRAINING_QUEUE)
     queue = shell.page(PageId.TRAINING_QUEUE)
-    with qtbot.waitSignal(shell.ctx.training_runner.ended, timeout=60_000):
+    with qtbot.waitSignal(shell.ctx.training_runner.ended, timeout=5_000):
         QTest.mouseClick(queue.run_button, Qt.MouseButton.LeftButton)
     qapp.processEvents()
 
@@ -300,7 +302,9 @@ def _menu_action(menu, text):
     return next(action for action in menu.actions() if action.text().split("\t")[0] == text)
 
 
-def test_start_button_queues_config_runs_it_and_removes_finished_row(shell, qapp, monkeypatch):
+def test_start_button_queues_config_runs_it_and_removes_finished_row(
+    shell, qapp, qtbot, monkeypatch
+):
     from PySide6.QtWidgets import QMessageBox
 
     from foam_cell_analysis.gui.modes.training.queue_model import PROGRESS_ROLE
@@ -311,7 +315,8 @@ def test_start_button_queues_config_runs_it_and_removes_finished_row(shell, qapp
     )
     backend = shell.ctx.backend
     training = shell.page(PageId.TRAINING)
-    training.fields["training.epochs"].setValue(40)
+    training.fields["training.epochs"].setValue(3)
+    training.fields["data.cv.n_folds"].setValue(2)
     QTest.mouseClick(training.start_button, Qt.MouseButton.LeftButton)
 
     rows = backend.list_training_queue()
@@ -323,7 +328,7 @@ def test_start_button_queues_config_runs_it_and_removes_finished_row(shell, qapp
 
     queue = shell.page(PageId.TRAINING_QUEUE)
     window = shell.manager.window(ModeId.TRAINING)
-    QTest.qWait(20)
+    qtbot.waitUntil(lambda: backend.get_experiment(experiment_id).current_epoch >= 1, timeout=5_000)
     queue.refresh()
     status = queue.model.index(0, 1)
     assert status.data() == "実行中"
@@ -332,11 +337,9 @@ def test_start_button_queues_config_runs_it_and_removes_finished_row(shell, qapp
     assert not window.training_progress_bar.isHidden()
     assert window.training_progress_label.text().startswith(f"{experiment_id} 学習中：")
 
-    for _ in range(2000):
-        qapp.processEvents()
-        if backend.get_experiment(experiment_id).status == "completed":
-            break
-        QTest.qWait(2)
+    qtbot.waitUntil(
+        lambda: backend.get_experiment(experiment_id).status == "completed", timeout=5_000
+    )
     assert backend.get_experiment(experiment_id).status == "completed"
     qapp.processEvents()
     assert backend.list_training_queue() == []

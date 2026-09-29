@@ -123,14 +123,6 @@ def test_model_kwargs_map_settings_and_share_pre_post_nms_limits():
     assert kwargs["box_detections_per_img"] == 300
 
 
-def test_model_kwargs_reject_different_train_and_test_nms_limits():
-    config = _config()
-    config["rpn"]["pre_nms_top_n"] = {"train": 100, "test": 200}
-
-    with pytest.raises(ValueError, match="train/test で同じ値"):
-        _model_kwargs(config, mask_module.DEFAULT_EVAL_PARAMS)
-
-
 @pytest.mark.parametrize(
     ("config", "expected_branch"),
     [

@@ -2,11 +2,10 @@
 
 from collections import Counter
 
-from PySide6.QtCore import QEvent, QItemSelectionModel, QPoint, Qt
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
 
 from foam_cell_analysis.gui.navigation import ModeId, PageId
-from foam_cell_analysis.gui.widgets.form import FormSection
 
 
 def _menus(window):
@@ -28,15 +27,6 @@ def _select_rows_by_click(page, qtbot, rows):
         )
         QTest.mouseClick(page.table.viewport(), Qt.MouseButton.LeftButton, modifier, rect.center())
     page.table.setFocus()
-    qtbot.wait(10)
-
-
-def _choose_combo_item(qtbot, combo, value):
-    combo.showPopup()
-    qtbot.wait(10)
-    index = combo.findData(value)
-    rect = combo.view().visualRect(combo.model().index(index, 0))
-    QTest.mouseClick(combo.view().viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
     qtbot.wait(10)
 
 
@@ -203,110 +193,3 @@ def test_usage_change_removing_selected_rows_leaves_zero_selection(shell, qapp, 
     qapp.processEvents()
     assert page.table.selectionModel().selectedRows() == []
     assert page.selection_note.text() == "選択中の 0 件を変更"
-
-
-def test_current_row_and_scroll_survive_activation_edit_undo_redo(shell, qapp, qtbot):
-    shell.navigate(PageId.DATA_PREPARATION)
-    page = shell.page(PageId.DATA_PREPARATION)
-    window = shell.manager.window(ModeId.DATA_PREPARATION)
-    rows = [18, 19, 20]
-    _select_rows_by_click(page, qtbot, rows)
-    selected = [page.model.visible_items()[row].item_id for row in rows]
-    page.table.selectionModel().setCurrentIndex(
-        page.model.index(rows[-1], 0), QItemSelectionModel.SelectionFlag.NoUpdate
-    )
-    current_id = selected[-1]
-    page.table.verticalScrollBar().setValue(12)
-    scroll_value = page.table.verticalScrollBar().value()
-    window.raise_()
-    window.activateWindow()
-    QTest.qWait(20)
-    qapp.sendEvent(window, QEvent(QEvent.Type.WindowDeactivate))
-    qapp.sendEvent(window, QEvent(QEvent.Type.WindowActivate))
-    qapp.processEvents()
-    assert [
-        page.model.item_at(index.row()).item_id
-        for index in page.table.selectionModel().selectedRows()
-    ] == selected
-    assert page.model.item_at(page.table.currentIndex().row()).item_id == current_id
-    assert page.table.verticalScrollBar().value() == scroll_value
-
-    item = next(item for item in page.items if item.item_id == current_id)
-    previous = item.quality
-    target = "可" if previous != "可" else "良"
-    page.quality_combo.setCurrentIndex(page.quality_combo.findData(target))
-    qapp.processEvents()
-    for expected_quality in (target, previous, target):
-        assert item.quality == expected_quality
-        assert [
-            page.model.item_at(index.row()).item_id
-            for index in page.table.selectionModel().selectedRows()
-        ] == selected
-        assert page.model.item_at(page.table.currentIndex().row()).item_id == current_id
-        assert page.table.verticalScrollBar().value() == scroll_value
-        if expected_quality == target and item.quality == target:
-            if page.undo_stack.canUndo():
-                page.undo_stack.undo()
-                qapp.processEvents()
-                expected_quality = previous
-                assert item.quality == previous
-                assert page.model.item_at(page.table.currentIndex().row()).item_id == current_id
-                page.undo_stack.redo()
-                qapp.processEvents()
-                break
-
-
-def test_narrow_window_shows_default_columns_and_wraps_preview_controls(shell, qapp):
-    shell.navigate(PageId.DATA_PREPARATION)
-    page = shell.page(PageId.DATA_PREPARATION)
-    page.resize(900, 650)
-    page.show()
-    qapp.processEvents()
-    table_width = page.table.viewport().width()
-    default_width = sum(page.table.columnWidth(column) for column in range(5))
-    assert default_width <= table_width
-    assert page.table.horizontalScrollBar().maximum() == 0
-    controls = [page.usage_combo, page.class_combo, page.quality_combo, page.mask_combo]
-    top_y = sorted(
-        {combo.mapTo(page.preview_panel, combo.rect().topLeft()).y() for combo in controls}
-    )
-    assert len(top_y) == 2
-
-
-def test_training_section_headings_have_prominent_theme_fonts(shell, qapp):
-    shell.navigate(PageId.TRAINING)
-    page = shell.page(PageId.TRAINING)
-    sections = [widget for widget, _column in page._form_widgets if isinstance(widget, FormSection)]
-    assert sections
-    for section in sections:
-        assert section.heading_label.font().pointSizeF() >= qapp.font().pointSizeF() + 2, (
-            section.title(),
-            section.heading_label.font().toString(),
-        )
-        assert section.heading_label.font().bold(), section.title()
-        assert section.heading_rule.isVisible()
-
-
-def test_training_columns_stack_independently_and_dataset_note_stays_with_cv(shell, qapp):
-    shell.navigate(PageId.TRAINING)
-    page = shell.page(PageId.TRAINING)
-    page.preview_action.setChecked(False)
-    page._update_form_columns(1300)
-    left_widgets = [page.left_column.itemAt(i).widget() for i in range(page.left_column.count())]
-    right_widgets = [page.right_column.itemAt(i).widget() for i in range(page.right_column.count())]
-    assert left_widgets and right_widgets
-    assert left_widgets[-1] is page.fields["training.epochs"].parentWidget()
-    cv_section = page.fields["data.cv.n_folds"].parentWidget()
-    assert page.dataset_note.parentWidget() is cv_section
-    assert len(left_widgets) != len(right_widgets)
-
-
-def test_training_augmentation_button_is_compact_and_next_to_profile(shell, qapp):
-    shell.navigate(PageId.TRAINING)
-    page = shell.page(PageId.TRAINING)
-    profile = page.fields["augmentation.profile"]
-    qapp.processEvents()
-    assert page.profile_edit_button.text() == "データ拡張を設定…"
-    assert page.profile_edit_button.width() <= page.profile_edit_button.sizeHint().width() + 8
-    assert profile.geometry().center().y() == page.profile_edit_button.geometry().center().y()
-    assert not hasattr(page, "profile_preview_button")

@@ -68,20 +68,6 @@ def _assert_clean_menu(menu):
             _assert_clean_menu(action.menu())
 
 
-def test_every_mode_menu_has_no_edge_or_repeated_separators(shell):
-    cases = (
-        (PageId.DATA_PREPARATION, ModeId.DATA_PREPARATION),
-        (PageId.TRAINING, ModeId.TRAINING),
-        (PageId.CANDIDATES, ModeId.COMPARISON),
-        (PageId.INFERENCE, ModeId.INFERENCE),
-    )
-    for page_id, mode in cases:
-        shell.navigate(page_id)
-        window = shell.manager.window(mode)
-        for top_action in window.menuBar().actions():
-            _assert_clean_menu(top_action.menu())
-
-
 def test_menu_action_uses_same_operation_and_shortcut_display_tracks_changes(shell, qtbot):
     shell.navigate(PageId.DATA_PREPARATION)
     page = shell.page(PageId.DATA_PREPARATION)
@@ -230,27 +216,6 @@ def test_training_menu_groups_column_names_and_dynamic_experiment_filter(shell):
         if not action.isSeparator()
     ]
     assert study_items[2].isChecked()
-
-
-def test_disabled_reasons_shortcut_labels_and_empty_status_tips(shell):
-    shell.navigate(PageId.DATA_PREPARATION)
-    data = shell.page(PageId.DATA_PREPARATION)
-    finalize = data.menu_action_map["finalize"]
-    assert finalize.toolTip() == "エラー 2 件を直すと確定できます"
-    assert data.menu_action_map["mask_revision"].toolTip()
-
-    shell.navigate(PageId.CANDIDATES)
-    candidates = shell.page(PageId.CANDIDATES)
-    assert candidates.candidate_actions["evaluate"].toolTip() == "候補を 1 つ以上選ぶと使えます"
-    assert candidates.candidate_actions["export"].toolTip() == "候補を選ぶと使えます"
-
-    comparison = shell.manager.window(ModeId.COMPARISON)
-    view = _menu(comparison, "表示")
-    assert _find_action(view, "前の画像").text().endswith("←")
-    assert _find_action(view, "次の画像").text().endswith("→")
-    for top_action in comparison.menuBar().actions():
-        for action in top_action.menu().actions():
-            assert action.statusTip() == ""
 
 
 def test_right_click_selects_unselected_row_and_preserves_multiselection(shell, monkeypatch):

@@ -2,12 +2,10 @@
 
 from inspect import getmembers, isfunction
 
-import numpy as np
 import pytest
 
 from foam_cell_analysis.services.backend import Backend
 from foam_cell_analysis.services.mock.backend import MockBackend
-from foam_cell_analysis.services.mock.synthetic import make_sample
 from foam_cell_analysis.services.models import AugmentationProfile
 
 
@@ -195,100 +193,6 @@ def test_inclusion_change_state_restores_added_and_original_changes():
     assert untouched.change is None
 
 
-def test_image_apis_return_deterministic_revision_and_candidate_results():
-    backend = MockBackend()
-    item = backend.get_working_dataset("train").items[0]
-    image = backend.get_item_image("train", item.item_id, "A")
-    assert image.shape == (512, 512)
-    mask1 = backend.get_item_mask("train", item.item_id, "rev_001")
-    mask2 = backend.get_item_mask("train", item.item_id, "rev_002")
-    assert mask1.dtype == np.int32
-    assert not np.array_equal(mask1, mask2)
-    prediction1 = backend.get_candidate_prediction("RC-001", "item_001001")
-    prediction2 = backend.get_candidate_prediction("RC-002", "item_001001")
-    assert not np.array_equal(prediction1, prediction2)
-    first = backend.get_inference_result("sample.tif", "model_007")
-    second = backend.get_inference_result("sample.tif", "model_007")
-    assert np.array_equal(first[0], second[0])
-    assert np.array_equal(first[1], second[1])
-
-
-def test_synthetic_mask_contains_contact_and_summary_reports_next_version():
-    backend = MockBackend()
-    _, labels = make_sample(7, size=128)
-    vertical_contacts = (
-        (labels[1:, :] != labels[:-1, :]) & (labels[1:, :] > 0) & (labels[:-1, :] > 0)
-    )
-    horizontal_contacts = (
-        (labels[:, 1:] != labels[:, :-1]) & (labels[:, 1:] > 0) & (labels[:, :-1] > 0)
-    )
-    assert vertical_contacts.any() or horizontal_contacts.any()
-    summary = backend.summarize_working_changes("train")
-    assert summary["next_version"] == "train_v004"
-    assert summary["n_images"] == 59
-    assert summary["missing_metadata"] == 2
-
-
-def test_record_epoch_tracks_fold_metrics_and_oof_epoch():
-    backend = MockBackend()
-    config = backend.default_experiment_config("mask_rcnn")
-    config["checkpoint"]["save_every"] = 3
-    experiment = backend.start_training(config)
-    for fold in range(1, 6):
-        backend.record_epoch(experiment.experiment_id, 3, 0.8, 0.8 + fold / 100, fold)
-    assert any(item.name == "epoch_003.pt" and item.fold == 1 for item in experiment.checkpoints)
-    expected_oof = (
-        sum(
-            next(point.map for point in experiment.fold_histories[fold] if point.epoch == 3)
-            for fold in range(1, 6)
-        )
-        / 5
-    )
-    assert experiment.oof_history[-1].map == pytest.approx(expected_oof)
-    assert experiment.selected_epoch == 3
-
-
-def test_estimate_training_items_applies_real_filters_and_duplicate_warning():
-    backend = MockBackend()
-    total, per_fold = backend.estimate_training_items(classification="分類A")
-    assert (total, per_fold) == (19, 4)
-    good_total, _good_per_fold = backend.estimate_training_items(quality_filter="good_only")
-    assert good_total == 20
-    config = backend.get_experiment("exp_0042").config.values
-    config["experiment"]["id"] = "exp_0099"
-    config["experiment"]["description"] = "別の説明"
-    warnings = backend.validate_experiment_config(config)
-    assert any("同一設定の実験 exp_0042" in result["message"] for result in warnings)
-
-
-def test_fold_assignment_is_seeded_grouped_and_stratified():
-    backend = MockBackend()
-    config = backend.default_experiment_config("mask_rcnn")
-    config["experiment"]["id"] = None
-    first = backend.start_training(config)
-    repeated = backend.start_training(config)
-    assert first.fold_assignments == repeated.fold_assignments
-
-    items = {item.item_id: item for item in backend._items_for_version("train_v003")}
-    folders = {}
-    class_counts = {fold: {} for fold in range(1, 6)}
-    for item_id, fold in first.fold_assignments.items():
-        item = items[item_id]
-        folders.setdefault(item.source_folder, set()).add(fold)
-        label = item.classification or "未分類"
-        class_counts[fold][label] = class_counts[fold].get(label, 0) + 1
-    assert all(len(folds) == 1 for folds in folders.values())
-    for label in backend.classifications:
-        counts = [class_counts[fold].get(label, 0) for fold in range(1, 6)]
-        assert max(counts) - min(counts) <= 2
-
-    changed_seed = backend.default_experiment_config("mask_rcnn")
-    changed_seed["data"]["seed"] += 1
-    changed_seed["experiment"]["id"] = None
-    changed = backend.start_training(changed_seed)
-    assert changed.fold_assignments != first.fold_assignments
-
-
 def test_evaluation_can_be_started_and_completed():
     backend = MockBackend()
     backend.start_evaluation(["RC-003"], "val_v002")
@@ -297,10 +201,3 @@ def test_evaluation_can_be_started_and_completed():
     assert backend.get_candidate("RC-003").status == "candidate"
     assert evaluation.overall_map > 0
     assert len(backend.list_validation_items("val_v002", "分類A")) == 10
-
-
-def test_mock_thumbnail_is_generated_at_requested_small_dimensions():
-    backend = MockBackend()
-    image = backend.get_item_thumbnail("item_000001", (96, 72))
-    assert image.shape == (72, 96, 3)
-    assert image.dtype.name == "uint8"

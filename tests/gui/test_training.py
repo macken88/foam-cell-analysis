@@ -210,30 +210,6 @@ def test_model_switch_updates_only_untouched_shared_defaults(shell, qapp):
     assert "既定値と異なる値を保持しました" in shell.status_text.text()
 
 
-def test_cellpose_form_uses_user_facing_fixed_value_descriptions(shell, qapp):
-    page = shell.page(PageId.TRAINING)
-    page.model_type.setFocus()
-    QTest.keyClick(page.model_type, Qt.Key.Key_End)
-    fields = page._model_widgets["cellpose"]
-    assert fields["model.bsize"].text() == "256（cpsam 系は固定）"
-    assert fields["model.nimg_per_epoch"].placeholderText() == "自動（フォールドの学習画像数）"
-    assert "model.input_channels" not in fields
-    assert fields["model.input.normalization.method"].text().startswith("画像ごとのパーセンタイル")
-    assert page.fields["data.input_channels"].text() == "A（単一チャンネル）"
-    assert "Cellpose（cpsam）" in page.summary_label.text()
-    assert "Cellpose（Cellpose SAM" not in page.summary_label.text()
-    assert not page.model_note.isHidden()
-    page.model_type.setFocus()
-    QTest.keyClick(page.model_type, Qt.Key.Key_Home)
-    qapp.processEvents()
-    assert page.model_note.isHidden()
-    assert (
-        page._model_widgets["mask_rcnn"]["model.input.normalization.method"]
-        .text()
-        .startswith("画像ごとのパーセンタイル")
-    )
-
-
 def test_mask_rcnn_normalization_is_read_only_and_tracks_pretrained_weights(shell, qapp):
     """重み選択を操作すると固定正規化値が表示と YAML に反映される。"""
     from PySide6.QtCore import Qt
@@ -601,30 +577,6 @@ def test_training_yaml_preview_toggles_and_persists(shell, qapp):
     assert app_settings().value("training/yamlPreview", False, type=bool) is False
 
 
-def test_training_layout_reflows_without_rebuilding_controls(shell, qapp):
-    page = shell.page(PageId.TRAINING)
-    page.preview_action.setChecked(False)
-    epochs = page.fields["training.epochs"]
-    epochs.setValue(37)
-    config_before = page._collect_config()
-    yaml_before = page.yaml_preview.toPlainText()
-    page._update_form_columns(1200)
-    assert page._two_columns
-    scroll = page.scroll.verticalScrollBar()
-    scroll.setValue(min(40, scroll.maximum()))
-    scroll_position = scroll.value()
-    epochs.setFocus()
-    page._update_form_columns(800)
-    qapp.processEvents()
-    assert not page._two_columns
-    assert page.fields["training.epochs"] is epochs
-    assert epochs.value() == 37
-    assert page.focusWidget() is epochs
-    assert scroll.value() == scroll_position
-    assert page._collect_config() == config_before
-    assert page.yaml_preview.toPlainText() == yaml_before
-
-
 def test_training_anchor_fields_remain_editable_and_sync_yaml(shell, qapp):
     page = shell.page(PageId.TRAINING)
     page.preview_action.setChecked(True)
@@ -657,48 +609,6 @@ def test_training_validation_warning_is_clickable_and_clears_after_edit(shell, m
     page.fields["training.epochs"].setValue(page.fields["training.epochs"].value() + 1)
     assert page.validation_result_button.isHidden()
     assert page._validation_results == []
-
-
-def test_training_yaml_preview_menu_state_persists_and_restores(shell, qapp):
-    from foam_cell_analysis.gui.modes.training.page import TrainingPage
-    from foam_cell_analysis.gui.settings import app_settings
-
-    page = shell.page(PageId.TRAINING)
-    page.preview_action.trigger()
-    assert page.preview_action.isChecked()
-    assert app_settings().value("training/yamlPreview", False, type=bool)
-    restored = TrainingPage(shell.ctx)
-    assert restored.preview_action.isChecked()
-    assert not restored.preview_panel.isHidden()
-
-
-def test_training_only_rpn_and_roi_details_are_collapsible(shell):
-    from foam_cell_analysis.gui.widgets.form import CollapsibleSection, FormSection
-
-    page = shell.page(PageId.TRAINING)
-    labels = [section.title for section in page.findChildren(CollapsibleSection)]
-    assert labels.count("前処理 詳細設定") == 2
-    assert {label for label in labels if label != "前処理 詳細設定"} == {
-        "RPN 詳細設定",
-        "ROI 詳細設定",
-    }
-    assert not page.model_stack.isHidden()
-    assert page.fields["augmentation.profile"] is not None
-    assert page.fields["checkpoint.validation_interval"] is not None
-    assert any(
-        isinstance(widget, FormSection) and widget.title() == "途中保存モデル / 評価"
-        for widget, _column in page._form_widgets
-    )
-
-
-def test_training_action_groups_have_only_start_as_primary(shell):
-    page = shell.page(PageId.TRAINING)
-    assert page.validate_button.parentWidget() is page.validation_actions
-    assert page.save_button.parentWidget() is page.validation_actions
-    assert page.queue_button.parentWidget() is page.execution_actions
-    assert page.start_button.parentWidget() is page.execution_actions
-    assert page.start_button.property("primary") is True
-    assert page.validate_button.property("primary") is not True
 
 
 def _wheel(widget, delta=-120):

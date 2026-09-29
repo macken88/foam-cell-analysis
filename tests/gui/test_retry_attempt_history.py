@@ -141,6 +141,8 @@ def test_active_retry_runs_as_another_attempt_without_new_experiment(shell, monk
     backend = shell.ctx.backend
     original = backend.get_experiment("exp_0044")
     original.status = "stopped"
+    # やり直しが最後まで走るのを待つので、短い学習にしておく
+    original.config.values["training"]["epochs"] = 1
     run_count = len(original.runs)
     ids_before = {item.experiment_id for item in backend.list_experiments()}
     config = backend.default_experiment_config("mask_rcnn")

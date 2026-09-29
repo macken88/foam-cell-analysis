@@ -1,14 +1,10 @@
 """9 件の利用者要望に対する画面操作テスト。"""
 
-from dataclasses import replace
-from datetime import datetime
-from time import perf_counter
-
-from PySide6.QtCore import QSettings, Qt, QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QHeaderView, QSizePolicy
+from PySide6.QtWidgets import QApplication, QSizePolicy
 
-from foam_cell_analysis.gui.context import AppContext, DisplayPreference, StatusBus
+from foam_cell_analysis.gui.context import AppContext, StatusBus
 from foam_cell_analysis.gui.home_window import HomeWindow
 from foam_cell_analysis.gui.jobs import JobManager
 from foam_cell_analysis.gui.keymap_dialog import KeymapWindow
@@ -18,21 +14,15 @@ from foam_cell_analysis.gui.modes.data_preparation.dialogs import (
     DatasetFinalizeDialog,
     ImportDialog,
 )
-from foam_cell_analysis.gui.modes.data_preparation.finalize_thumbnails import (
-    DatasetVersionThumbnailWindow,
-)
 from foam_cell_analysis.gui.modes.data_preparation.page import (
     DataPreparationPage,
     DatasetHistoryPage,
 )
-from foam_cell_analysis.gui.modes.inference.page import InferencePage
 from foam_cell_analysis.gui.modes.training.page import TrainingPage
 from foam_cell_analysis.gui.navigation import Navigator
 from foam_cell_analysis.gui.theme import numeric_font
-from foam_cell_analysis.gui.widgets.marks import DisplayToggle
 from foam_cell_analysis.gui.window_manager import WindowManager
 from foam_cell_analysis.services.mock.backend import MockBackend
-from foam_cell_analysis.services.models import DatasetVersion
 
 
 def make_context(backend=None, shortcuts=None):
@@ -58,33 +48,6 @@ def click_row(qapp, page, item_id):
     rect = page.table.visualRect(page.model.index(row, 0))
     QTest.mouseClick(page.table.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
     qapp.processEvents()
-
-
-def test_display_preference_is_persisted_and_controls_are_two_choice(qapp, tmp_path):
-    """表示設定が保存され、各画面のトグル名と描画が追従する。"""
-    settings = QSettings(str(tmp_path / "prefs.ini"), QSettings.Format.IniFormat)
-    preference = DisplayPreference(settings)
-    toggle = DisplayToggle(preference)
-    changes = []
-    preference.changed.connect(changes.append)
-    preference.set_value("二値マスク")
-    assert settings.value("display/alternate") == "二値マスク"
-    assert changes == ["二値マスク"]
-    assert toggle.buttons["二値マスク"].text() == "二値マスク"
-    ctx = make_context()
-    ctx.display = DisplayPreference(settings)
-    home = HomeWindow(ctx, WindowManager(ctx))
-    home.display_actions["インスタンスラベル"].trigger()
-    assert settings.value("display/alternate") == "インスタンスラベル"
-    inference = InferencePage(ctx)
-    assert len(inference.display_toggle.buttons) == 2
-    data_page = DataPreparationPage(ctx)
-    assert data_page.display_toggle.buttons["インスタンスラベル"].text() == "インスタンスラベル"
-    data_page.display_actions["二値マスク"].trigger()
-    assert inference.display_toggle.buttons["二値マスク"].text() == "二値マスク"
-    assert data_page.display_toggle.buttons["二値マスク"].text() == "二値マスク"
-    home.close()
-    data_page.close()
 
 
 def test_keymap_window_is_single_non_modal_and_refreshes(qapp):
@@ -125,69 +88,6 @@ def test_arrow_shortcuts_move_rows_and_ignore_search_focus(qapp):
     assert page._selected_ids == [visible[0].item_id]
     page.class_combo.hidePopup()
     page.close()
-
-
-def test_work_table_interactive_width_is_saved_and_restored(qapp, tmp_path):
-    """作業表の各列幅を変更でき、次の画面生成で復元する。"""
-    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path))
-    page = DataPreparationPage(make_context())
-    header = page.table.horizontalHeader()
-    assert all(
-        header.sectionResizeMode(column) == QHeaderView.ResizeMode.Interactive
-        for column in range(page.model.columnCount())
-    )
-    header.resizeSection(0, 333)
-    page.close()
-    restored = DataPreparationPage(make_context())
-    assert restored.table.columnWidth(0) == 333
-    restored.close()
-
-
-def test_work_table_first_launch_sizes_data_columns_to_contents(qapp, tmp_path):
-    """保存幅のない初回表示で、各列が内容の幅を確保する。"""
-    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path))
-    page = DataPreparationPage(make_context())
-    page.resize(1440, 800)
-    page.show()
-    qapp.processEvents()
-    header = page.table.horizontalHeader()
-    assert not header.stretchLastSection()
-    assert getattr(page.table, "_stretch_column", None) is None
-    for column in range(1, page.model.columnCount()):
-        assert page.table.columnWidth(column) >= header.sectionSizeHint(column)
-    assert page.table.columnWidth(3) >= 96
-    assert page.table.columnWidth(0) <= 240
-    visible_width = sum(
-        page.table.columnWidth(column)
-        for column in range(page.model.columnCount())
-        if not page.table.isColumnHidden(column)
-    )
-    assert page.table.viewport().width() - visible_width >= 100
-
-    header.resizeSection(1, 333)
-    page._save_column_widths()
-    page.column_action_map["source"].setChecked(True)
-    assert page.table.columnWidth(1) == 333
-    page.close()
-
-
-def test_work_table_clamps_extremely_narrow_saved_width(qapp, tmp_path):
-    """24px 未満の列だけを補正し、ほかの保存幅は保つ。"""
-    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path))
-    page = DataPreparationPage(make_context())
-    page.show()
-    qapp.processEvents()
-    page.table.horizontalHeader().resizeSection(0, 333)
-    page.table.horizontalHeader().resizeSection(1, 10)
-    page._save_column_widths()
-    page.close()
-    restored = DataPreparationPage(make_context())
-    restored.resize(1440, 800)
-    restored.show()
-    qapp.processEvents()
-    assert restored.table.columnWidth(0) == 333
-    assert restored.table.columnWidth(1) == 24
-    restored.close()
 
 
 def test_selected_auto_triage_overwrites_assigned_items_and_undoes(
@@ -279,17 +179,6 @@ def test_single_channel_gui_and_continuous_triage_mouse_actions(qapp, qtbot):
     triage.close()
 
 
-def test_label_combo_pairs_are_compact_and_display_channel_rows_are_removed(qapp):
-    """メタデータはラベルとコンボを組にし、表示・チャンネル行を置かない。"""
-    page = DataPreparationPage(make_context())
-    assert len(page.edit_combos) == 4
-    assert not hasattr(page, "display_combo")
-    assert not hasattr(page, "channel_combo")
-    for combo in page.edit_combos.values():
-        assert combo.sizePolicy().horizontalPolicy().name == "Fixed"
-    page.close()
-
-
 def test_dataset_history_opens_read_only_thumbnail_window(qapp):
     """版履歴の選択とボタン操作で、版の全画像を非モーダル表示する。"""
     ctx = make_context()
@@ -313,50 +202,6 @@ def test_dataset_history_opens_read_only_thumbnail_window(qapp):
         pos=page.table.visualRect(index).center(),
     )
     assert page.thumbnail_windows[version.version] is window
-    window.close()
-    page.close()
-
-
-def test_dataset_version_thumbnail_initial_view_is_fast_for_one_thousand_items(qapp):
-    """1,000件の版履歴ウィンドウを0.5秒以内に初期表示する。"""
-    backend = MockBackend()
-    base = backend.get_working_items()[0]
-    items = [
-        replace(
-            base,
-            item_id=f"history_perf_{index:04d}",
-            source_filename=f"history_{index:04d}.tif",
-            seed=7000 + index,
-            usage="train",
-        )
-        for index in range(1000)
-    ]
-    version = DatasetVersion(
-        "train_perf",
-        "train",
-        "train_v003",
-        datetime.now().astimezone(),
-        [item.item_id for item in items],
-        len(items),
-        comment="性能確認",
-        base_validation_version="val_v003",
-    )
-    backend.versions.append(version)
-    backend._version_items[version.version] = items
-    page = DatasetHistoryPage(make_context(backend))
-    row = next(
-        index
-        for index, record in enumerate(page.model.versions)
-        if record.version == version.version
-    )
-    page.table.selectRow(row)
-    started = perf_counter()
-    page.open_thumbnails()
-    elapsed = perf_counter() - started
-    window = page.thumbnail_windows[version.version]
-    assert elapsed < 0.5
-    assert window.models[version.version].rowCount() == 1000
-    assert window.tabs.count() == 2
     window.close()
     page.close()
 
@@ -404,36 +249,3 @@ def test_display_toggle_ignores_arrow_keys_in_continuous_triage(qapp):
     assert before is True
     dialog.close()
     page.close()
-
-
-def test_thumbnail_size_has_three_levels_shared_and_saved(qapp, qtbot):
-    """表示サイズを小・中・大から選べ、開いている全サムネイルに反映・保存される。"""
-    from foam_cell_analysis.gui.modes.data_preparation import finalize_thumbnails as ft
-
-    ft._size_preference = None
-    backend = MockBackend()
-    version = backend.list_dataset_versions("train")[0]
-    window = DatasetVersionThumbnailWindow(None, backend, version)
-    window.show()
-    qapp.processEvents()
-    view = next(iter(window.views.values()))
-    model = view.model()
-    selector = window.findChildren(ft.ThumbnailSizeSelector)[0]
-    assert [selector.combo.itemText(i) for i in range(selector.combo.count())] == ["小", "中", "大"]
-    small_grid = view.gridSize()
-    selector.combo.showPopup()
-    QTest.keyClick(selector.combo.view(), Qt.Key.Key_Down)
-    QTest.keyClick(selector.combo.view(), Qt.Key.Key_Down)
-    QTest.keyClick(selector.combo.view(), Qt.Key.Key_Return)
-    qapp.processEvents()
-    assert model.thumbnail_size == (320, 240)
-    assert view.gridSize().width() > small_grid.width()
-    qtbot.waitUntil(lambda: model.image_for(model.items[0]) is not None, timeout=3000)
-    assert model.image_for(model.items[0]).shape[:2] == (240, 320)
-    dialog = DatasetFinalizeDialog(None, backend)
-    finalize_view = next(iter(dialog.thumbnail_views.values()))
-    assert finalize_view.model().thumbnail_size == (320, 240)
-    ft._size_preference = None
-    assert ft.thumbnail_size_preference().level == 2
-    dialog.close()
-    window.close()

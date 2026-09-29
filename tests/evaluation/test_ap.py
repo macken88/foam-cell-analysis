@@ -43,7 +43,6 @@ def test_unequal_fold_sizes_use_image_mean_not_fold_mean():
     assert result["ap"] != fold_mean
 
 
-@pytest.mark.ml
 def test_match_counts_handles_noncontiguous_labels_and_empty_rules():
     pytest.importorskip("cellpose")
     # 背景画素のない画像も外周 0 付けで扱える。

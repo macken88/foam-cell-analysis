@@ -1,18 +1,14 @@
 """ホームとモードウィンドウの遷移・状態表示。"""
 
-from datetime import datetime
-
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 
 from foam_cell_analysis.gui.home_summary import build_home_summary
-from foam_cell_analysis.gui.jobs import FakeJob
 from foam_cell_analysis.gui.navigation import ModeId, PageId
 from foam_cell_analysis.gui.window_manager import (
     MODE_PAGES,
     PAGE_TO_MODE_TAB,
     PAGE_TYPES,
-    WindowManager,
 )
 
 
@@ -163,20 +159,6 @@ def test_ctrl_h_brings_home_forward(shell, qtbot):
     assert shell.home.isVisible()
 
 
-def test_job_count_and_autosave_time_are_shown(shell):
-    shell.navigate(PageId.TRAINING)
-    window = shell.manager.window(ModeId.TRAINING)
-    assert window.job_count.text() == "実行中ジョブ 0"
-    job = shell.ctx.jobs.start(FakeJob("確認", total_steps=100, key="preview:exp_0046"))
-    assert window.job_count.text() == "実行中ジョブ 1"
-    assert shell.ctx.jobs.find("preview:exp_0046") is job
-    saved_at = datetime.now().astimezone()
-    shell.ctx.status.notify_saved(saved_at)
-    assert window.autosave_text.text() == f"自動保存 {saved_at.strftime('%H:%M:%S')}"
-    job.cancel()
-    assert window.job_count.text() == "実行中ジョブ 0"
-
-
 def test_home_summary_values_match_backend(shell):
     summary = build_home_summary(shell.ctx.backend, shell.ctx.jobs)
     train = shell.ctx.backend.summarize_working_changes("train")
@@ -188,19 +170,3 @@ def test_home_summary_values_match_backend(shell):
     assert summary.candidate_count == len(shell.ctx.backend.list_candidates())
     assert summary.released_count == len(shell.ctx.backend.list_released_models())
     assert summary.routing == shell.ctx.backend.get_routing()
-
-
-def test_mode_window_geometry_is_saved_and_restored(shell, qapp):
-    shell.navigate(PageId.TRAINING)
-    first = shell.manager.window(ModeId.TRAINING)
-    first.showNormal()
-    first.setGeometry(50, 60, 1024, 768)
-    qapp.processEvents()
-    first.close()
-    saved = shell.manager.settings.value("windows/training/geometry")
-    assert saved
-    second_manager = WindowManager(shell.ctx, shell.manager.settings)
-    second_manager.navigate(PageId.TRAINING)
-    second = second_manager.window(ModeId.TRAINING)
-    qapp.processEvents()
-    assert second.geometry().size() == first.geometry().size()

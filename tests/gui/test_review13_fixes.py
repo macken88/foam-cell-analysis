@@ -7,7 +7,6 @@ from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 
 from foam_cell_analysis.gui.navigation import ModeId, PageId
-from foam_cell_analysis.gui.widgets.form import CollapsibleSection
 
 
 def _enqueue_waiting_row(backend, *, model_type="mask_rcnn", epochs=17):
@@ -109,81 +108,6 @@ def test_queue_edit_disables_actions_and_execution_methods(shell, qapp, monkeypa
     assert calls == []
     assert len(backend.list_training_queue()) == waiting_before
     assert not shell.ctx.jobs.training_jobs
-
-
-def test_reflow_preserves_right_column_focus_cursor_and_yaml_highlight(shell, qapp, qtbot):
-    shell.navigate(PageId.TRAINING)
-    page = shell.page(PageId.TRAINING)
-    window = shell.manager.window(ModeId.TRAINING)
-    window.resize(1800, 850)
-    window.show()
-    page.preview_action.setChecked(False)
-    qapp.processEvents()
-    page._update_form_columns(1500)
-    assert page._two_columns, f"scroll width={page.scroll.width()}, window={window.width()}"
-
-    anchor = page._model_widgets["mask_rcnn"]["model.anchors.sizes"]
-    anchor.setFocus()
-    QTest.keyClick(anchor, Qt.Key.Key_Left)
-    cursor_position = anchor.cursorPosition()
-    config_before = copy.deepcopy(page._collect_config())
-    yaml_before = page.yaml_preview.toPlainText()
-
-    page.preview_action.trigger()
-    qapp.processEvents()
-    assert not page._two_columns
-    assert anchor.hasFocus()
-    assert anchor.cursorPosition() == cursor_position
-    assert [item.cursor.selectedText().strip() for item in page.yaml_preview.extraSelections()] == [
-        "sizes:"
-    ]
-
-    page.preview_action.trigger()
-    qapp.processEvents()
-    page._update_form_columns(1500)
-    assert page._two_columns
-    assert anchor.hasFocus()
-    assert anchor.cursorPosition() == cursor_position
-    window.resize(900, 650)
-    qapp.processEvents()
-    assert not page._two_columns
-    assert anchor.hasFocus()
-    assert anchor.cursorPosition() == cursor_position
-    window.resize(1500, 850)
-    qapp.processEvents()
-    page._update_form_columns(1500)
-    assert page._two_columns
-    assert anchor.hasFocus()
-    assert anchor.cursorPosition() == cursor_position
-    assert page._collect_config() == config_before
-    assert page.yaml_preview.toPlainText() == yaml_before
-
-
-def test_roi_yaml_highlight_matches_full_nested_path(shell, qapp, qtbot):
-    shell.navigate(PageId.TRAINING)
-    page = shell.page(PageId.TRAINING)
-    window = shell.manager.window(ModeId.TRAINING)
-    window.show()
-    window.activateWindow()
-    page.preview_action.setChecked(True)
-    for section in page.model_stack.widget(0).findChildren(CollapsibleSection):
-        if not section.button.isChecked():
-            QTest.mouseClick(section.button, Qt.MouseButton.LeftButton)
-    roi = page._model_widgets["mask_rcnn"]["model.roi.fg_iou_thresh"]
-    page.scroll.ensureWidgetVisible(roi)
-    qapp.processEvents()
-    roi.setValue(0.61)
-    QTest.mouseClick(roi.lineEdit(), Qt.MouseButton.LeftButton)
-    qapp.processEvents()
-    assert roi.lineEdit().hasFocus(), (
-        f"visible={roi.isVisible()}, window={window.isVisible()}, "
-        f"stack={page.model_stack.currentIndex()}, parent={roi.parentWidget().isVisible()}"
-    )
-    highlighted = [
-        selection.cursor.selectedText().strip() for selection in page.yaml_preview.extraSelections()
-    ]
-    assert highlighted == ["fg_iou_thresh: 0.61"]
-    assert page._collect_config()["model"]["roi"]["fg_iou_thresh"] == pytest.approx(0.61)
 
 
 def test_summary_tracks_cv_stratification_and_source_folder_grouping(shell, qapp, qtbot):

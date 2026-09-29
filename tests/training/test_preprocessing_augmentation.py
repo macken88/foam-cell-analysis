@@ -1,8 +1,14 @@
+import importlib.util
+
 import numpy as np
 import pytest
 
 from foam_cell_analysis.training.augmentation import apply_profile
 from foam_cell_analysis.training.preprocessing import normalize_image
+
+requires_torch = pytest.mark.skipif(
+    importlib.util.find_spec("torch") is None, reason="torch が未導入です"
+)
 
 
 def _profile(key, low=None, high=None):
@@ -22,7 +28,7 @@ def test_percentile_normalization_clips_and_handles_constant_images():
     assert constant.dtype == np.float32 and not constant.any()
 
 
-@pytest.mark.ml
+@requires_torch
 @pytest.mark.parametrize(
     ("key", "low", "high"),
     [
@@ -59,7 +65,7 @@ def test_profile_transforms_preserve_shape_and_integer_labels(key, low, high):
     assert set(np.unique(transformed)).issubset({0, 70000})
 
 
-@pytest.mark.ml
+@requires_torch
 def test_profile_pipeline_order_and_image_only_clipping():
     image = np.full((8, 8), 0.99, dtype=np.float32)
     labels = np.full((8, 8), 70001, dtype=np.uint32)
@@ -81,7 +87,7 @@ def test_profile_pipeline_order_and_image_only_clipping():
     assert np.all(transformed == 70001)
 
 
-@pytest.mark.ml
+@requires_torch
 def test_elastic_preserves_large_sparse_labels_and_torch_global_rng():
     torch = pytest.importorskip("torch")
     image = np.zeros((32, 32), dtype=np.float32)

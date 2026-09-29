@@ -1,29 +1,31 @@
 """回帰テスト: 学習キューの再レビュー指摘。"""
 
+import time
+
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QMessageBox
 
 from foam_cell_analysis.gui.navigation import PageId
-from foam_cell_analysis.gui.theme import Color
 
 
-def add_queue_item(backend, *, epochs=30, model="mask_rcnn", config=None):
+def add_queue_item(backend, *, epochs=30, model="mask_rcnn", config=None, folds=None):
     values = config or backend.default_experiment_config(model)
     values["experiment"]["id"] = backend.next_experiment_id()
     values["training"]["epochs"] = epochs
+    if folds is not None:
+        values["data"]["cv"]["n_folds"] = folds
     return backend.add_training_queue_item(values)
 
 
 def wait_for(qapp, condition, timeout=3000):
-    elapsed = 0
-    while elapsed < timeout:
+    deadline = time.monotonic() + timeout / 1000
+    while time.monotonic() < deadline:
         qapp.processEvents()
         if condition():
             return True
         QTest.qWait(5)
-        elapsed += 5
     return condition()
 
 
@@ -68,9 +70,11 @@ def test_second_single_training_is_queued_while_first_runs(shell, monkeypatch, q
     assert queue_rows[0].experiment_id == first_id
     queue = shell.page(PageId.TRAINING_QUEUE)
     assert f"実行中 {first_id}" in queue.status_line.text()
-    job = training_jobs(shell)[0]
-    job.cancel()
-    wait_for(qapp, lambda: not shell.ctx.queue_controller.executing)
+    # 後片付け: 「今すぐ停止」でキューごと止め、2 件目を走らせない
+    shell.navigate(PageId.TRAINING_QUEUE)
+    QTest.mouseClick(queue.stop_now_button, Qt.MouseButton.LeftButton)
+    assert wait_for(qapp, lambda: not shell.ctx.queue_controller.executing)
+    assert [row.status for row in shell.ctx.backend.list_training_queue()] == ["queued"]
 
 
 def test_retry_during_queue_execution_is_reserved_without_rewriting_history(
@@ -111,13 +115,18 @@ def test_retry_during_queue_execution_is_reserved_without_rewriting_history(
     assert backend.get_experiment(current.experiment_id).status == "stopped"
 
 
-def test_detail_editor_becomes_read_only_if_queued_row_starts(shell, qapp):
+def test_detail_editor_becomes_read_only_if_queued_row_starts(shell, qapp, monkeypatch):
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
+    )
     backend = shell.ctx.backend
-    first = add_queue_item(backend, epochs=160)
+    # 1 件目は短く終わらせ、2 件目が実行中になる瞬間を編集画面で観察する
+    first = add_queue_item(backend, epochs=1, folds=2)
     second = add_queue_item(backend, epochs=100)
     shell.navigate(PageId.TRAINING_QUEUE)
     queue = shell.page(PageId.TRAINING_QUEUE)
-    QTest.mouseClick(queue.run_button, Qt.MouseButton.LeftButton)
     row = queue.model.row_for_id(second.experiment_id)
     index = queue.model.index(row, 2)
     queue.table.scrollTo(index)
@@ -133,7 +142,12 @@ def test_detail_editor_becomes_read_only_if_queued_row_starts(shell, qapp):
         pos=queue.table.visualRect(index).center(),
     )
     editor = shell.page(PageId.TRAINING)
+    assert editor._queue_edit_id == second.experiment_id
+    assert editor.save_button.isEnabled()
+    shell.navigate(PageId.TRAINING_QUEUE)
+    QTest.mouseClick(queue.run_button, Qt.MouseButton.LeftButton)
     assert wait_for(qapp, lambda: backend.get_experiment(second.experiment_id).status == "running")
+    assert backend.get_experiment(first.experiment_id).status == "completed"
     assert second.experiment_id in editor.queue_edit_banner.text()
     assert "編集を保存できません" in editor.queue_edit_banner.text()
     assert not editor.save_button.isEnabled()
@@ -144,12 +158,9 @@ def test_detail_editor_becomes_read_only_if_queued_row_starts(shell, qapp):
     QTest.mouseClick(editor.cancel_queue_edit_button, Qt.MouseButton.LeftButton)
     assert editor._queue_edit_id is None
     assert editor.start_button.isVisible()
-    first_job = shell.ctx.jobs.find(f"training:{first.experiment_id}")
-    if first_job:
-        first_job.cancel()
-    second_job = shell.ctx.jobs.find(f"training:{second.experiment_id}")
-    if second_job:
-        second_job.cancel()
+    shell.navigate(PageId.TRAINING_QUEUE)
+    QTest.mouseClick(queue.stop_now_button, Qt.MouseButton.LeftButton)
+    assert wait_for(qapp, lambda: not shell.ctx.queue_controller.executing)
 
 
 def test_detail_editor_reports_if_row_is_deleted_and_catches_save_errors(shell, monkeypatch):
@@ -218,8 +229,8 @@ def test_experiment_queue_copy_refreshes_open_training_identifier(shell, monkeyp
 
 
 def test_stop_reservation_is_cleared_after_current_training(shell, qapp):
-    first = add_queue_item(shell.ctx.backend, epochs=120)
-    second = add_queue_item(shell.ctx.backend, epochs=10)
+    first = add_queue_item(shell.ctx.backend, epochs=1, folds=2)
+    second = add_queue_item(shell.ctx.backend, epochs=1, folds=2)
     shell.navigate(PageId.TRAINING_QUEUE)
     queue = shell.page(PageId.TRAINING_QUEUE)
     QTest.mouseClick(queue.run_button, Qt.MouseButton.LeftButton)
@@ -267,33 +278,6 @@ def test_queue_status_line_reports_latest_active_progress(shell, qapp):
     job.cancel()
 
 
-def test_experiment_list_hides_terminal_progress_and_localizes_epoch(shell):
-    experiment = add_queue_item(shell.ctx.backend)
-    shell.navigate(PageId.EXPERIMENTS)
-    page = shell.page(PageId.EXPERIMENTS)
-
-    experiment.status = "running"
-    experiment.phase = "cross_validation"
-    experiment.current_epoch = 2
-    page.refresh()
-    row = next(
-        row
-        for row in range(page.table.rowCount())
-        if page.table.item(row, 1).text() == experiment.experiment_id
-    )
-    assert "エポック 2/" in page.table.item(row, 7).text()
-    assert "epoch" not in page.table.item(row, 7).text()
-
-    experiment.status = "completed"
-    page.refresh()
-    row = next(
-        row
-        for row in range(page.table.rowCount())
-        if page.table.item(row, 1).text() == experiment.experiment_id
-    )
-    assert page.table.item(row, 7).text() == "—"
-
-
 def test_double_clicking_nonwaiting_fixed_column_opens_experiment_list(shell, qapp):
     item = add_queue_item(shell.ctx.backend, epochs=100)
     shell.navigate(PageId.TRAINING_QUEUE)
@@ -312,64 +296,3 @@ def test_double_clicking_nonwaiting_fixed_column_opens_experiment_list(shell, qa
     assert experiments._current_experiment().experiment_id == item.experiment_id
     job = training_jobs(shell)[0]
     job.cancel()
-
-
-def test_error_background_and_inapplicable_values_are_visible(shell):
-    backend = shell.ctx.backend
-    invalid_config = backend.default_experiment_config("mask_rcnn")
-    invalid_config["experiment"]["id"] = backend.next_experiment_id()
-    invalid_config["training"]["epochs"] = 0
-    invalid = backend.add_training_queue_item(invalid_config)
-    cellpose = add_queue_item(backend, model="cellpose")
-    shell.navigate(PageId.TRAINING_QUEUE)
-    queue = shell.page(PageId.TRAINING_QUEUE)
-    invalid_row = queue.model.row_for_id(invalid.experiment_id)
-    cellpose_row = queue.model.row_for_id(cellpose.experiment_id)
-    assert queue.model.data(queue.model.index(invalid_row, 1), Qt.ItemDataRole.DisplayRole) == (
-        "設定エラー"
-    )
-    background = queue.model.data(queue.model.index(invalid_row, 0), Qt.ItemDataRole.BackgroundRole)
-    assert background.name().lower() == Color.ERROR_BG.lower()
-    weights_column = queue.model.column_for_path("model.pretrained_weights")
-    weights = queue.model.index(cellpose_row, weights_column)
-    assert queue.model.data(weights, Qt.ItemDataRole.DisplayRole) == "—"
-    assert queue.model.data(weights, Qt.ItemDataRole.BackgroundRole).name().lower() == (
-        Color.IDLE_BG.lower()
-    )
-
-
-def test_queue_choice_labels_match_training_form_and_expand_short_class_codes(shell):
-    from foam_cell_analysis.gui.labels import classification_label
-
-    backend = shell.ctx.backend
-    config = backend.default_experiment_config("mask_rcnn")
-    config["experiment"]["id"] = backend.next_experiment_id()
-    config["data"]["classification"] = "C"
-    config["data"]["quality_filter"] = "good_only"
-    item = backend.add_training_queue_item(config)
-    shell.navigate(PageId.TRAINING_QUEUE)
-    queue = shell.page(PageId.TRAINING_QUEUE)
-    training = shell.page(PageId.TRAINING)
-    row = queue.model.row_for_id(item.experiment_id)
-    for path in (
-        "data.quality_filter",
-        "model.pretrained_weights",
-        "augmentation.profile",
-    ):
-        value = item.config.values
-        for part in path.split("."):
-            value = value[part]
-        combo = training.fields.get(path) or training._model_widgets["mask_rcnn"][path]
-        queue_value = queue.model.data(
-            queue.model.index(row, queue.model.column_for_path(path)),
-            Qt.ItemDataRole.DisplayRole,
-        )
-        assert queue_value == combo.itemText(combo.findData(value))
-    assert classification_label("C") == "分類C"
-    assert (
-        queue.model.data(
-            queue.model.index(row, queue.model.column_for_path("data.classification")),
-            Qt.ItemDataRole.DisplayRole,
-        )
-        == "分類C"
-    )

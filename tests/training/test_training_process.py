@@ -1,5 +1,6 @@
 import csv
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -29,6 +30,10 @@ from foam_cell_analysis.training.preflight import estimate_required_bytes, run_p
 from foam_cell_analysis.training.protocol import read_events, write_run_spec
 from foam_cell_analysis.training.run import run_job
 from foam_cell_analysis.training.seeds import derive
+
+requires_torch = pytest.mark.skipif(
+    importlib.util.find_spec("torch") is None, reason="torch が未導入です"
+)
 
 
 def _digest(path: Path) -> str:
@@ -320,7 +325,7 @@ def test_process_e2e_completes_and_training_service_accepts_manifest(tmp_path):
     assert outcome.status == "completed"
 
 
-@pytest.mark.ml
+@requires_torch
 def test_eof_before_go_exits_without_loading_training_stack(tmp_path):
     run_dir, _ = _workspace(tmp_path)
     process = subprocess.Popen(
@@ -340,7 +345,7 @@ def test_eof_before_go_exits_without_loading_training_stack(tmp_path):
     assert not (run_dir / "events.jsonl").exists()
 
 
-@pytest.mark.ml
+@requires_torch
 def test_invalid_run_spec_exits_with_code_two_without_hello(tmp_path):
     run_dir, spec = _workspace(tmp_path)
     spec.pop("fold_assignments")
@@ -388,7 +393,7 @@ def test_run_spec_requires_nested_training_fields(tmp_path, path, key):
         _validate_spec(run_dir, spec)
 
 
-@pytest.mark.ml
+@requires_torch
 def test_eof_after_go_terminates_process(tmp_path):
     run_dir, _ = _workspace(tmp_path)
     process = subprocess.Popen(
@@ -409,7 +414,7 @@ def test_eof_after_go_terminates_process(tmp_path):
     assert process.wait(timeout=10) == 3
 
 
-@pytest.mark.ml
+@requires_torch
 def test_preflight_rejects_hash_mismatch_and_injected_capacity_shortage(tmp_path):
     run_dir, spec = _workspace(tmp_path)
     import torch
@@ -469,7 +474,7 @@ def test_preflight_rejects_hash_mismatch_and_injected_capacity_shortage(tmp_path
     assert adapter.weight_configurations == [expected_model_config] * 2
 
 
-@pytest.mark.ml
+@requires_torch
 def test_training_exception_writes_error_manifest(tmp_path):
     run_dir, _ = _workspace(tmp_path)
 
@@ -493,7 +498,7 @@ def test_training_exception_writes_error_manifest(tmp_path):
     assert json.loads(output.getvalue().splitlines()[-1])["type"] == "error"
 
 
-@pytest.mark.ml
+@requires_torch
 def test_save_fold_models_false_writes_no_fold_checkpoint(tmp_path):
     run_dir, _ = _workspace(tmp_path, epochs=1, save_fold_models=False)
     code = run_job(
@@ -537,8 +542,7 @@ def test_common_candidate_epochs_rejects_empty_intersection():
         common_candidate_epochs([{1, 2}, {3, 4}])
 
 
-@pytest.mark.ml
-@pytest.mark.ml
+@requires_torch
 def test_training_samples_are_generated_lazily(tmp_path):
     run_dir, _ = _workspace(tmp_path, epochs=1)
 
@@ -564,7 +568,7 @@ def test_training_samples_are_generated_lazily(tmp_path):
     assert code == 0
 
 
-@pytest.mark.ml
+@requires_torch
 def test_validation_predictions_are_processed_in_batches_of_four(tmp_path):
     run_dir, _ = _workspace(tmp_path, epochs=1, n_items=10)
 

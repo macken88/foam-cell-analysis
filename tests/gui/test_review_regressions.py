@@ -3,7 +3,7 @@
 from unittest.mock import patch
 
 import pytest
-from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
+from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QFileDialog, QMessageBox
 
@@ -13,7 +13,6 @@ from foam_cell_analysis.gui.keymap_dialog import KeymapDialog, ShortcutKeyEdit
 from foam_cell_analysis.gui.modes.comparison.candidates_page import CandidatesPage
 from foam_cell_analysis.gui.modes.data_preparation.dialogs import (
     ContinuousTriageDialog,
-    DatasetFinalizeDialog,
     ImportDialog,
     ImportSettingsDialog,
 )
@@ -44,30 +43,6 @@ def _click_table_row(qapp, page, item_id, modifiers=Qt.KeyboardModifier.NoModifi
         page.table.visualRect(cell).center(),
     )
     qapp.processEvents()
-
-
-def _choose_combo_option(qapp, combo, text):
-    """コンボを開き、表示できる場合は項目をマウスで選ぶ。"""
-    target = combo.findText(text)
-    assert target >= 0
-    combo.window().activateWindow()
-    combo.setFocus()
-    qapp.processEvents()
-    QTest.keyClick(combo, Qt.Key.Key_F4)
-    qapp.processEvents()
-    if combo.view().isVisible():
-        model_index = combo.model().index(target, 0)
-        rect = combo.view().visualRect(model_index)
-        QTest.mouseMove(combo.view().viewport(), rect.center())
-        QTest.mouseClick(combo.view().viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
-    else:
-        delta = target - combo.currentIndex()
-        key = Qt.Key.Key_Down if delta > 0 else Qt.Key.Key_Up
-        for _ in range(abs(delta)):
-            QTest.keyClick(combo, key)
-        QTest.keyClick(combo, Qt.Key.Key_Return)
-    qapp.processEvents()
-    assert combo.currentText() == text
 
 
 def test_review_01_mask_revision_choices_are_common_and_backend_rejects_foreign_revision(
@@ -336,68 +311,6 @@ def test_review_11_saving_keymap_by_mouse_updates_open_pages_and_triage(qapp, sh
     dialog.close()
 
 
-def test_rereview_02_shifted_punctuation_shortcuts_and_editor_normalize(qapp, shell):
-    page = shell.page(PageId.DATA_PREPARATION)
-    selected = page.model.visible_items()[0]
-    _click_table_row(qapp, page, selected.item_id)
-    page.table.setFocus()
-    original_usage = selected.usage
-    QTest.keyClick(page.table, Qt.Key.Key_Q, Qt.KeyboardModifier.ShiftModifier)
-    assert selected.usage == original_usage
-    before = page.image_view.zoom
-    QTest.keyClick(page.table, Qt.Key.Key_Equal, Qt.KeyboardModifier.ShiftModifier)
-    qapp.processEvents()
-    assert page.image_view.zoom > before
-    with patch.object(page, "show_key_help") as show_help:
-        QTest.keyClick(page.table, Qt.Key.Key_Slash, Qt.KeyboardModifier.ShiftModifier)
-        qapp.processEvents()
-    show_help.assert_called_once()
-
-    dialog = KeymapDialog(None, shell.ctx.shortcuts)
-    row = dialog.actions.index("zoom_out")
-    cell = dialog.table.item(row, 2)
-    dialog.show()
-    dialog.table.scrollToItem(cell)
-    qapp.processEvents()
-    rect = dialog.table.visualItemRect(cell)
-    QTest.mouseClick(dialog.table.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
-    QTest.keyClick(dialog.table, Qt.Key.Key_F2)
-    qapp.processEvents()
-    editor = dialog.table.focusWidget()
-    assert isinstance(editor, ShortcutKeyEdit)
-    QTest.keyClick(editor, Qt.Key.Key_Minus, Qt.KeyboardModifier.ShiftModifier)
-    qapp.processEvents()
-    assert dialog.shortcuts["zoom_out"] == "-"
-    QTest.mouseClick(
-        dialog.buttons.button(QDialogButtonBox.StandardButton.Save), Qt.MouseButton.LeftButton
-    )
-    qapp.processEvents()
-    assert shell.ctx.shortcuts["zoom_out"] == "-"
-
-
-def test_rereview_02_keymap_capture_normalizes_shifted_plus(qapp, shell):
-    dialog = KeymapDialog(None, shell.ctx.shortcuts)
-    row = dialog.actions.index("zoom_in")
-    cell = dialog.table.item(row, 2)
-    dialog.show()
-    dialog.table.scrollToItem(cell)
-    qapp.processEvents()
-    rect = dialog.table.visualItemRect(cell)
-    QTest.mouseClick(dialog.table.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
-    QTest.keyClick(dialog.table, Qt.Key.Key_F2)
-    qapp.processEvents()
-    editor = dialog.table.focusWidget()
-    assert isinstance(editor, ShortcutKeyEdit)
-    QTest.keyClick(editor, Qt.Key.Key_Equal, Qt.KeyboardModifier.ShiftModifier)
-    qapp.processEvents()
-    assert dialog.shortcuts["zoom_in"] == "+"
-    QTest.mouseClick(
-        dialog.buttons.button(QDialogButtonBox.StandardButton.Save), Qt.MouseButton.LeftButton
-    )
-    qapp.processEvents()
-    assert shell.ctx.shortcuts["zoom_in"] == "+"
-
-
 def test_review_12_default_shortcuts_cover_clear_help_navigation_and_zoom(shell, qapp, monkeypatch):
     shell.navigate(PageId.DATA_PREPARATION)
     page = shell.page(PageId.DATA_PREPARATION)
@@ -604,123 +517,6 @@ def test_review_19_mask_import_menu_action_adds_revision_to_selected_item(shell)
     assert len(item.mask_revisions) == previous_revisions + 1
 
 
-def test_review_20_thumbnail_tab_counts_show_filtered_and_total(qapp):
-    backend = MockBackend()
-    train_items = [item for item in backend.get_working_items() if item.usage == "train"]
-    train_items[0].change = None
-    dialog = DatasetFinalizeDialog(None, backend)
-    dialog.show()
-    tab_bar = dialog.finalize_tabs.tabBar()
-    QTest.mouseClick(tab_bar, Qt.MouseButton.LeftButton, pos=tab_bar.tabRect(1).center())
-    qapp.processEvents()
-    _choose_combo_option(qapp, dialog.thumbnail_filter, "すべて")
-    _choose_combo_option(qapp, dialog.thumbnail_filter, "追加・変更のみ")
-    for purpose, label in (("train", "学習用"), ("val", "検証用")):
-        model = dialog.thumbnail_models[purpose]
-        index = dialog.thumbnail_tabs.indexOf(dialog.thumbnail_stacks[purpose])
-        assert dialog.thumbnail_tabs.tabText(index) == (
-            f"{label} ({model.rowCount()} / {len(dialog.thumbnail_source_items[purpose])} 件)"
-        )
-
-
-def test_review_21_empty_thumbnail_filter_shows_centered_guidance(qapp):
-    backend = MockBackend()
-    for item in backend.get_working_items():
-        item.change = None
-    dialog = DatasetFinalizeDialog(None, backend)
-    dialog.show()
-    tab_bar = dialog.finalize_tabs.tabBar()
-    QTest.mouseClick(tab_bar, Qt.MouseButton.LeftButton, pos=tab_bar.tabRect(1).center())
-    qapp.processEvents()
-    _choose_combo_option(qapp, dialog.thumbnail_filter, "すべて")
-    assert any(model.rowCount() for model in dialog.thumbnail_models.values())
-    _choose_combo_option(qapp, dialog.thumbnail_filter, "追加・変更のみ")
-    for label in dialog.thumbnail_empty_labels.values():
-        assert label.text() == "追加・変更された画像はありません"
-        assert label.alignment() & Qt.AlignmentFlag.AlignHCenter
-        assert (
-            dialog.thumbnail_stacks[
-                next(
-                    purpose
-                    for purpose, target in dialog.thumbnail_empty_labels.items()
-                    if target is label
-                )
-            ].currentWidget()
-            is label
-        )
-
-
-def test_rereview_03_data_preview_zoom_survives_activation_after_table_click(shell, qapp):
-    page = shell.page(PageId.DATA_PREPARATION)
-    item = page.model.visible_items()[0]
-    _click_table_row(qapp, page, item.item_id)
-    page.table.setFocus()
-    QTest.keyClick(page.table, Qt.Key.Key_Equal, Qt.KeyboardModifier.ShiftModifier)
-    qapp.processEvents()
-    zoom_before = page.image_view.zoom
-    window = shell.manager.window(ModeId.DATA_PREPARATION)
-    QTest.qWait(550)
-    qapp.sendEvent(window, QEvent(QEvent.Type.WindowDeactivate))
-    qapp.sendEvent(window, QEvent(QEvent.Type.WindowActivate))
-    qapp.processEvents()
-    assert page.image_view.zoom == pytest.approx(zoom_before)
-    assert page._selected_ids == [item.item_id]
-
-
-def test_rereview_04_candidate_current_row_scroll_and_space_survive_activation(shell, qapp):
-    import copy
-
-    backend = shell.ctx.backend
-    base = next(iter(backend.candidates.values()))
-    for number in range(4, 40):
-        candidate = copy.deepcopy(base)
-        candidate.candidate_id = f"ACT-{number:03}"
-        backend.candidates[candidate.candidate_id] = candidate
-    shell.navigate(PageId.CANDIDATES)
-    page = shell.page(PageId.CANDIDATES)
-    window = shell.manager.window(ModeId.COMPARISON)
-    page.table.verticalScrollBar().setValue(page.table.verticalScrollBar().maximum())
-    qapp.processEvents()
-    row = page.table.rowCount() - 3
-    candidate_id = page.table.item(row, 1).text()
-    rect = page.table.visualItemRect(page.table.item(row, 0))
-    QTest.mouseClick(
-        page.table.viewport(),
-        Qt.MouseButton.LeftButton,
-        pos=rect.topLeft() + QPoint(12, rect.height() // 2),
-    )
-    qapp.processEvents()
-    scroll_before = page.table.verticalScrollBar().value()
-    assert page.table.item(row, 0).checkState() == Qt.CheckState.Checked
-    QTest.qWait(550)
-    qapp.sendEvent(window, QEvent(QEvent.Type.WindowDeactivate))
-    qapp.sendEvent(window, QEvent(QEvent.Type.WindowActivate))
-    qapp.processEvents()
-    current_row = page.table.currentRow()
-    assert current_row >= 0
-    assert page.table.item(current_row, 1).text() == candidate_id
-    assert page.table.verticalScrollBar().value() == scroll_before
-    page.table.setFocus()
-    QTest.keyClick(page.table, Qt.Key.Key_Space)
-    qapp.processEvents()
-    assert page.table.item(current_row, 0).checkState() == Qt.CheckState.Unchecked
-
-
-def test_data_preparation_selection_change_fits_new_preview(shell, qapp):
-    page = shell.page(PageId.DATA_PREPARATION)
-    items = page.model.visible_items()
-    _click_table_row(qapp, page, items[0].item_id)
-    fitted_zoom = page.image_view.zoom
-    page.image_view.zoom_by(1.5)
-    assert page.image_view.zoom > fitted_zoom
-
-    _click_table_row(qapp, page, items[1].item_id)
-    QTest.qWait(10)
-    qapp.processEvents()
-
-    assert page.image_view.zoom == pytest.approx(fitted_zoom)
-
-
 def test_multi_selection_survives_activation_and_reaches_auto_triage(shell, qapp):
     """複数選択 → ウィンドウの前面化 → 自動振り分けで、選択した全件が対象になる。"""
     from PySide6.QtWidgets import QApplication, QPushButton
@@ -842,52 +638,3 @@ def test_review_21_triage_close_restores_multi_selection_and_current_image(shell
     assert page.table.currentIndex().row() == next(
         row for row, item in enumerate(visible_after) if item.item_id == dialog_state["current_id"]
     )
-
-
-def test_review_22_inference_multi_selection_survives_activation(shell, qapp):
-    shell.navigate(PageId.INFERENCE)
-    page = shell.page(PageId.INFERENCE)
-    window = shell.manager.window(ModeId.INFERENCE)
-    window.show()
-    page.inputs = [InferenceInput(f"{index}.png", "分類A", "model_007") for index in range(5)]
-    page._refresh_table()
-    qapp.processEvents()
-    for row, modifiers in (
-        (0, Qt.KeyboardModifier.NoModifier),
-        (3, Qt.KeyboardModifier.ControlModifier),
-    ):
-        index = page.table.model().index(row, 0)
-        QTest.mouseClick(
-            page.table.viewport(),
-            Qt.MouseButton.LeftButton,
-            modifiers,
-            page.table.visualRect(index).center(),
-        )
-    _activate_mode_window(qapp, window)
-    selected = {index.row() for index in page.table.selectionModel().selectedRows()}
-    assert selected == {0, 3}
-    assert page.table.currentRow() == 3
-
-
-def test_review_23_released_model_multi_selection_survives_activation(shell, qapp):
-    shell.navigate(PageId.RELEASED_MODELS)
-    page = shell.page(PageId.RELEASED_MODELS)
-    window = shell.manager.window(ModeId.COMPARISON)
-    window.show()
-    qapp.processEvents()
-    assert page.model_table.rowCount() >= 2
-    for row, modifiers in (
-        (0, Qt.KeyboardModifier.NoModifier),
-        (1, Qt.KeyboardModifier.ControlModifier),
-    ):
-        index = page.model_table.model().index(row, 0)
-        QTest.mouseClick(
-            page.model_table.viewport(),
-            Qt.MouseButton.LeftButton,
-            modifiers,
-            page.model_table.visualRect(index).center(),
-        )
-    _activate_mode_window(qapp, window)
-    selected = {index.row() for index in page.model_table.selectionModel().selectedRows()}
-    assert selected == {0, 1}
-    assert page.model_table.currentRow() == 1

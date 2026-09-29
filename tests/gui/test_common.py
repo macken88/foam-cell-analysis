@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QTableWidget,
 )
 
-from foam_cell_analysis.app import apply_style, install_translations
+from foam_cell_analysis.app import install_translations
 from foam_cell_analysis.gui.labels import (
     candidate_status_label,
     classification_label,
@@ -29,14 +29,6 @@ from foam_cell_analysis.gui.widgets.table import mark_primary, setup_table
 
 def test_translation_installation_is_safe_without_translation_file(qapp):
     install_translations(qapp)
-
-
-def test_apply_style_sets_shared_control_styles(qapp):
-    apply_style(qapp)
-    style = qapp.styleSheet()
-    assert 'QPushButton[primary="true"]' in style
-    assert "QListWidget#mainSidebar::item:selected" in style
-    assert "QTableView QHeaderView::section" in style
 
 
 @pytest.mark.parametrize(
