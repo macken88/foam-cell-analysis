@@ -46,6 +46,9 @@ select = ["E", "W", "F", "I", "B", "UP"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# 本物の学習（slow）と重みが必要なもの（ml）は普段は実行しない。
+# 段階の区切りや受け入れ確認のときだけ、ユーザー確認のうえ `pytest -m slow <対象>` で個別に回す。
+addopts = "-m 'not slow and not ml'"
 markers = [
     "slow: 実行時間の長い学習・統合テスト",
     "ml: torch/cellpose など ML 依存が必要なテスト",
