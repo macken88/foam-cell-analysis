@@ -2,6 +2,7 @@
 
 import copy
 
+import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QLabel, QLineEdit, QMessageBox
@@ -265,6 +266,7 @@ def test_backend_warns_when_api_config_overrides_weight_normalization(mock_backe
     )
 
 
+@pytest.mark.slow
 def test_qtest_final_training_uses_selected_epoch_for_first_run_and_retry(shell, qapp, monkeypatch):
     """選択エポックを最終学習・進捗・再試行の終了条件に使う。"""
     from PySide6.QtCore import Qt
@@ -483,7 +485,8 @@ def test_legacy_stopped_experiment_retry_is_blocked_without_mutating_record(
     assert experiment.status == "stopped"
 
 
-def test_used_augmentation_profile_is_saved_as_new_version(mock_backend):
+def test_used_augmentation_profile_is_saved_as_new_version(mock_backend, qapp):
+    qapp.processEvents()
     source = mock_backend.get_augmentation_profile("aug_v003")
     original_probability = source.transforms[0].probability
     dialog = AugmentationDialog(mock_backend, "aug_v003")
@@ -501,6 +504,34 @@ def test_used_augmentation_profile_is_saved_as_new_version(mock_backend):
         == original_probability
     )
     assert "exp_0042" in mock_backend.get_augmentation_profile("aug_v003").used_by_experiments
+
+
+def test_augmentation_preview_uses_selected_released_training_version(qapp, tmp_path):
+    import shutil
+
+    from foam_cell_analysis.gui.modes.training.augmentation_dialog import AugmentationDialog
+    from foam_cell_analysis.services.hybrid_backend import HybridBackend
+    from tests.training.test_training_process import _workspace
+
+    _workspace(tmp_path, n_items=4)
+    shutil.rmtree(tmp_path / "experiments")
+    backend = HybridBackend(tmp_path)
+    dialog = AugmentationDialog(backend, "aug_v001")
+
+    assert dialog.dataset.currentText() == "train_v000"
+    assert dialog.items
+    assert dialog.sample.currentText() in {item.item_id for item in dialog.items}
+    assert any(
+        label.text() == "簡易プレビュー（学習時の変換とは一致しません）"
+        for label in dialog.findChildren(QLabel)
+    )
+    selected = next(item for item in dialog.items if item.item_id == dialog.sample.currentText())
+    expected = backend.get_dataset_item_image("train_v000", selected.item_id, selected.channels[0])
+    assert expected.shape == dialog._preview_images[0].shape
+    QTest.mouseClick(dialog.random_sample, Qt.MouseButton.LeftButton)
+    qapp.processEvents()
+    assert dialog.sample.currentText() in {item.item_id for item in dialog.items}
+    dialog.close()
 
 
 def test_training_summary_tracks_dataset_cv_model_and_epochs(shell, qapp):

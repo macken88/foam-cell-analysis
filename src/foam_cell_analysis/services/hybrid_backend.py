@@ -26,6 +26,7 @@ class HybridBackend:
             process_terminator=process_terminator,
         )
         self.mock = MockBackend(seed_samples=False)
+        self.mock._seed_validation_data()
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.mock, name)
@@ -95,6 +96,15 @@ class HybridBackend:
         if version in self.training.dataset_store.list_versions():
             return self.training.dataset_store.get_mask(version, item_id, revision)
         return self.mock.get_dataset_item_mask(version, item_id, revision)
+
+    def add_candidate(
+        self, experiment_id: str, checkpoint: str, inference_config_id: str, comment: str = ""
+    ):
+        """完了実験の試行スナップショットを MockBackend の比較へ登録する。"""
+        if checkpoint != "final.pt":
+            raise ValueError("比較候補には最終学習モデルのみ指定できます")
+        snapshot = self.training.create_candidate_snapshot(experiment_id)
+        return self.mock.add_candidate_from_snapshot(snapshot, inference_config_id, comment)
 
     def __dir__(self):
         return sorted(set(super().__dir__()) | set(dir(self.mock)))

@@ -47,9 +47,11 @@ class CandidateSnapshot:
 
     experiment_id: str
     attempt: int
+    selected_epoch: int
     run_id: str
     checkpoint_path: str
-    result: dict[str, Any] = field(default_factory=dict)
+    oof_evaluation: dict[str, Any] = field(default_factory=dict)
+    experiment_config: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -333,6 +335,7 @@ class Candidate:
     comment: str = ""
     source_attempt_number: int = 1
     checkpoint_reference: str = ""
+    snapshot: CandidateSnapshot | None = None
 
 
 @dataclass

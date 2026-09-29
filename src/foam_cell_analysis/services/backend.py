@@ -10,6 +10,7 @@ import numpy as np
 from .models import (
     AugmentationProfile,
     Candidate,
+    CandidateSnapshot,
     DataItem,
     DatasetVersion,
     Evaluation,
@@ -313,6 +314,11 @@ class Backend(Protocol):
         self, experiment_id: str, checkpoint: str, inference_config_id: str, comment: str = ""
     ) -> Candidate:
         """重複確認後に比較候補を追加する。"""
+
+    def add_candidate_from_snapshot(
+        self, snapshot: CandidateSnapshot, inference_config_id: str, comment: str = ""
+    ) -> Candidate:
+        """固定試行の実測結果スナップショットを比較候補へ加える。"""
 
     def start_evaluation(
         self, candidate_ids: list[str], validation_version: str

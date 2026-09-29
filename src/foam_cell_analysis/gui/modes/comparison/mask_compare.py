@@ -188,10 +188,14 @@ class MaskComparisonPage(BasePage):
             view.set_image(array_to_pixmap(render(image, labels, mode)))
             if candidate_id:
                 candidate = self.ctx.backend.get_candidate(candidate_id)
-                experiment = self.ctx.backend.get_experiment(candidate.experiment_id)
+                model_type = (
+                    candidate.snapshot.experiment_config["model"]["type"]
+                    if candidate.snapshot is not None
+                    else self.ctx.backend.get_experiment(candidate.experiment_id).model_type
+                )
                 count = len(set(labels.ravel())) - (1 if 0 in labels else 0)
                 view.set_overlay_labels(
-                    f"{candidate_id}　{model_type_label(experiment.model_type)}",
+                    f"{candidate_id}　{model_type_label(model_type)}",
                     f"検出 {count} 個",
                 )
             else:

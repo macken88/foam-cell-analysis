@@ -1445,18 +1445,32 @@ class TrainingService:
                 self._replay_attempt(experiment_id, int(run_dir.name[-3:]))
 
     def create_candidate_snapshot(self, experiment_id: str) -> CandidateSnapshot:
-        """最新試行の final.pt と result.json を相対パスで束ねる。"""
+        """完了した試行の final.pt・実測 OOF・設定を固定して束ねる。"""
         experiment = self.experiments[experiment_id]
-        attempt = len(experiment.runs)
+        completed_runs = [run for run in experiment.runs if run.result == "completed"]
+        attempt = max((run.attempt for run in completed_runs), default=0)
         if attempt < 1:
-            raise ValueError("試行がありません")
+            raise ValueError("完了した試行がありません")
+        if experiment.status != "completed":
+            raise ValueError("完了した実験のみ比較候補へ送れます")
         run_id = f"{experiment_id}/attempt_{attempt:03d}"
         run_dir = self.root / experiment_id / "runs" / f"attempt_{attempt:03d}"
         result = read_json(run_dir / "result.json")
         checkpoint = "checkpoints/final.pt"
         if not (run_dir / checkpoint).is_file():
             raise ValueError("完了試行に final.pt がありません")
-        return CandidateSnapshot(experiment_id, attempt, run_id, checkpoint, result)
+        oof = result.get("oof")
+        if not isinstance(oof, dict) or oof.get("ap") is None:
+            raise ValueError("完了試行に実測 OOF 評価がありません")
+        return CandidateSnapshot(
+            experiment_id=experiment_id,
+            attempt=attempt,
+            selected_epoch=int(result["selected_epoch"]),
+            run_id=run_id,
+            checkpoint_path=checkpoint,
+            oof_evaluation=copy.deepcopy(oof),
+            experiment_config=copy.deepcopy(experiment.config.values),
+        )
 
     def list_experiments(self) -> list[Experiment]:
         return [self.experiments[key] for key in sorted(self.experiments)]

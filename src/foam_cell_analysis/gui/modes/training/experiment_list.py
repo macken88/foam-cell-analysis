@@ -880,9 +880,6 @@ class ExperimentListPage(BasePage):
 
     def send_selected(self) -> SendToCandidatesDialog | None:
         experiment = self._current_experiment()
-        if getattr(self.ctx.backend, "is_hybrid", False):
-            QMessageBox.information(self, "比較へ送る", "この機能はまだ利用できません。")
-            return None
         if not experiment or experiment.status != "completed" or not experiment.checkpoints:
             return None
         dialog = SendToCandidatesDialog(experiment, self)

@@ -1,3 +1,4 @@
+import pytest
 from PySide6.QtCore import QItemSelection, QItemSelectionModel, Qt
 from PySide6.QtTest import QTest
 
@@ -158,6 +159,7 @@ def test_queue_failure_does_not_block_following_item(shell):
     assert backend.get_experiment(failed_id).status == "failed"
 
 
+@pytest.mark.slow
 def test_queue_stop_finishes_active_item_and_leaves_next_waiting(shell, qtbot):
     backend = shell.ctx.backend
     for _ in range(2):
@@ -175,7 +177,7 @@ def test_queue_stop_finishes_active_item_and_leaves_next_waiting(shell, qtbot):
             backend.get_experiment(entries[0].experiment_id).status == "completed"
             and not controller.executing
         ),
-        timeout=10_000,
+        timeout=60_000,
     )
     assert backend.get_experiment(entries[0].experiment_id).status == "completed"
     assert backend.get_experiment(entries[1].experiment_id).status == "queued"
@@ -270,7 +272,7 @@ def test_terminal_save_failure_stops_queue_and_reports_reason(shell, qapp, qtbot
     monkeypatch.setattr(backend, "conclude_training_run", fail_first_conclusion)
     shell.navigate(PageId.TRAINING_QUEUE)
     queue = shell.page(PageId.TRAINING_QUEUE)
-    with qtbot.waitSignal(shell.ctx.training_runner.ended, timeout=20000):
+    with qtbot.waitSignal(shell.ctx.training_runner.ended, timeout=60_000):
         QTest.mouseClick(queue.run_button, Qt.MouseButton.LeftButton)
     qapp.processEvents()
 

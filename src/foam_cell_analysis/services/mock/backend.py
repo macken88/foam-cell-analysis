@@ -15,6 +15,7 @@ from ..backend import normalization_for_weights
 from ..models import (
     AugmentationProfile,
     Candidate,
+    CandidateSnapshot,
     Checkpoint,
     CheckResult,
     DataItem,
@@ -77,6 +78,7 @@ class MockBackend:
         else:
             empty = WorkingDataset("all", "", [])
             self.working = {purpose: empty for purpose in ("all", "train", "val")}
+            self._seed_inference_configs()
         empty_dataset = WorkingDataset("all", "", [])
         items_by_id = {item.item_id: item for item in self.working.get("all", empty_dataset).items}
         self._version_items = {
@@ -401,6 +403,23 @@ class MockBackend:
             "mask_rcnn",
             {"box_score_thresh": 0.35, "box_nms_thresh": 0.55, "box_detections_per_img": 100},
         )
+
+    def _seed_validation_data(self) -> None:
+        """hybrid 比較画面の正式評価に使う模擬検証版だけを作る。"""
+        if self.versions:
+            return
+        items = self._items("val", 30, 1000)
+        version = DatasetVersion(
+            version="val_v003",
+            purpose="val",
+            parent_version=None,
+            created_at=self._now(),
+            item_ids=[item.item_id for item in items],
+            n_images=len(items),
+        )
+        self.versions.append(version)
+        self.working["val"] = WorkingDataset("val", version.version, items)
+        self._version_items[version.version] = copy.deepcopy(items)
 
     def _seed_candidates_and_releases(self, exp42: Experiment, exp43: Experiment) -> None:
         """候補・リリース・振り分けの参照関係を作る。"""
@@ -2051,6 +2070,47 @@ class MockBackend:
         self.candidates[candidate.candidate_id] = candidate
         return candidate
 
+    def add_candidate_from_snapshot(
+        self, snapshot: CandidateSnapshot, inference_config_id: str, comment: str = ""
+    ) -> Candidate:
+        """実測 OOF と実験設定を保持したスナップショットを比較候補へ加える。"""
+        inference = self.inference_configs.get(inference_config_id)
+        model_config = snapshot.experiment_config.get("model", {})
+        model_type = model_config.get("type")
+        if inference is None or inference.model_type != model_type:
+            raise ValueError("実験のモデル種類に合う推論設定を選択してください")
+        if not snapshot.checkpoint_path or snapshot.checkpoint_path.startswith(("/", "\\")):
+            raise ValueError("候補のチェックポイント参照が不正です")
+        if any(
+            candidate.experiment_id == snapshot.experiment_id
+            and candidate.source_attempt_number == snapshot.attempt
+            and candidate.inference_config_id == inference_config_id
+            for candidate in self.candidates.values()
+        ):
+            raise ValueError("この試行と推論設定の候補は登録済みです")
+        raw_oof = copy.deepcopy(snapshot.oof_evaluation)
+        per_class = {
+            str(name): (float(values[0]), int(values[1]))
+            for name, values in raw_oof.get("per_class", {}).items()
+        }
+        evaluation = Evaluation(float(raw_oof["ap"]), per_class)
+        number = max((int(key[-3:]) for key in self.candidates), default=0) + 1
+        candidate = Candidate(
+            candidate_id=f"RC-{number:03d}",
+            experiment_id=snapshot.experiment_id,
+            checkpoint="final.pt",
+            inference_config_id=inference_config_id,
+            oof_evaluation=evaluation,
+            oof_experiment_id=snapshot.experiment_id,
+            oof_epoch=snapshot.selected_epoch,
+            comment=comment,
+            source_attempt_number=snapshot.attempt,
+            checkpoint_reference=f"試行 {snapshot.attempt}/final.pt",
+            snapshot=copy.deepcopy(snapshot),
+        )
+        self.candidates[candidate.candidate_id] = candidate
+        return candidate
+
     def _candidate_oof_evaluation(
         self, experiment: Experiment, inference_config_id: str
     ) -> Evaluation:
@@ -2130,14 +2190,21 @@ class MockBackend:
         if validation_version not in candidate.evaluations:
             raise ValueError("評価済み候補のみリリースできます")
         number = max((int(key[-3:]) for key in self.released), default=0) + 1
-        experiment = self.get_experiment(candidate.experiment_id)
+        experiment = (
+            None if candidate.snapshot is not None else self.get_experiment(candidate.experiment_id)
+        )
         inference = self.inference_configs[candidate.inference_config_id]
+        preprocessing = (
+            candidate.snapshot.experiment_config["model"]
+            if candidate.snapshot is not None
+            else experiment.config.values["model"]
+        )
         model = ReleasedModel(
             model_id=f"model_{number:03d}",
             candidate_id=candidate_id,
             experiment_id=candidate.experiment_id,
             checkpoint=candidate.checkpoint,
-            preprocessing_config=copy.deepcopy(experiment.config.values["model"]),
+            preprocessing_config=copy.deepcopy(preprocessing),
             inference_config=copy.deepcopy(inference.params),
             validation_dataset=validation_version,
             evaluation_result=candidate.evaluations[validation_version],

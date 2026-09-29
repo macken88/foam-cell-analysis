@@ -29,7 +29,6 @@ from PySide6.QtWidgets import (
 
 from ....services.backend import Backend
 from ....services.models import AugmentationProfile, TransformSetting
-from ...context import DEFAULT_CHANNEL
 from ...theme import Color
 from ...widgets.table import mark_primary
 
@@ -106,6 +105,7 @@ class AugmentationDialog(QDialog):
         self.resize(1100, 750)
         self.setMinimumSize(1000, 680)
         root = QVBoxLayout(self)
+        root.addWidget(QLabel("簡易プレビュー（学習時の変換とは一致しません）"))
         body = QHBoxLayout()
         root.addLayout(body, 1)
         self.editor_scroll = QScrollArea()
@@ -203,17 +203,18 @@ class AugmentationDialog(QDialog):
 
         selectors = QFormLayout()
         self.dataset = QComboBox()
-        datasets = sorted(
-            (item for item in backend.list_dataset_versions() if item.purpose == "train"),
-            key=lambda item: int(item.version[-3:]),
-        )
+        datasets = sorted(backend.list_dataset_versions("train"), key=lambda item: item.version)
         self.dataset.addItems([item.version for item in datasets])
         if datasets:
             self.dataset.setCurrentText(datasets[-1].version)
         self.classification = QComboBox()
         self.classification.addItems(["すべて", "分類A", "分類B", "分類C"])
         self.sample = QComboBox()
-        self.items = backend.get_working_dataset("train").items
+        self.items = (
+            backend.get_dataset_version_items(self.dataset.currentText())
+            if self.dataset.currentText()
+            else []
+        )
         self.sample.addItems([item.item_id for item in self.items])
         selectors.addRow("データセット", self.dataset)
         selectors.addRow("画像分類", self.classification)
@@ -314,6 +315,18 @@ class AugmentationDialog(QDialog):
 
     def _update_sample_options(self, *_args) -> None:
         """データセット・分類条件に合う画像を選択肢へ反映する。"""
+        version = self.dataset.currentText()
+        self.items = self.backend.get_dataset_version_items(version) if version else []
+        classifications = sorted(
+            {item.classification for item in self.items if item.classification}
+        )
+        selected_classification = self.classification.currentText()
+        self.classification.blockSignals(True)
+        self.classification.clear()
+        self.classification.addItems(["すべて", *classifications])
+        if selected_classification in classifications:
+            self.classification.setCurrentText(selected_classification)
+        self.classification.blockSignals(False)
         classification = self.classification.currentText()
         matching = [
             item
@@ -394,11 +407,20 @@ class AugmentationDialog(QDialog):
     def refresh_preview(self) -> None:
         """numpy で軽量変換を適用してプレビューを描き直す。"""
         self._update_order_colors()
+        if not self.items or not self.sample.currentText() or not self.dataset.currentText():
+            self._preview_images = []
+            self._preview_masks = []
+            for label in self.preview_labels.values():
+                label.setPixmap(QPixmap())
+                label.setText("学習画像がありません")
+            return
         selected_id = self.sample.currentText()
         selected = next((item for item in self.items if item.item_id == selected_id), self.items[0])
-        source = self.backend.get_item_image("train", selected.item_id, DEFAULT_CHANNEL)
-        source_mask = self.backend.get_item_mask(
-            "train", selected.item_id, selected.selected_mask_revision
+        version = self.dataset.currentText()
+        channel = selected.channels[0] if selected.channels else None
+        source = self.backend.get_dataset_item_image(version, selected.item_id, channel)
+        source_mask = self.backend.get_dataset_item_mask(
+            version, selected.item_id, selected.selected_mask_revision
         )
         self._preview_images = []
         self._preview_masks = []

@@ -39,6 +39,11 @@ foam-cell-analysis
 pytest
 ```
 
+既定では hybrid バックエンドを使い、`workspace/` に学習データと実験状態を保存します。
+バックエンドは起動引数 `--backend mock|hybrid`、環境変数 `FOAM_BACKEND=mock|hybrid` の順に指定できます。
+起動引数が環境変数より優先されます。どちらも指定しない場合は hybrid です。
+画面確認だけを行う場合は `foam-cell-analysis --backend mock` を使います。
+
 ## 学習デバッグ用のダミーデータ
 
 次のコマンドで `workspace/datasets/train_v000/` に512×512のグレースケール画像12枚と、

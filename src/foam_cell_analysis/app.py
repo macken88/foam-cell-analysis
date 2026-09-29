@@ -36,7 +36,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(add_help=True)
     parser.add_argument("--backend", choices=("mock", "hybrid"))
     args, qt_args = parser.parse_known_args(sys.argv[1:])
-    backend_name = args.backend or os.environ.get("FOAM_BACKEND", "mock")
+    backend_name = args.backend or os.environ.get("FOAM_BACKEND", "hybrid")
     if backend_name not in {"mock", "hybrid"}:
         parser.error("FOAM_BACKEND は mock または hybrid を指定してください")
     app = QApplication.instance() or QApplication([sys.argv[0], *qt_args])

@@ -229,6 +229,24 @@ def test_recovery_restores_result_per_class_object_shape(tmp_path):
     assert evaluation.per_class == {"A": (0.75, 2)}
 
 
+def test_candidate_snapshot_captures_completed_attempt_config_and_oof(tmp_path):
+    service, experiment = _queued_service(tmp_path)
+    prepared = service.prepare_training_run(experiment.experiment_id, experiment.experiment_id)
+    _write_valid_result(Path(prepared.run_dir))
+    outcome = service.conclude_training_run(experiment.experiment_id, 1, JobExit(returncode=0))
+    assert outcome.status == "completed"
+
+    snapshot = service.create_candidate_snapshot(experiment.experiment_id)
+
+    assert snapshot.attempt == 1
+    assert snapshot.selected_epoch == 1
+    assert snapshot.run_id == prepared.run_id
+    assert snapshot.checkpoint_path == "checkpoints/final.pt"
+    assert snapshot.oof_evaluation["ap"] == 0.75
+    assert snapshot.oof_evaluation["per_class"] == {"A": [0.75, 2]}
+    assert snapshot.experiment_config["model"]["type"] == "mask_rcnn"
+
+
 @pytest.mark.parametrize(
     ("artifacts", "error", "stop", "prior", "alive", "start_failed", "expected", "reason"),
     [

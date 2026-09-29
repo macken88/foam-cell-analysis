@@ -180,7 +180,11 @@ class CandidatesPage(BasePage):
         """他画面から候補追加を受け付ける。"""
         self._refresh_validation_versions()
         if params.get("action") == "add_candidate":
-            preset = {key: params[key] for key in ("experiment_id", "checkpoint") if key in params}
+            preset = {
+                key: params[key]
+                for key in ("experiment_id", "checkpoint", "comment")
+                if key in params
+            }
             QTimer.singleShot(0, lambda: self._show_add_dialog(preset))
 
     def refresh_on_activate(self) -> None:
@@ -285,11 +289,16 @@ class CandidatesPage(BasePage):
                 }[state]
             ):
                 continue
-            experiment = self.ctx.backend.get_experiment(candidate.experiment_id)
+            experiment = candidate.snapshot
+            model_type = (
+                experiment.experiment_config["model"]["type"]
+                if experiment is not None
+                else self.ctx.backend.get_experiment(candidate.experiment_id).model_type
+            )
             evaluation = candidate.evaluations.get(version)
             values = [
                 candidate.candidate_id,
-                model_type_label(experiment.model_type),
+                model_type_label(model_type),
                 candidate.experiment_id,
                 candidate.checkpoint,
                 candidate.inference_config_id,
