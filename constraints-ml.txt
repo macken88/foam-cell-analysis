@@ -1,0 +1,34 @@
+# .venv の pip freeze から ML 依存と主要な推移依存を固定。
+# torch / torchvision は local version label を省き、CPU と CUDA の wheel に共用する。
+alembic==1.20.0
+cellpose==4.2.1.1
+colorama==0.4.6
+colorlog==6.12.0
+fastremap==1.20.0
+filelock==3.32.3
+fill_voids==2.1.2
+fsspec==2026.7.0
+imagecodecs==2026.8.16
+Jinja2==3.1.6
+Mako==1.4.3
+MarkupSafe==3.0.3
+mpmath==1.3.0
+natsort==8.4.0
+networkx==3.6.1
+numpy==2.5.3
+opencv-python-headless==5.0.0.93
+optuna==5.0.0
+packaging==26.3
+pillow==12.3.0
+PyYAML==6.0.3
+roifile==2026.9.22
+scipy==1.18.1
+segment-anything==1.0
+setuptools==78.1.0
+SQLAlchemy==2.1.1
+sympy==1.14.0
+tifffile==2026.9.20
+torch==2.14.0
+torchvision==0.29.0
+tqdm==4.70.1
+typing_extensions==4.16.0

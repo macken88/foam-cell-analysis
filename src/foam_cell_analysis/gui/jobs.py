@@ -78,25 +78,34 @@ class JobManager(QObject):
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._jobs: list[FakeJob] = []
+        self._training_runner = None
+
+    def set_training_runner(self, runner) -> None:
+        """学習の占有状態を runner から受け取る。"""
+        self._training_runner = runner
+        runner.busy_changed.connect(lambda _busy: self.jobs_changed.emit(self.running_count))
 
     @property
     def running_count(self) -> int:
-        return len(self._jobs)
+        training_count = int(bool(self._training_runner and self._training_runner.is_busy))
+        return len(self._jobs) + training_count
 
     @property
-    def training_jobs(self) -> list[FakeJob]:
+    def training_jobs(self) -> list[QObject]:
         """現在実行中の学習ジョブを返す。"""
-        return [job for job in self._jobs if job.key and job.key.startswith("training:")]
+        if self._training_runner and self._training_runner.is_busy:
+            return [self._training_runner.job] if self._training_runner.job is not None else []
+        return []
 
     @property
     def has_training_job(self) -> bool:
         """学習ジョブが実行中か返す。"""
-        return bool(self.training_jobs)
+        return bool(self._training_runner and self._training_runner.is_busy)
 
     def start(self, job: FakeJob) -> FakeJob:
         """ジョブを保持して実行する。"""
-        if job.key and job.key.startswith("training:") and self.has_training_job:
-            raise RuntimeError("学習ジョブは同時に 1 件だけ実行できます")
+        if job.key and job.key.startswith("training:"):
+            raise RuntimeError("学習は TrainingRunner から開始してください")
         self._jobs.append(job)
         job.finished.connect(lambda _ok, _message, current=job: self._remove(current))
         self.jobs_changed.emit(self.running_count)
@@ -114,6 +123,8 @@ class JobManager(QObject):
 
     def find(self, key: str) -> FakeJob | None:
         """実行中ジョブをキーで検索する。"""
+        if self._training_runner and getattr(self._training_runner.job, "key", None) == key:
+            return self._training_runner.job
         return next((job for job in self._jobs if job.key == key), None)
 
 

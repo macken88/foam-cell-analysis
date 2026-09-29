@@ -1,7 +1,16 @@
 """アプリ全体で共有する色、フォント、Qt スタイル。"""
 
-from PySide6.QtGui import QFont, QFontDatabase
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer
+from PySide6.QtGui import QFont, QFontDatabase, QValidator
+from PySide6.QtWidgets import (
+    QAbstractScrollArea,
+    QAbstractSpinBox,
+    QApplication,
+    QComboBox,
+    QLineEdit,
+    QToolTip,
+    QWidget,
+)
 
 
 class Color:
@@ -39,6 +48,126 @@ class Color:
 
 
 SERIES = ("#4A3AA7", "#008300", "#E87BA4", "#EDA100")
+
+
+def _input_owner(widget) -> QWidget | None:
+    """ホイールで値が変わる入力部品（数値欄・選択欄）を、子部品からたどって返す。"""
+    while isinstance(widget, QWidget) and not widget.isWindow():
+        if isinstance(widget, QAbstractSpinBox | QComboBox):
+            return widget
+        widget = widget.parentWidget()
+    return None
+
+
+def _scroll_area_for(widget: QWidget) -> QAbstractScrollArea | None:
+    parent = widget.parentWidget()
+    while parent is not None:
+        if isinstance(parent, QAbstractScrollArea):
+            return parent
+        if parent.isWindow():
+            break
+        parent = parent.parentWidget()
+    return None
+
+
+def spin_range_message(box: QAbstractSpinBox) -> str:
+    """数値欄に入力できる範囲の説明を返す。"""
+    return (
+        f"{box.textFromValue(box.minimum())}〜{box.textFromValue(box.maximum())} "
+        "の範囲の数値を入力してください"
+    )
+
+
+class InputGuard(QObject):
+    """入力部品の共通の振る舞いをアプリ全体で揃えるイベントフィルター。
+
+    - ホイールでは値を変えず、外側のスクロール領域をスクロールする（フォーカス中も同じ）。
+    - 数値欄の上下ボタンを表示しない（値はキーボードで入力する）。
+    - 数値欄の入力が範囲外・不正な間は赤枠にし、ツールチップで範囲を示す。
+    """
+
+    def eventFilter(self, watched, event):
+        kind = event.type()
+        if kind == QEvent.Type.Wheel:
+            owner = _input_owner(watched)
+            if owner is not None:
+                area = _scroll_area_for(owner)
+                if area is not None:
+                    QApplication.sendEvent(area.viewport(), event)
+                return True
+        elif kind in (QEvent.Type.Polish, QEvent.Type.Show) and isinstance(
+            watched, QAbstractSpinBox
+        ):
+            self._prepare_spin_box(watched)
+        elif (
+            kind == QEvent.Type.KeyPress
+            and isinstance(watched, QLineEdit)
+            and isinstance(watched.parentWidget(), QAbstractSpinBox)
+        ):
+            self._watch_rejected_key(watched.parentWidget(), event)
+        return False
+
+    def _prepare_spin_box(self, box: QAbstractSpinBox) -> None:
+        if box.buttonSymbols() != QAbstractSpinBox.ButtonSymbols.NoButtons:
+            box.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        if box.property("_inputGuarded"):
+            return
+        box.setProperty("_inputGuarded", True)
+        editor = box.lineEdit()
+        if editor is not None:
+            editor.textChanged.connect(lambda _text, target=box: self._validate(target))
+            box.editingFinished.connect(lambda target=box: self._validate(target))
+
+    @staticmethod
+    def _validate(box: QAbstractSpinBox) -> None:
+        editor = box.lineEdit()
+        if editor is None:
+            return
+        state = box.validate(editor.text(), editor.cursorPosition())
+        state = state[0] if isinstance(state, tuple) else state
+        invalid = state != QValidator.State.Acceptable
+        if invalid == (box.property("state") == "invalid"):
+            return
+        if invalid:
+            box.setProperty("baseToolTip", box.toolTip())
+            box.setToolTip(spin_range_message(box))
+            set_style(box, state="invalid")
+        else:
+            box.setToolTip(str(box.property("baseToolTip") or ""))
+            box.setProperty("baseToolTip", None)
+            set_style(box, state="")
+
+    @staticmethod
+    def _watch_rejected_key(box: QAbstractSpinBox, event) -> None:
+        text = event.text()
+        if not text or not text.isprintable():
+            return
+        if event.modifiers() & (
+            Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier
+        ):
+            return
+        editor = box.lineEdit()
+        before = editor.text()
+
+        def check() -> None:
+            try:
+                if editor.text() == before:
+                    QToolTip.showText(
+                        box.mapToGlobal(box.rect().bottomLeft()), spin_range_message(box), box
+                    )
+            except RuntimeError:
+                pass
+
+        QTimer.singleShot(0, check)
+
+
+def install_input_guard(app: QApplication | None = None) -> None:
+    """InputGuard をアプリへ一度だけ取り付ける。"""
+    app = app or QApplication.instance()
+    if app is None or getattr(app, "_input_guard", None) is not None:
+        return
+    app._input_guard = InputGuard(app)
+    app.installEventFilter(app._input_guard)
 
 
 def _family(*candidates: str) -> str:
@@ -93,6 +222,7 @@ def build_stylesheet() -> str:
         f"QPushButton:hover {{ background: {c.IDLE_BG}; }}",
         f"QPushButton#trainingPreviewButton:checked {{ background: {c.IDLE_BG}; }}",
         f"QPushButton:disabled {{ color: {c.DISABLED}; border-color: {c.RULE_SOFT}; }}",
+        f"QMenu::item:disabled {{ color: {c.DISABLED}; }}",
         f"QPushButton[role='filterToggle']:checked[usage='error'] "
         f"{{ background: {c.ERROR_BG}; color: {c.ERROR}; border-color: {c.ERROR}; }}",
         f"QPushButton[role='filterToggle']:checked[usage='changed'] "
@@ -120,6 +250,9 @@ def build_stylesheet() -> str:
         f"border: 1px solid {c.CONTROL_RULE}; border-radius: 3px; padding: 3px 6px; }}",
         "QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, "
         f"QPlainTextEdit:focus, QTextEdit:focus {{ border: 2px solid {c.GRAPHITE}; }}",
+        f"QSpinBox[state='invalid'], QDoubleSpinBox[state='invalid'], "
+        f"QSpinBox[state='invalid']:focus, QDoubleSpinBox[state='invalid']:focus "
+        f"{{ border: 2px solid {c.ERROR}; background: {c.ERROR_BG}; }}",
         f"QLineEdit:read-only, QSpinBox:read-only, QDoubleSpinBox:read-only "
         f"{{ background: {c.IDLE_BG}; color: {c.SLATE}; }}",
         f"QPlainTextEdit:read-only, QTextEdit:read-only "
@@ -139,6 +272,10 @@ def build_stylesheet() -> str:
         f"QFrame#trainingSummaryCard {{ background: {c.SLIDE}; border: 1px solid {c.RULE}; "
         f"border-left: 4px solid {c.GRAPHITE}; }}",
         f"QStatusBar {{ background: {c.STATUS_BG}; color: {c.SLATE}; }}",
+        f"QProgressBar#trainingProgressBar {{ background: {c.RULE}; border: 0; "
+        "border-radius: 2px; }",
+        f"QProgressBar#trainingProgressBar::chunk {{ background: {c.GRAPHITE}; "
+        "border-radius: 2px; }",
         f"QFrame#pipelinePanel {{ background: {c.SLIDE}; border: 1px solid {c.RULE}; }}",
         "QFrame#pipelineStage { background: transparent; border: 0; }",
         f"QFrame#pipelineStage:hover {{ background: {c.HOVER_BG}; }}",
@@ -218,6 +355,7 @@ def apply_theme(app: QApplication) -> None:
     """アプリの既定フォントと共通スタイルを設定する。"""
     app.setFont(body_font())
     app.setStyleSheet(build_stylesheet())
+    install_input_guard(app)
 
 
 def set_style(widget, **props: str | bool) -> None:

@@ -44,8 +44,14 @@ def build_home_summary(backend: Backend, jobs: JobManager, queue_controller=None
     unassigned = sum(item.usage == "unassigned" for item in items)
     errors = len(backend.validate_all_working_items().errors)
     experiments = backend.list_experiments()
-    active = next((job for job in jobs.jobs() if job.key and job.key.startswith("training:")), None)
-    experiment_id = active.key.split(":", 1)[1] if active else None
+    active = next(iter(jobs.training_jobs), None)
+    experiment_id = getattr(active, "experiment_id", None) or (
+        active.key.split(":", 1)[1] if active and active.key else None
+    )
+    try:
+        experiment = backend.get_experiment(experiment_id) if experiment_id else None
+    except (KeyError, ValueError):
+        experiment = None
     candidates = backend.list_candidates()
     return HomeSummary(
         unconfirmed_changes=changes,
@@ -59,8 +65,8 @@ def build_home_summary(backend: Backend, jobs: JobManager, queue_controller=None
             (item.version for item in reversed(backend.list_dataset_versions("val"))), "未確定"
         ),
         running_experiment=experiment_id,
-        running_epoch=active.step if active else 0,
-        running_epochs=active.total_steps if active else 0,
+        running_epoch=experiment.current_epoch if experiment else 0,
+        running_epochs=experiment.total_epochs if experiment else 0,
         completed_experiments=sum(item.status == "completed" for item in experiments),
         experiment_count=len(experiments),
         unevaluated_candidates=sum(not item.evaluations for item in candidates),

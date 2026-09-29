@@ -1,6 +1,10 @@
-"""フォーム用の共通セクション。"""
+"""フォーム用の共通セクションと入力部品。"""
 
+import re
+
+from PySide6.QtGui import QValidator
 from PySide6.QtWidgets import (
+    QDoubleSpinBox,
     QFormLayout,
     QFrame,
     QGroupBox,
@@ -9,6 +13,55 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from ..labels import format_exponent
+
+_PARTIAL_NUMBER = re.compile(r"[+-]?(\d+\.?\d*|\.\d*)?([eE][+-]?\d*)?")
+
+
+class ScientificDoubleSpinBox(QDoubleSpinBox):
+    """指数表記（1e-5、1.0e-5）と通常の小数を受け付け、指数表記で表示する数値欄。
+
+    小数点以下の桁数制限を持たない。学習率のように桁の小さい値に使う。
+    """
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        # QDoubleSpinBox は値を decimals 桁に丸めるため、十分大きくして丸めを避ける
+        self.setDecimals(60)
+        self.setRange(0.0, 1.0e6)
+
+    def textFromValue(self, value: float) -> str:
+        return format_exponent(value)
+
+    def valueFromText(self, text: str) -> float:
+        try:
+            return float(text.strip())
+        except ValueError:
+            return self.value()
+
+    def validate(self, text: str, pos: int):
+        stripped = text.strip()
+        try:
+            value = float(stripped)
+        except ValueError:
+            state = (
+                QValidator.State.Intermediate
+                if _PARTIAL_NUMBER.fullmatch(stripped)
+                else QValidator.State.Invalid
+            )
+            return state, text, pos
+        if self.minimum() <= value <= self.maximum():
+            return QValidator.State.Acceptable, text, pos
+        return QValidator.State.Intermediate, text, pos
+
+    def fixup(self, text: str) -> str:
+        return self.textFromValue(self.value())
+
+    def stepBy(self, steps: int) -> None:
+        """上下キーでは 10 倍・10 分の 1 ずつ変える。"""
+        value = self.value() or 1.0e-5
+        self.setValue(value * (10.0**steps))
 
 
 class FormSection(QGroupBox):

@@ -1,0 +1,772 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>学習バックエンド設計書 - 気泡インスタンスセグメンテーションアプリ</title>
+<style>
+:root{--bg:#f5f7fa;--card:#fff;--text:#1f2937;--muted:#6b7280;--line:#dce2ea;--accent:#2563eb;--accent-soft:#eff6ff;--good:#15803d;--good-soft:#ecfdf3;--warn:#b45309;--warn-soft:#fff8e8}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:"BIZ UDPGothic","Yu Gothic UI","Meiryo UI",sans-serif;line-height:1.72}
+.container{max-width:1180px;margin:0 auto;padding:36px 22px 72px}
+.hero,.card{background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:0 2px 10px rgba(17,24,39,.035)}
+.hero{padding:32px;margin-bottom:22px}.card{padding:26px;margin:20px 0}
+h1,h2,h3,h4{line-height:1.35;color:#172033}h1{margin:0 0 6px;font-size:2rem}
+h2{margin-top:0;padding-bottom:8px;border-bottom:2px solid #e8ebf0;font-size:1.4rem}
+h3{margin-top:28px;font-size:1.12rem}
+.small{color:var(--muted);font-size:.93rem}
+code{font-family:Consolas,"Courier New",monospace;background:#f1f4f8;padding:1px 5px;border-radius:4px;font-size:.92em}
+pre{background:#111827;color:#f9fafb;padding:16px;border-radius:10px;overflow-x:auto;line-height:1.5}
+pre code{background:none;padding:0;color:inherit}
+.table-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;margin:12px 0 20px;background:#fff}
+th,td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
+th{background:#f1f4f8}
+blockquote{margin:14px 0;padding:10px 16px;background:var(--warn-soft);border-left:5px solid #d69e2e;border-radius:8px}
+blockquote p{margin:0}
+.note{background:var(--accent-soft);border-left:5px solid var(--accent);padding:14px 18px;border-radius:9px;margin:16px 0}
+.note ol,.note ul{margin:6px 0 0}
+.good{background:var(--good-soft);border-left:5px solid var(--good);padding:14px 18px;border-radius:9px;margin:16px 0}
+.toc{columns:2;margin:6px 0 0;list-style:none;padding-left:0}
+.toc a{color:var(--accent);text-decoration:none}
+table.keys td:first-child{white-space:nowrap}
+table.rev td:nth-child(2){white-space:nowrap}
+td.nowrap{white-space:nowrap}
+</style>
+</head>
+<body>
+<div class="container">
+
+<div class="hero">
+<h1>学習バックエンド設計書</h1>
+<p class="small">気泡インスタンスセグメンテーションアプリ / モデル学習モードの実装設計（v1.1、2026-09-28）</p>
+<p>学習モードの GUI は完成済みで、今は <code>MockBackend</code> と模擬ジョブ（<code>FakeJob</code>）で動いています。本書は、これを実際の学習（Mask R-CNN / Cellpose）に置き換えるための設計です。
+仕様は <a href="../specs/foam_cell_segmentation_model_training_spec_ja_v2.html">モデル学習モード仕様</a>、画面は <a href="gui_screen_design.html">GUI 画面設計書</a> を前提とします。</p>
+<p class="small">読み手: 実装担当と開発者本人。本書だけで実装に迷わないことを目標にし、判断が割れそうな箇所は数式・ファイル形式・優先順位まで固定しています。</p>
+<ul class="toc">
+<li><a href="#s1">1. 範囲と前提</a></li>
+<li><a href="#s2">2. 全体構成</a></li>
+<li><a href="#s3">3. 学習用データセットの読み込み</a></li>
+<li><a href="#s4">4. 実験・試行の保存形式</a></li>
+<li><a href="#s5">5. 試行の流れと状態の確定</a></li>
+<li><a href="#s6">6. GUI との接続</a></li>
+<li><a href="#s7">7. プロセス間の取り決め</a></li>
+<li><a href="#s8">8. 学習の流れ（学習プロセス）</a></li>
+<li><a href="#s9">9. 前処理とデータ拡張</a></li>
+<li><a href="#s10">10. モデルアダプタ</a></li>
+<li><a href="#s11">11. 評価指標（Cellpose 方式 AP）</a></li>
+<li><a href="#s12">12. チェックポイントと容量</a></li>
+<li><a href="#s13">13. 学習設定の変更</a></li>
+<li><a href="#s14">14. 依存ライブラリ</a></li>
+<li><a href="#s15">15. テストと受け入れ条件</a></li>
+<li><a href="#s16">16. 実装の順序</a></li>
+<li><a href="#s17">17. 未決事項</a></li>
+<li><a href="#s18">18. 改訂履歴</a></li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s1">
+<h2>1. 範囲と前提</h2>
+<p>次の 6 点は確定事項です。本書の他の章はすべてこれに従います。</p>
+<div class="table-wrap"><table class="keys">
+<tr><th>項目</th><th>内容</th></tr>
+<tr><td>実装範囲</td><td>学習モードのバックエンドのみ（実験・学習キュー・学習の実行・データ拡張プロファイル・学習用データセット版の読み込み）。データ準備・モデル比較/リリース・推論はモックのまま。GUI は学習ジョブとの接続に必要な範囲だけ変更する（6 章）。</td></tr>
+<tr><td>Cellpose</td><td>4 系（4.2.x）。事前学習済みモデルは <code>cpsam</code> と <code>cpsam_v2</code>（既定は <code>cpsam</code>）。cyto3 / nuclei は選択肢から外す。</td></tr>
+<tr><td>評価指標</td><td>Cellpose 方式の AP（TP / (TP + FP + FN)）。Mask R-CNN も同じ指標で評価する（11 章）。</td></tr>
+<tr><td>データ拡張</td><td><code>torchvision.transforms.v2</code> で実装する。</td></tr>
+<tr><td>実行方式</td><td>学習は GUI とは別のプロセスで実行する（<code>QProcess</code> で起動する Python プロセス）。</td></tr>
+<tr><td>環境</td><td>パッケージ管理は pip のみ（uv は使わない）。開発は GPU なしの PC（CPU）、学習は後で CUDA の PC へ移る。<code>pyproject.toml</code> に CUDA 固有の指定は書かない。</td></tr>
+</table></div>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s2">
+<h2>2. 全体構成</h2>
+<pre><code>GUI プロセス（PySide6。torch は import しない）
+  AppContext.training_runner : TrainingRunner(QObject)      … 学習ジョブの唯一の窓口（6 章）
+     ├ ProcessTrainingJob   … hybrid 時。QProcess で学習プロセスを起動
+     └ FakeTrainingJob      … mock 時。現行 FakeJob の学習部分を移したもの
+  AppContext.backend : HybridBackend | MockBackend
+     HybridBackend
+       ├ TrainingService    … 学習系の実装（実験・試行・キュー・プロファイル・学習版の読み込み・設定検証）
+       └ MockBackend        … 学習以外（データ準備・比較・リリース・推論）。学習系メソッドは呼ばない
+                 │
+                 │  python -m foam_cell_analysis.training.run --run-dir &lt;絶対パス&gt;
+                 │  stdin: 開始合図・生存確認 / stdout: イベント(JSON Lines) / stderr: ログ
+                 ▼
+学習プロセス（torch, torchvision, cellpose）
+  run.py → preflight.py → loop.py（交差検証 → OOF → 選択エポック → 最終学習）
+         → adapters/{mask_rcnn, cellpose, fake}.py</code></pre>
+
+<h3 id="s2-1">2.1 パッケージ配置</h3>
+<div class="table-wrap"><table class="keys">
+<tr><th>場所</th><th>役割</th><th>依存</th></tr>
+<tr><td><code>data/dataset_store.py</code></td><td>確定済みデータセット版の列挙と読み込み（読むだけ）</td><td>numpy, pillow, tifffile</td></tr>
+<tr><td><code>services/training_service.py</code></td><td>実験・試行・キュー・プロファイルの保存と復元、設定検証、試行の準備と確定</td><td>Qt・torch 非依存</td></tr>
+<tr><td><code>services/hybrid_backend.py</code></td><td>TrainingService と MockBackend への委譲（2.3）</td><td>Qt・torch 非依存</td></tr>
+<tr><td><code>training/protocol.py</code></td><td>イベント・run_spec・result などのデータ型と読み書き。GUI からも import する</td><td>torch 非依存</td></tr>
+<tr><td><code>training/folds.py</code></td><td>フォールド割り当て（現行モックの <code>_assign_folds</code> を移設。モックもこれを使う）</td><td>numpy</td></tr>
+<tr><td><code>training/seeds.py</code></td><td>seed の派生（8.8）</td><td>標準ライブラリ</td></tr>
+<tr><td><code>training/run.py</code>, <code>preflight.py</code>, <code>loop.py</code>, <code>schedule.py</code>, <code>preprocessing.py</code>, <code>augmentation.py</code>, <code>checkpoints.py</code></td><td>学習プロセス本体</td><td>torch, torchvision</td></tr>
+<tr><td><code>training/adapters/base.py</code>, <code>mask_rcnn.py</code>, <code>cellpose.py</code>, <code>fake.py</code></td><td>モデル固有部分（10 章）。<code>fake.py</code> はテスト用の極小モデル</td><td>torch（cellpose.py のみ cellpose）</td></tr>
+<tr><td><code>evaluation/ap.py</code></td><td>画像ごとの TP/FP/FN と AP の集計（11 章）</td><td>numpy, scipy</td></tr>
+<tr><td><code>gui/training_runner.py</code>, <code>gui/training_jobs.py</code></td><td>TrainingRunner とジョブ 2 種、Windows Job Object</td><td>PySide6, ctypes</td></tr>
+</table></div>
+
+<h3 id="s2-2">2.2 バックエンドの切り替え</h3>
+<ul>
+<li>優先順位は コマンドライン <code>--backend mock|hybrid</code> ＞ 環境変数 <code>FOAM_BACKEND</code> ＞ 既定値。</li>
+<li>既定値は、受け入れ確認（15 章）が済むまでは <code>mock</code>、済んだら <code>hybrid</code> に変える。</li>
+<li>hybrid を指定したのに学習用ライブラリがない場合も、黙ってモックへ切り替えない。学習開始時の設定検証でエラーとして表示する。</li>
+<li>テストは従来どおり <code>MockBackend</code> を使う。</li>
+<li>二重起動の防止: <code>app.py</code> の起動時に <code>QLockFile(workspace/.app.lock)</code> を取る。取れなければメッセージを出して終了する。</li>
+</ul>
+
+<h3 id="s2-3">2.3 HybridBackend の委譲</h3>
+<div class="table-wrap"><table class="keys">
+<tr><th>メソッド群</th><th>委譲先</th></tr>
+<tr><td>学習設定・キュー・実験・試行（<code>list_training_options</code> 〜 <code>get_experiment</code>、本書で追加するメソッド）</td><td>TrainingService</td></tr>
+<tr><td>データ拡張プロファイル（<code>list/get/save_augmentation_profile</code>）</td><td>TrainingService</td></tr>
+<tr><td><code>list_dataset_versions(purpose)</code>、<code>get_dataset_version_items(version)</code></td><td>purpose が train（または版が学習版）なら TrainingService（DatasetStore）、それ以外はモック</td></tr>
+<tr><td><code>get_dataset_item_image(version, item_id)</code>、<code>get_dataset_item_mask(version, item_id)</code>（新規）</td><td>TrainingService。拡張プレビューが実際の学習版の画像を表示するために使う（6.5）</td></tr>
+<tr><td><code>add_candidate</code></td><td>HybridBackend が上書きする（2.4）</td></tr>
+<tr><td>その他すべて</td><td>MockBackend（明示的に書いたもの以外は <code>__getattr__</code> で委譲）</td></tr>
+</table></div>
+<p>hybrid 時の MockBackend は初期データ（exp_0042 などの模擬実験と、それを参照する比較候補・リリース）を作らない（<code>MockBackend(seed_samples=False)</code> を追加する）。存在しない実験を参照して画面が落ちるのを防ぐためです。</p>
+
+<h3 id="s2-4">2.4 モデル比較へ送る（hybrid 時）</h3>
+<p>現行モックの <code>add_candidate</code> は、モック内の学習版画像から分類別 OOF を作り直し、模擬補正を加えます。これを実際の実験に対して呼ぶと、例外になるか実測値が汚れます。そこで次のようにします。</p>
+<ul>
+<li>TrainingService が <code>CandidateSnapshot</code> を作る。中身は実験 ID、試行番号、選択エポック、<code>final.pt</code> の参照、実測 OOF 評価（全体・分類別・件数）、実験設定。</li>
+<li>MockBackend に専用の登録口 <code>add_candidate_from_snapshot(snapshot, inference_config_id, comment)</code> を追加する。実測 OOF はそのままコピーし、再計算も補正もしない。</li>
+<li>候補は実験 ID だけでなく試行番号で固定する（後の再試行で参照先が変わらない。仕様 18.1）。</li>
+<li>候補はスナップショット（実験設定を含む）を保持する。現行モックの <code>release_candidate</code> などは <code>get_experiment()</code> で実験を引くが、hybrid の実験はモック内に存在しない。そこで、スナップショットから作った候補については、リリース時の前処理設定・実験情報をスナップショットから取るようにモックを変更する（モック内の実験は引かない）。</li>
+<li>比較モード内での正式評価（検証用データセットでの評価）は、従来どおりモックの模擬値のまま。</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s3">
+<h2>3. 学習用データセットの読み込み（DatasetStore）</h2>
+<p>データ準備の仕様 9 章のアーカイブ構造を、展開済みのフォルダとして読みます。</p>
+<pre><code>workspace/datasets/&lt;版&gt;/
+  dataset_info.json   … purpose, status, dataset_version, n_images など
+  manifest.csv        … item_id, image_path, image_sha256, mask_path, mask_sha256, mask_revision
+  metadata.csv        … item_id, source_relpath, channel, usage, classification, quality, ...
+  images/  masks/</code></pre>
+<ul>
+<li><b>列挙</b>: <code>dataset_info.json</code> の <code>purpose</code> が <code>train</code> で、<code>status</code> が <code>RELEASED</code> のフォルダを学習版とする。読めないフォルダは一覧から外し、ログに理由を残す。</li>
+<li><b>項目</b>: <code>metadata.csv</code> と <code>manifest.csv</code>（どちらも UTF-8、BOM 付き可）を <code>item_id</code> で結合して <code>DataItem</code> を作る。列挙順は <code>item_id</code> の昇順に固定する（フォールド割り当ての再現性のため）。</li>
+<li><b>グループ</b>: 仕様どおり、取り込み元フォルダ（<code>source_relpath</code> の親）を使う。<code>group_id</code> 列は参照しない。</li>
+<li><b>画像</b>: 2 次元の uint8 / uint16。<b>マスク</b>: 画像と同じ大きさの 2 次元整数ラベル（0 = 背景、番号は非連続でもよい）。</li>
+<li><b>チャンネル</b>: 今の版形式は 1 画像 1 チャンネルです（manifest には <code>image_path</code> しかない）。<code>input_channels</code> がその版に存在するチャンネル 1 つでなければ設定エラーにする。複数チャンネルの版形式が決まったら拡張する。</li>
+<li><b>読み込み</b>: 画像・マスクは必要になった時点で読み、上限付き（既定 2 GB）の LRU キャッシュに置く。全件を一度にメモリへ展開しない。</li>
+<li><b>実使用データの決め方</b>（この順で行う。現行モックの <code>_filtered_training_items</code> と同じ規則）:
+  <ol>
+  <li><code>usage == "train"</code> の項目だけを残す。</li>
+  <li><code>data.classification</code> が <code>all</code> でなければ、その分類だけを残す。</li>
+  <li><code>data.quality_filter</code>: <code>all</code> はそのまま、<code>good_only</code> は品質「良」だけ、<code>good_and_acceptable</code> は「良」「可」だけを残す。</li>
+  <li><code>metadata.csv</code> の <code>channel</code> が、選択した <code>data.input_channels</code>（今は 1 つ）と一致する項目だけを残す。</li>
+  <li><code>item_id</code> の昇順に並べる。これが <code>used_item_ids</code>。</li>
+  <li>フォールドに割り当てる（<code>training/folds.py</code>）。</li>
+  </ol>
+  Cellpose の <code>min_train_masks</code> による除外はこれとは別物で、学習に使う画像だけを減らす（8.2。実使用データと検証・OOF の対象は変わらない）。</li>
+<li><b>ハッシュ検証</b>: GUI のスレッドでは行わない。学習プロセスの事前検査（8.2）で、実際に使う画像・マスクと <code>manifest.csv</code>・<code>metadata.csv</code> を検証する。</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s4">
+<h2>4. 実験・試行の保存形式</h2>
+<pre><code>workspace/
+  .app.lock
+  experiments/
+    queue.json                              … GUI だけが書く
+    exp_0001/
+      experiment.json                       … GUI だけが書く
+      config.yaml                           … GUI だけが書く。最初の試行の準備で凍結
+      runs/.preparing_&lt;uuid&gt;/             … GUI が準備中だけ使う（5.1）
+      runs/attempt_001/
+        run_spec.json                       … GUI が準備時に書き、以後変更しない
+        process.json                        … GUI が起動後に書く（pid、プロセス作成時刻）
+        stop_request.json                   … GUI が中断要求時、kill の前に書く
+        environment.json                    … 学習プロセス
+        resolved_data.json                  … 学習プロセス（事前検査の結果）
+        events.jsonl                        … 学習プロセス（追記のみ）
+        eval/fold_1/epoch_005.npz           … 学習プロセス
+        tmp_pred/fold_1/epoch_005/&lt;item&gt;.png … 学習プロセス（選択後に整理）
+        tmp_ckpt/fold_1/epoch_005.pt        … 学習プロセス（save_fold_models=true のみ、選択後に削除）
+        checkpoints/fold_1/epoch_010.pt(.json)
+        checkpoints/fold_1/selected.pt(.json)
+        checkpoints/final.pt(.json)
+        oof/&lt;item_id&gt;.png, oof/per_image.csv  … 学習プロセス
+        result.partial.json                 … 学習プロセス（最終学習に入る前）
+        result.json | error.json            … 学習プロセス（最後に 1 つだけ）
+        status.json                         … GUI または起動時の復旧処理だけが書く
+        stdout.log, stderr.log              … GUI が保存
+  pretrained/torch/, pretrained/cellpose/ … 事前学習済みの重み（場所は固定、12.3）
+  augmentation/
+    aug_v001.yaml ...                       … GUI だけが書く</code></pre>
+
+<h3 id="s4-1">4.1 書き込みの規則</h3>
+<ul>
+<li>各ファイルの書き手は上の表記どおり 1 者に限る。<b>GUI と学習プロセスが同じファイルを書くことはない。</b></li>
+<li>JSON / YAML / チェックポイントは、同じフォルダの一時ファイル（<code>*.tmp</code>）に書いてから <code>os.replace</code> で置き換える。</li>
+<li><code>events.jsonl</code> は 1 行ずつ追記して flush する。読み手は、途中で切れた最終行を無視する。</li>
+<li><code>*.tmp</code> の削除は起動時の復旧処理（5.4）だけが行う。</li>
+</ul>
+
+<h3 id="s4-2">4.2 主なファイルの中身</h3>
+<div class="table-wrap"><table class="keys">
+<tr><th>ファイル</th><th>中身</th></tr>
+<tr><td><code>experiment.json</code></td><td><code>schema</code>=1, <code>experiment_id</code>, <code>study_id</code>, <code>description</code>, <code>model_type</code>, <code>created_at</code>, <code>is_draft</code>。実験の状態は持たない（5.3 で導出する）。</td></tr>
+<tr><td><code>queue.json</code></td><td><code>schema</code>=1, <code>retry_seq</code>, <code>rows</code>。各行は <code>queue_id</code>、<code>experiment_id</code>、<code>kind</code>（<code>new</code> / <code>retry</code>）、<code>state</code>（<code>queued</code> / <code>running</code> / <code>completed</code> / <code>failed</code> / <code>stopped</code>）、<code>attempt</code>（未開始は null）。<code>queue_id</code> は現行モックと同じ形式（通常行は実験 ID、再試行は <code>retry:&lt;実験ID&gt;:&lt;連番&gt;</code>）。「設定エラー」は保存せず、表示時に設定検証から求める。</td></tr>
+<tr><td><code>run_spec.json</code></td><td><code>schema</code>=1, <code>protocol</code>=1, <code>run_id</code>（<code>exp_0001/attempt_001</code>）, <code>experiment_id</code>, <code>attempt</code>, <code>queue_id</code>（単発は null）, <code>config</code>（設定のスナップショット）, <code>dataset</code>（版、<code>workspace</code> からの相対パス、manifest・metadata の sha256）, <code>used_item_ids</code>, <code>fold_assignments</code>, <code>fold_algorithm</code>=<code>"group_greedy_v1"</code>, <code>augmentation_profile</code>（プロファイルの中身そのものと sha256）, <code>preprocessing</code>, <code>eval_params</code>（10 章）, <code>metric</code>（11 章）, <code>seeds</code>（派生済みの値、8.8）, <code>app_version</code>, <code>git_commit</code>（取れなければ null）, <code>expected_initial_weights_sha256</code>（再試行時のみ）。</td></tr>
+<tr><td><code>resolved_data.json</code></td><td>事前検査で確定したもの。検証済みの sha256、各画像の大きさと正解インスタンス数、学習から除外した画像と理由（fold 別・最終学習別）、各 fold の学習・検証件数、重みファイルのバイト数、初期重みの sha256、必要容量の見積もりと空き容量。</td></tr>
+<tr><td><code>result.partial.json</code></td><td>OOF の結果。選択エポック、OOF AP（全体・分類別・件数）、各 fold の到達エポックと早期終了、成果物（相対パス・サイズ）。最終学習に入る前に書く。</td></tr>
+<tr><td><code>result.json</code></td><td>完成 manifest。<code>result.partial.json</code> の内容に <code>final.pt</code> の情報と、全成果物の相対パス・サイズ・sha256 を加えたもの。<b>これが妥当に存在することが「完了」の条件</b>。</td></tr>
+<tr><td><code>error.json</code></td><td><code>phase</code>、<code>message</code>（日本語の要約）、<code>exception_type</code>、<code>traceback</code>。</td></tr>
+<tr><td><code>status.json</code></td><td><code>status</code>（<code>completed</code> / <code>failed</code> / <code>stopped</code>）、<code>reason</code>（<code>user_stop</code> / <code>app_exit</code> / <code>interrupted</code> / <code>error</code> / <code>start_failed</code> / null）、<code>message</code>、<code>concluded_at</code>。</td></tr>
+<tr><td>チェックポイント</td><td><code>*.pt</code> はモデルの <code>state_dict</code> そのもの（fp32、optimizer は含めない）。Cellpose の重みは <code>CellposeModel(pretrained_model=&lt;パス&gt;)</code> でそのまま読める形にする。メタ情報は横の <code>*.pt.json</code> に置く（<code>model_type</code>、<code>fold</code>、<code>epoch</code>、<code>kind</code>、<code>run_id</code>、<code>sha256</code>）。</td></tr>
+</table></div>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s5">
+<h2>5. 試行の流れと状態の確定</h2>
+
+<h3 id="s5-1">5.1 試行の準備（唯一の作成口）</h3>
+<p>試行（attempt）の作成は <code>prepare_training_run</code> だけが行います。<code>start_training</code>、<code>retry_experiment</code>、<code>take_next_training_queue_item</code> は試行を作りません（モックもこの契約に合わせて変更する）。</p>
+<pre><code>prepare_training_run(experiment_id, queue_id=None, retry=False) -&gt; PreparedRun
+  1. 設定を検証する（エラーなら ValueError）。
+  2. queue_id が指定されたら、その queue_id に対応する既存の試行を探す。探す対象は queue 行の attempt と、
+     確定済みの全試行の run_spec.queue_id の両方（queue.json の保存に失敗した後の再準備でも見つけるため）。
+     見つかった試行に status.json も process.json もなければ（準備済みで未起動）、queue 行を修復して（6 と同じ更新）
+     新しく作らずそれを返す。status.json か process.json があれば ValueError（同じ行を二度実行しない）。
+  3. runs/.preparing_&lt;uuid&gt;/ を作り、その中に run_spec.json を書く。
+     フォールド割り当て: 新規は folds.py で計算。再試行は attempt_001 の run_spec の割り当てをコピーし、
+     データセットの sha256 が attempt_001 と一致しなければ ValueError（「設定を複製して新規実験」を案内）。
+  4. フォルダ名を次の attempt 番号（runs/attempt_NNN）へ os.replace で変える。ここで初めて試行として数える。
+  5. config.yaml を凍結し（以後の編集は不可）、experiment.json の is_draft を false にする。
+  6. queue_id があれば queue.json のその行を state=running, attempt=番号 に更新する。
+  7. PreparedRun(run_id, run_dir, program, args, env) を返す。モックでは fake=True の PreparedRun。</code></pre>
+<ul>
+<li>試行フォルダは中身（run_spec.json）が揃ってから現れるので、不完全な attempt_001 はできない。<code>.preparing_*</code> は起動時の復旧で削除する。</li>
+<li>4 と 6 の間で落ちても、<code>run_spec.json</code> に <code>queue_id</code> があるので、復旧時にキュー行と対応付けられる（5.4）。</li>
+<li><code>is_draft</code> は、下書き保存で true、キューへの追加（<code>add_training_queue_item</code>）・単発学習の開始（<code>start_training</code>）で false になる。</li>
+</ul>
+
+<h3 id="s5-2">5.2 終端状態の判定（通常時・復旧時で共通）</h3>
+<p><code>conclude_training_run(experiment_id, attempt, job_exit)</code> と起動時の復旧は、同じ関数で状態を決めます。上から順に最初に当てはまるものを採用します。</p>
+<div class="table-wrap"><table>
+<tr><th>順</th><th>条件</th><th>結果</th></tr>
+<tr><td>1</td><td><code>status.json</code> がある</td><td>その状態（変更しない）</td></tr>
+<tr><td>2</td><td><code>stop_request.json</code> がある</td><td><code>stopped</code>（理由は要求に書かれた <code>user_stop</code> / <code>app_exit</code>）</td></tr>
+<tr><td>3</td><td><code>result.json</code> があり、中身が妥当（全成果物が存在し、サイズが一致する）</td><td><code>completed</code></td></tr>
+<tr><td>4</td><td><code>error.json</code> がある、または起動に失敗した</td><td><code>failed</code>（理由 <code>error</code> / <code>start_failed</code>）</td></tr>
+<tr><td>5</td><td>上のどれでもなく、学習プロセスが生きていない</td><td><code>stopped</code>（理由 <code>interrupted</code>）</td></tr>
+</table></div>
+<ul>
+<li>終了コードは参考情報として <code>status.json</code> に残すだけで、判定には使わない（Windows では強制終了でも正常終了扱いになることがあるため）。</li>
+<li>判定後、<code>status.json</code> を書き、キュー行があればその <code>state</code> を同じ値にする。<b>この保存に失敗したら、キューの次の項目を開始せずキューを止める。</b></li>
+<li>中断・異常終了・アプリ終了のどれでも、成果物は削除しない（<code>result.partial.json</code> があれば画面で OOF 結果を見られる）。</li>
+</ul>
+
+<h3 id="s5-3">5.3 実験の状態（表示用に導出）</h3>
+<div class="table-wrap"><table>
+<tr><th>状態</th><th>条件</th></tr>
+<tr><td><code>draft</code></td><td><code>experiment.json</code> の <code>is_draft</code> が true</td></tr>
+<tr><td><code>queued</code></td><td>試行がなく、キューに <code>queued</code> の通常行がある</td></tr>
+<tr><td><code>running</code></td><td>最新の試行に <code>status.json</code> がなく、TrainingRunner が実行中（または照合中）</td></tr>
+<tr><td><code>completed</code> / <code>failed</code> / <code>stopped</code></td><td>最新の試行の <code>status.json</code></td></tr>
+</table></div>
+<p>既存 GUI の状態一覧（待機・実行中・完了・失敗・中断・設定エラー）はそのまま使えます。<code>interrupted</code> は独立した状態にせず、「中断」＋理由として表示します。</p>
+
+<h3 id="s5-4">5.4 起動時の復旧</h3>
+<ol>
+<li>ロック（2.2）を取った後に行う。</li>
+<li>全実験の全試行を走査する。<code>status.json</code> がない試行について <code>process.json</code> を読み、同じ pid・同じ作成時刻のプロセスが生きていれば終了させ、終了を確認する（通常は Job Object により既に終了している）。</li>
+<li>5.2 の規則で状態を確定し、<code>status.json</code> を書く。</li>
+<li><code>queue.json</code> の<b>全行</b>（<code>queued</code>・<code>running</code> を含む）と全試行の <code>run_spec.queue_id</code> を照合し、行の <code>attempt</code> と <code>state</code> を試行の確定状態に合わせる（正本は試行側）。対応する試行がない <code>running</code> 行は <code>queued</code> に戻す。</li>
+<li>この時点で <code>*.tmp</code> と <code>runs/.preparing_*</code> を削除する。</li>
+<li>実験の履歴（<code>Experiment</code> と <code>RunAttempt</code>）は、各試行の <code>events.jsonl</code> を先頭から再生し、<code>result.partial.json</code> / <code>result.json</code> で補って作り直す（7.4 の対応表）。</li>
+</ol>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s6">
+<h2>6. GUI との接続</h2>
+<p>今は <code>page.start_training</code>、<code>experiment_list.stop_selected</code> / <code>retry_selected</code>、<code>queue_controller._next</code> が、それぞれの <code>finished</code> コールバックで終了状態を決めています。<code>stop_selected</code> は <code>cancel()</code> の直後に <code>finish_training</code> を呼んでいます。これを TrainingRunner に集約します。</p>
+
+<h3 id="s6-1">6.1 TrainingRunner</h3>
+<pre><code>class TrainingRunner(QObject):
+    progressed = Signal(str)            # experiment_id（イベントを反映した後）
+    ended = Signal(object)              # TrainingOutcome(experiment_id, attempt, queue_id, status, message)
+    busy_changed = Signal(bool)
+
+    def start(self, experiment_id: str, queue_id: str | None = None, retry: bool = False) -&gt; None
+    def request_stop(self) -&gt; None      # すぐに中断する
+    def shutdown(self) -&gt; None          # アプリ終了時
+    is_busy: bool                       # 準備中・実行中・照合中は True
+    active_experiment_id: str | None</code></pre>
+<ul>
+<li>学習の開始は必ず <code>runner.start</code> を通す。画面・一覧・キューが直接ジョブを作ることはやめる。</li>
+<li><b>占有期間</b>: 準備（<code>prepare_training_run</code>）→ 起動 → 実行 → 照合（<code>conclude_training_run</code>）の間ずっと <code>is_busy</code>。この間に <code>start</code> が呼ばれたら <code>RuntimeError</code>（既存の「学習は同時に 1 件」と同じ）。</li>
+<li><b>終端処理は runner だけが 1 回だけ行う</b>: ジョブの終了 → <code>backend.conclude_training_run</code> → <code>ended</code> を送る。起動失敗も同じ経路を通す。</li>
+<li><b>中断</b>: <code>request_stop</code> → <code>backend.request_training_stop</code>（<code>stop_request.json</code> を保存）→ ジョブに kill を要求 → <b>プロセスの終了を確認してから</b>終端処理。</li>
+<li><b>進捗</b>: ジョブが受け取ったイベントを <code>backend.apply_training_event(experiment_id, attempt, event)</code> に渡し、<code>progressed</code> を送る。</li>
+<li>JobManager: 学習ジョブは JobManager に登録しない。<code>JobManager.has_training_job</code> と実行中件数の表示は runner の <code>is_busy</code> を見る。</li>
+</ul>
+
+<h3 id="s6-2">6.2 既存 GUI の変更箇所</h3>
+<div class="table-wrap"><table class="keys">
+<tr><th>場所</th><th>変更</th></tr>
+<tr><td><code>page.start_training</code></td><td><code>backend.start_training</code>（設定の保存と実行待ち化だけを行う）→ <code>runner.start(experiment_id)</code>。<code>create_training_job</code> は <code>FakeTrainingJob</code> へ移す。</td></tr>
+<tr><td><code>experiment_list.stop_selected</code></td><td><code>runner.request_stop()</code> だけにする（状態の確定は runner の終端処理）。</td></tr>
+<tr><td><code>experiment_list.retry_selected</code></td><td>空いていれば <code>runner.start(id, retry=True)</code>、実行中なら従来どおり再試行予約。</td></tr>
+<tr><td><code>queue_controller</code></td><td><code>take_next_training_queue_item</code>（行を返すだけ）→ <code>runner.start(experiment_id, queue_id, retry)</code>。次へ進むのは <code>runner.ended</code> を受けたとき。「停止」は従来どおり、今の学習の完了後にキューを止める。</td></tr>
+<tr><td>学習曲線・実験詳細</td><td>「mAP」の表示を「AP」に変える。OOF の見出しは「OOF AP（Cellpose 方式、IoU 0.50–0.95）」。</td></tr>
+<tr><td>Cellpose 設定欄</td><td>事前学習済みモデルは cpsam / cpsam_v2。最適化手法・クラス重み・リスケールの欄を外す。bsize は 256 固定の表示にする（13 章）。</td></tr>
+<tr><td>拡張プレビュー</td><td>6.5 のとおり。</td></tr>
+<tr><td>モック専用の分岐</td><td><code>fail_training_ids</code> による結果の分岐は、MockBackend の <code>conclude_training_run</code> の中に閉じ込める。</td></tr>
+</table></div>
+
+<h3 id="s6-3">6.3 アプリ終了時</h3>
+<ol>
+<li>キューの次の項目を開始しないようにする（<code>queue_controller</code> を停止状態にする）。</li>
+<li>学習中なら「学習を中断して終了しますか？」を確認する。いいえなら終了を取りやめる。</li>
+<li><code>stop_request.json</code>（理由 <code>app_exit</code>）を保存 → kill → 終了を確認（最大 10 秒）→ 終端処理 → 終了。</li>
+</ol>
+<ul>
+<li>2 で「いいえ」を選んだら、1 で止めたキューを元の状態（実行中なら実行中）に戻す。</li>
+<li>10 秒たっても子プロセスの終了を確認できなければ、終端処理はせずにそのままアプリを終了する（終了を確認していないので状態は確定しない）。GUI が終わると Job Object が閉じて OS が子を終了させ、次回起動時の復旧（5.4）が <code>stop_request.json</code> により <code>stopped</code>（<code>app_exit</code>）に確定する。</li>
+</ul>
+
+<h3 id="s6-4">6.4 進捗表示</h3>
+<p>既存画面が使う <code>Experiment</code> のフィールド（<code>fold_histories</code>、<code>oof_history</code>、<code>final_history</code>、<code>checkpoints</code>、<code>selected_epoch</code>、<code>oof_evaluation</code>、<code>oof_predictions</code>、<code>current_epoch</code>、<code>phase</code>、<code>runs</code>）を、イベントから埋めます（7.4）。キュー表の進捗（フォールド番号または最終学習のエポック）も、同じフィールドから作ります。</p>
+
+<h3 id="s6-5">6.5 データ拡張プレビュー</h3>
+<ul>
+<li>対象画像は、実際の学習版から選ぶ（<code>list_dataset_versions("train")</code> → <code>get_dataset_version_items(version)</code> → <code>get_dataset_item_image</code> / <code>get_dataset_item_mask</code>）。</li>
+<li>変換そのものは、今の簡易実装（numpy）のまま。画面に「簡易プレビュー（学習時の変換とは一致しません）」と表示する。学習と同じ変換でのプレビューは今回の範囲外。</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s7">
+<h2>7. プロセス間の取り決め</h2>
+
+<h3 id="s7-1">7.1 起動</h3>
+<ul>
+<li>プログラムは <code>sys.executable</code>（絶対パス）、引数は配列 <code>["-m", "foam_cell_analysis.training.run", "--run-dir", &lt;絶対パス&gt;]</code>、作業フォルダは run_dir。</li>
+<li>環境変数は親の環境を引き継ぎ、<code>PYTHONUNBUFFERED=1</code>、<code>PYTHONIOENCODING=utf-8</code> を加える。<code>TORCH_HOME</code>・<code>CELLPOSE_LOCAL_MODELS_PATH</code> は親の値を使わず、常にアプリが決めた場所で上書きする（12.3）。</li>
+<li>stdout は 1 行ずつ読んでイベントとして解釈する。stderr は <code>stderr.log</code> に保存するだけで解釈しない。stdout の生の行も <code>stdout.log</code> に保存する。</li>
+</ul>
+
+<h3 id="s7-2">7.2 開始の合図と Job Object（Windows）</h3>
+<ol>
+<li>学習プロセスは起動するとすぐ <code>hello</code> イベントを出し、stdin から <code>go</code> の 1 行を待つ（torch などの重い import はまだしない）。待機中に stdin が EOF になったら、何もせず終了コード 3 で終了する。</li>
+<li>GUI は <code>hello</code> を受けたら、子プロセスを Job Object（<code>JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE</code>）に登録する（ctypes。Job のハンドルは GUI だけが持ち、子に継承させない）。</li>
+<li>登録に成功したら <code>process.json</code> を書き、stdin に <code>go</code> を送る。登録に失敗したら子を kill して起動失敗（<code>start_failed</code>）にする。<code>hello</code> が 30 秒以内に来なければ同じく起動失敗にする。</li>
+<li>学習プロセスは <code>go</code> を受けた後も stdin の監視スレッドを動かし、EOF を受けたら即座に終了する（GUI が消えたときの保険）。</li>
+<li>DataLoader の <code>num_workers</code> は 0 に固定する（初版の制約。設定項目にはしない）。これで孫プロセスは生まれない。</li>
+<li>中断は <code>QProcess.kill()</code>（Windows では TerminateProcess）で即座に行う。</li>
+</ol>
+
+<h3 id="s7-3">7.3 イベント</h3>
+<p>1 行 1 JSON。全イベント共通の必須項目は <code>v</code>（=1）、<code>run_id</code>、<code>seq</code>（<code>started</code> を 1 とする連番）、<code>time</code>（ISO 8601）、<code>type</code>。学習プロセスは <code>events.jsonl</code> に追記・flush してから、同じ行を stdout に出します。</p>
+<p><code>hello</code> だけは制御メッセージで、<code>seq</code> を持たず、<code>events.jsonl</code> にも書きません（連番と再生の対象外）。</p>
+<div class="table-wrap"><table class="keys">
+<tr><th>type</th><th>追加の必須項目</th><th>意味</th></tr>
+<tr><td><code>hello</code></td><td><code>pid</code>（<code>seq</code> なし）</td><td>起動した。<code>go</code> を待っている（制御メッセージ。stdout のみ）</td></tr>
+<tr><td><code>started</code></td><td><code>device</code>, <code>versions</code>, <code>version_mismatches</code></td><td><code>go</code> を受けて開始した</td></tr>
+<tr><td><code>preflight</code></td><td><code>n_used</code>, <code>folds</code>（fold ごとの学習・検証件数）, <code>excluded</code>, <code>required_bytes</code>, <code>free_bytes</code></td><td>事前検査に合格した（8.2）</td></tr>
+<tr><td><code>phase</code></td><td><code>phase</code>（<code>cv</code> / <code>final</code>）, <code>fold</code>（final では null）, <code>total_epochs</code></td><td>fold の学習または最終学習を始める</td></tr>
+<tr><td><code>epoch</code></td><td><code>phase</code>, <code>fold</code>, <code>epoch</code>, <code>loss</code>, <code>lr</code></td><td>1 エポックの学習が終わった</td></tr>
+<tr><td><code>val</code></td><td><code>fold</code>, <code>epoch</code>, <code>ap</code>, <code>n_images</code></td><td>その fold の検証画像で評価した</td></tr>
+<tr><td><code>checkpoint</code></td><td><code>fold</code>, <code>epoch</code>, <code>kind</code>（<code>periodic</code> / <code>selected</code> / <code>final</code>）, <code>path</code></td><td>チェックポイントを確定した（一時保存は出さない）</td></tr>
+<tr><td><code>fold_done</code></td><td><code>fold</code>, <code>last_epoch</code>, <code>early_stopped</code>, <code>best_epoch</code></td><td>fold の学習が終わった</td></tr>
+<tr><td><code>oof</code></td><td><code>epoch</code>, <code>ap</code>, <code>per_fold</code>, <code>n_images</code></td><td>そのエポックの OOF AP が確定した（8.4）</td></tr>
+<tr><td><code>selected</code></td><td><code>epoch</code>, <code>ap</code>, <code>per_class</code>（分類 → [AP または null, 件数]）</td><td>選択エポックが決まった</td></tr>
+<tr><td><code>partial_result</code></td><td><code>path</code></td><td><code>result.partial.json</code> を書いた</td></tr>
+<tr><td><code>completed</code></td><td><code>path</code></td><td><code>result.json</code> を書いた。この直後に終了コード 0 で終わる</td></tr>
+<tr><td><code>error</code></td><td><code>phase</code>, <code>message</code></td><td><code>error.json</code> を書いた。この直後に終了コード 1 で終わる</td></tr>
+<tr><td><code>warning</code></td><td><code>message</code></td><td>続行できる問題（版の不一致、重みのダウンロード中など）</td></tr>
+</table></div>
+<ul>
+<li>GUI は <code>seq</code> で重複（前回以下）を捨てる。欠落（飛び）を見つけたら <code>events.jsonl</code> を読み直す。解釈できない行は <code>stdout.log</code> に残して無視する。</li>
+<li>終了コードは 0 = 完了、1 = 例外、2 = run_spec が不正、3 = 開始合図前に親が消えた。判定には使わない（5.2）。</li>
+</ul>
+
+<h3 id="s7-4">7.4 イベントから Experiment への反映</h3>
+<div class="table-wrap"><table class="keys">
+<tr><th>イベント</th><th>反映先</th></tr>
+<tr><td><code>phase</code></td><td><code>phase</code>（<code>cross_validation</code> / <code>final_training</code>）、<code>current_epoch</code>=0</td></tr>
+<tr><td><code>epoch</code>（cv）</td><td><code>fold_histories[fold]</code> に <code>EpochMetrics(epoch, loss, None)</code> を追加、<code>current_epoch</code></td></tr>
+<tr><td><code>val</code></td><td><code>fold_histories[fold]</code> の同じエポックの <code>map</code> に AP を入れる</td></tr>
+<tr><td><code>oof</code></td><td><code>oof_history</code> に <code>EpochMetrics(epoch, 各 fold の同エポック loss の平均, ap)</code>、<code>history = oof_history</code></td></tr>
+<tr><td><code>selected</code></td><td><code>selected_epoch</code>、<code>oof_evaluation = Evaluation(ap, per_class)</code></td></tr>
+<tr><td><code>checkpoint</code></td><td><code>checkpoints</code> に <code>Checkpoint(名前, epoch, AP, 時刻, fold)</code>。AP はその fold のそのエポックの検証 AP。検証していないエポックの定期保存と <code>final.pt</code> は <code>None</code></td></tr>
+<tr><td><code>epoch</code>（final）</td><td><code>final_history</code> に <code>EpochMetrics(epoch, loss, None)</code>、<code>current_epoch</code></td></tr>
+<tr><td><code>preflight</code></td><td><code>used_item_ids</code>、<code>fold_assignments</code>（run_spec から）</td></tr>
+<tr><td><code>result.json</code> / <code>result.partial.json</code></td><td><code>oof_predictions</code>（画像ごとの AP）、<code>oof_evaluation</code>。最新の試行の値を <code>Experiment</code> 直下にも写す（既存画面の前提）</td></tr>
+</table></div>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s8">
+<h2>8. 学習の流れ（学習プロセス）</h2>
+
+<h3 id="s8-1">8.1 全体</h3>
+<ol>
+<li>run_spec を読む（不正なら終了コード 2）。<code>hello</code> → <code>go</code> を待つ → <code>started</code>。</li>
+<li>事前検査（8.2）。</li>
+<li>fold 1〜K を順に学習する（8.3）。</li>
+<li>OOF AP を集計し、選択エポックを決める（8.4）。</li>
+<li>成果物を整理し、<code>result.partial.json</code> を書く（8.5）。</li>
+<li>最終学習（8.6）。<code>final.pt</code> と <code>result.json</code> を書いて終了する。</li>
+</ol>
+<p>どこで例外が起きても <code>error.json</code> を書いて <code>error</code> イベントを出し、終了コード 1 で終わります。</p>
+
+<h3 id="s8-2">8.2 事前検査（preflight）</h3>
+<p>重い検査は GUI では行わず、ここで行います。どれかに失敗したら <code>failed</code> です（キューは次の項目へ進む）。</p>
+<ol>
+<li>インストール済みの版を <code>constraints-ml.txt</code> と比べ、違いがあれば <code>warning</code> を出して <code>environment.json</code> に残す（失敗にはしない）。</li>
+<li><code>manifest.csv</code>・<code>metadata.csv</code> と、使う画像・マスクの sha256 を検証する。</li>
+<li>マスクを読んで正解インスタンス数を数え、Cellpose の <code>min_train_masks</code> による除外を決める（拡張前のラベルで判定）。除外後に学習画像が 0 件の fold があれば失敗。検証画像は除外しない。</li>
+<li>モデルを 1 回組み立てて、重みのバイト数と初期重みファイルの sha256 を得る（初回は重みのダウンロードが起きるので <code>warning</code> で知らせる）。run_spec に <code>expected_initial_weights_sha256</code> が設定されている場合だけ比較し、違えば失敗（8.7）。</li>
+<li>必要容量（12.2）を計算し、空き容量が足りなければ失敗。</li>
+<li><code>resolved_data.json</code> を書いて <code>preflight</code> を出す。</li>
+</ol>
+
+<h3 id="s8-3">8.3 fold ごとの学習</h3>
+<ul>
+<li>fold k では、k 以外の fold の画像（除外後）で学習し、fold k の画像で検証する。毎回、事前学習済みの重みからモデルを作り直す。</li>
+<li>エポック 1〜N（N = <code>training.epochs</code>）。学習率はスケジュール関数 <code>lr(epoch, N)</code>（10.1）で決める。</li>
+<li><b>検証するエポック</b> = <code>validation_interval</code> の倍数 ∪ {その fold が実際に到達した最後のエポック}。</li>
+<li>検証では拡張も Cellpose の拡大縮小・切り出しも使わず、元の大きさで推論する（9.5）。画像ごとの TP/FP/FN（10 閾値）を <code>eval/fold_k/epoch_XXX.npz</code> に、予測ラベル画像を <code>tmp_pred/</code> に保存し、<code>val</code> を出す。</li>
+<li><b>早期終了</b>（<code>training.early_stopping.enabled</code> のとき）: 検証したときだけ判定する。改善 = AP が fold 内の最良値を超えたとき（同値は改善としない）。最良を更新したエポックから <code>patience</code> エポック以上たった検証で打ち切る。</li>
+<li><code>save_fold_models=true</code> のとき: <code>save_every</code> の倍数で <code>checkpoints/fold_k/epoch_XXX.pt</code> を保存する。検証エポックのうち、それ以外のエポックは <code>tmp_ckpt/fold_k/epoch_XXX.pt</code> に一時保存する（selected.pt を作るため）。</li>
+<li>fold の終わりに <code>fold_done</code>。</li>
+</ul>
+
+<h3 id="s8-4">8.4 OOF と選択エポック</h3>
+<ul>
+<li><b>候補エポック</b> = 全 fold で実際に検証したエポックの共通部分。空なら失敗（値を補って作らない）。</li>
+<li><b>OOF AP(e)</b> = 候補エポック e における、全 fold の検証画像（= 実使用データ全体）の画像ごとの AP の平均（11 章）。fold ごとの AP の単純平均は使わない。</li>
+<li>OOF AP は最後の fold の学習中に、その fold が各候補エポックを検証した時点で確定するので、そこで <code>oof</code> を出す。</li>
+<li><b>選択エポック</b> = OOF AP が最大の候補エポック（丸める前の値で比べ、同値なら早いエポック）。<code>selected</code> を出す。</li>
+</ul>
+
+<h3 id="s8-5">8.5 成果物の整理</h3>
+<ol>
+<li><code>tmp_pred/fold_k/epoch_&lt;選択&gt;/</code> の予測を <code>oof/</code> へ移し、<code>oof/per_image.csv</code>（item_id、fold、分類、AP、IoU 0.5 での TP/FP/FN）を書く。</li>
+<li><code>save_fold_models=true</code> なら各 fold の <code>selected.pt</code> を作る（12.1）。false なら作らない。</li>
+<li><code>tmp_pred/</code> と <code>tmp_ckpt/</code> を削除する。</li>
+<li><code>result.partial.json</code> を書き、<code>partial_result</code> を出す。</li>
+</ol>
+
+<h3 id="s8-6">8.6 最終学習</h3>
+<ul>
+<li>最終学習用の seed（8.8）で乱数を初期化し、fold と同じく<b>事前学習済みの重みからモデルを新しく組み立てる</b>。予測器・optimizer・学習率の状態もすべて新しく作る（fold のモデルは引き継がない）。</li>
+<li>実使用データ全体（除外後）で、エポック 1〜E（E = 選択エポック）を学習する。</li>
+<li>学習率は <code>lr(epoch, N)</code> をそのまま使う（N 用のスケジュールを E で打ち切る）。これで、fold のエポック E と同じ学習率の履歴になる。</li>
+<li>検証はしない。loss だけを <code>epoch</code>（phase=final）で出す。</li>
+<li><code>checkpoints/final.pt</code> を保存し、<code>result.json</code> を書いて <code>completed</code> を出す。</li>
+<li>最終学習で失敗しても <code>result.partial.json</code> は残り、試行は <code>failed</code> になる（OOF 結果は画面で見られる）。</li>
+</ul>
+
+<h3 id="s8-7">8.7 再試行</h3>
+<p>同じ実験の新しい試行です（仕様 18.1）。フォールド割り当ては attempt_001 のものをコピーし、データセットの sha256 が一致することを確かめます（5.1）。過去の試行のファイルは変更しません。</p>
+<p><b>初期重み</b>: 番号の若い順に試行を見て、<code>resolved_data.json</code> に初期重みの sha256 が記録されている最初の試行の値を、その実験の基準とする（最初に取得できた時点で固定）。基準があれば run_spec の <code>expected_initial_weights_sha256</code> に入れ、事前検査で一致を確かめる。どの試行でもまだ取得できていなければ（事前検査より前で失敗した場合など）、照合せずに実行し、その試行で得た値が基準になる。</p>
+
+<h3 id="s8-8">8.8 seed</h3>
+<pre><code>derive(seed, *parts) = int.from_bytes(sha256("|".join([str(seed), *map(str, parts)]).encode()).digest()[:8], "big") % 2**32
+fold k の学習 : derive(seed, "fold", k)
+最終学習      : derive(seed, "final")</code></pre>
+<ul>
+<li>各段の開始時に <code>random</code>・<code>numpy</code>・<code>torch</code> の乱数をこの値で初期化する。前の fold の早期終了が、後の fold の乱数に影響しない。</li>
+<li>Python の組み込み <code>hash()</code> は使わない（実行ごとに変わるため）。</li>
+<li>フォールド割り当ては <code>np.random.default_rng(seed)</code>（現行モックと同じ）で、入力は <code>item_id</code> 昇順、グループはキー昇順に並べてから使う。</li>
+<li>これらは再現性を<b>高める</b>ための規則で、同じ条件でも結果の完全一致は保証しない（CUDA の非決定的な演算が残るため）。<code>torch.backends.cudnn.benchmark = False</code> にするが、<code>torch.use_deterministic_algorithms</code> は使わない（Mask R-CNN の一部の演算が対応していないため）。CPU と CUDA の間の一致も保証しない。</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s9">
+<h2>9. 前処理とデータ拡張</h2>
+<p>学習時の流れ: 読み込み → <b>前処理</b>（全モデル共通）→ <b>プロファイル</b>（ユーザーが決めた <code>pipeline_order</code> の順に、ひとかたまりで実行）→ <b>モデル固有の段</b> → モデル入力。</p>
+
+<h3 id="s9-1">9.1 前処理（正規化）</h3>
+<p>設定 <code>model.input.normalization</code> として保存し、学習・検証・将来の推論で同じものを使います。</p>
+<pre><code>lo, hi = percentile(img, low_percentile), percentile(img, high_percentile)   # 既定 1.0, 99.0
+hi - lo &lt; 1e-6 のとき: 全画素 0（定数画像も、上下の percentile が一致する画像も含む）
+それ以外           : clip((img - lo) / (hi - lo), 0, 1)  → float32</code></pre>
+<p>Cellpose 側の正規化は使わない（<code>normalize=False</code>。二重正規化を防ぐ）。</p>
+
+<h3 id="s9-2">9.2 プロファイル（transforms.v2）</h3>
+<p>画像は 0–1 の float（<code>tv_tensors.Image</code>）、正解はラベル画像（<code>tv_tensors.Mask</code>、最近傍補間）として同時に変換します。輝度・画質の変換は画像だけに、幾何変換は両方にかけます。各変換は確率 <code>probability</code> で適用し、値は範囲 [<code>range_min</code>, <code>range_max</code>] の一様乱数です。変換ごとに<b>画像だけ</b>を [0, 1] に clip します。ラベル画像は整数のまま保ち、clip も補間による値の混合もしません。</p>
+<p>キーと範囲の単位は、GUI の拡張ダイアログ（<code>augmentation_dialog.py</code> の <code>TRANSFORMS</code>）に合わせます。</p>
+<div class="table-wrap"><table class="keys">
+<tr><th>キー</th><th>範囲の意味（GUI 既定）</th><th>処理</th></tr>
+<tr><td><code>horizontal_flip</code> / <code>vertical_flip</code></td><td>範囲なし</td><td>左右 / 上下反転</td></tr>
+<tr><td><code>rotation</code></td><td>角度 [度]（−180〜180）</td><td>中心回転。はみ出し部分は画像 0・ラベル 0</td></tr>
+<tr><td><code>scale</code></td><td>倍率（0.8〜1.2）</td><td>中心基準で拡大縮小し、元の大きさに収める</td></tr>
+<tr><td><code>translation</code></td><td>画像の縦横に対する割合（−0.1〜0.1）</td><td>縦横それぞれ独立に平行移動</td></tr>
+<tr><td><code>crop</code></td><td>辺の長さの割合（0.5〜1.0）</td><td>縦・横ともに元の v 倍の大きさの領域をランダムな位置で切り出し、元の大きさへ拡大（縦横比は変えない）</td></tr>
+<tr><td><code>elastic</code></td><td>強さ（0〜1）</td><td><code>ElasticTransform(alpha=50·v, sigma=5)</code>（画素単位）</td></tr>
+<tr><td><code>brightness</code></td><td>百分率（−10〜10）</td><td><code>img × (1 + v/100)</code></td></tr>
+<tr><td><code>contrast</code></td><td>係数（0.9〜1.1）</td><td><code>(img − mean(img)) × v + mean(img)</code></td></tr>
+<tr><td><code>gamma</code></td><td>γ（0.7〜1.5）</td><td><code>img ** v</code></td></tr>
+<tr><td><code>blur</code></td><td>σ [画素]（0〜1）</td><td>ガウスぼかし。カーネル幅 <code>2·ceil(3σ)+1</code>。σ &lt; 0.1 なら何もしない</td></tr>
+<tr><td><code>noise</code></td><td>標準偏差 [0–255 換算]（0〜12）</td><td><code>img + N(0, (v/255)²)</code></td></tr>
+<tr><td><code>channel_dropout</code> / <code>channel_intensity</code></td><td>—</td><td>1 チャンネルでは何もしない（設定検証で情報として表示）</td></tr>
+</table></div>
+<p>現行モックの初期プロファイルは、キー（<code>translate</code>）と単位（明るさ ±0.1、ノイズ 0.05 など）が GUI と食い違っています。ProfileStore の初期プロファイル <code>aug_v001</code> は GUI の <code>TRANSFORMS</code> の既定値で作り、読み込み時に <code>translate</code> を <code>translation</code> へ読み替えます。</p>
+
+<h3 id="s9-3">9.3 Mask R-CNN の段</h3>
+<ol>
+<li>ラベル画像から、各インスタンスの 2 値マスクと外接矩形を作る（面積 0 のインスタンスは捨てる）。インスタンスが 0 個なら <code>boxes</code> は形状 (0, 4)、<code>masks</code> は (0, H, W) で学習に使う。</li>
+<li>画像を 3 チャンネルに複製する。ImageNet の平均・標準偏差による正規化はモデル内部（<code>GeneralizedRCNNTransform</code>）で 1 回だけ行う。</li>
+</ol>
+
+<h3 id="s9-4">9.4 Cellpose の段（プロファイルとは別の、Cellpose 固有の処理）</h3>
+<ol>
+<li><b>拡大縮小</b>: 画像は双線形、ラベルは最近傍で、次の大きさ (h, w) にする。
+<pre><code>抽選倍率 f = 1 − s/2 + s·U[0,1)      （s = scale_range、0〜1。cellpose 4.2 と同じ式。f は 0.5〜1.5）
+h = max(1, round(H·f)),  w = max(1, round(W·f))
+h·w &gt; LIMIT（= 16,777,216、4096×4096 相当）のとき:
+    g = sqrt(LIMIT / (H·W))
+    h = max(1, floor(H·g)),  w = max(1, floor(W·g))
+それでも h·w &gt; LIMIT なら（極端に細長い画像）、その画像は入力エラーとして学習を失敗にする</code></pre>
+  s = 0 でも（f = 1）、この上限による縮小は行う。上限で縮小した場合、実際の倍率は 0.5 を下回ることがある。</li>
+<li><b>flow の計算</b>: <code>dynamics.labels_to_flows([label.astype(np.int32).copy()], files=None, device=device)[0]</code>。戻り値は (4, H, W) の [ラベル, 前景, flowY, flowX]。損失には後ろの 3 面 <code>[1:]</code> を使う（<code>train._loss_fn_seg</code> の想定と同じ）。入力ラベルは内部で書き換えられるので必ずコピーを渡す。</li>
+<li><b>切り出し</b>: 256 × 256 をランダムな位置で切り出す（足りない場合は画像・flow とも 0 で埋める）。</li>
+<li><b>入力</b>: <code>[画像, 0, 0]</code> の 3 チャンネル（cellpose 4 の単チャンネル入力と同じ並び）。</li>
+</ol>
+<ul>
+<li>cellpose の <code>random_rotate_and_resize</code> は使わない（回転・反転を止められないため）。回転・反転はプロファイルで指定する。</li>
+<li>flow の計算時間は、最大物体の外接矩形の大きさに応じて増える。プロファイルに有効な幾何変換がなく、かつ s = 0 のときは、画像ごとに 1 回だけ（上限による縮小を行った後の画像で）計算してキャッシュする。キャッシュは画像・マスクと同じ上限付き LRU（合計 2 GB）に入れ、追い出されたら再計算する。</li>
+<li>代表的な最大サイズの画像で、flow 計算の時間とメモリを CPU・CUDA で測ることを受け入れ条件にする（15.3）。遅すぎる場合の代案（余白付きで切り出してから flow を計算）は、測定後に判断する。</li>
+</ul>
+
+<h3 id="s9-5">9.5 検証・OOF のとき</h3>
+<p>前処理（9.1）とモデル固有の入力形式（Mask R-CNN の 3 チャンネル複製、Cellpose の <code>[画像, 0, 0]</code>）だけを行い、プロファイル・拡大縮小・切り出しは使いません。元の大きさの画像で推論します。</p>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s10">
+<h2>10. モデルアダプタ</h2>
+<pre><code>class ModelAdapter(Protocol):
+    def build(self, model_config: dict, device: torch.device) -&gt; None       # 事前学習済みから組み立てる
+    def initial_weights_file(self) -&gt; Path | None                            # sha256 を取る対象
+    def make_optimizer(self, training: dict) -&gt; torch.optim.Optimizer
+    def lr(self, epoch: int, total_epochs: int, base_lr: float) -&gt; float     # 10.1
+    def train_one_epoch(self, samples: Iterable[Sample], lr: float) -&gt; float # 平均 loss
+    def predict(self, images: list[np.ndarray]) -&gt; list[np.ndarray]          # 前処理済み画像 → ラベル画像
+    def state_dict(self) -&gt; dict
+    def weights_nbytes(self) -&gt; int</code></pre>
+<p>共通部分（<code>loop.py</code>）は、fold とエポックのループ、検証と AP、早期終了、チェックポイント、イベント送出を持ちます。<code>fake.py</code> は torch だけで動く極小モデルで、流れのテストに使います。</p>
+
+<h3 id="s10-1">10.1 学習率スケジュール</h3>
+<p>エポック番号から学習率を返す関数という形は共通で、中身はモデルごとに決めます。</p>
+<ul>
+<li><b>Mask R-CNN</b>: 一定（<code>lr = base_lr</code>）。</li>
+<li><b>Cellpose</b>: cellpose 4.2 の <code>train_seg</code> と同じ形。最初の 10 エポックは 0 から base_lr へ線形に上げる（1 エポック目は 0）。その後は一定で、N &gt; 99 なら最後の 50 エポックを 5 エポックごとに半減、N &gt; 300 なら最後の 100 エポックを 10 エポックごとに半減する。</li>
+</ul>
+
+<h3 id="s10-2">10.2 Mask R-CNN</h3>
+<div class="table-wrap"><table class="keys">
+<tr><th>設定の組み合わせ</th><th>組み立て方</th></tr>
+<tr><td><code>resnet50_fpn_v2</code> + <code>coco</code></td><td><code>maskrcnn_resnet50_fpn_v2(weights=MaskRCNN_ResNet50_FPN_V2_Weights.COCO_V1, trainable_backbone_layers=T, **kwargs)</code> で標準構成を作り、box / mask の予測器を 2 クラスへ交換する。</td></tr>
+<tr><td><code>resnet50_fpn_v2</code> + <code>imagenet</code></td><td><code>maskrcnn_resnet50_fpn_v2(weights=None, weights_backbone=ResNet50_Weights.IMAGENET1K_V1, num_classes=2, trainable_backbone_layers=T, **kwargs)</code></td></tr>
+<tr><td><code>resnet101_fpn</code> + <code>imagenet</code></td><td><code>MaskRCNN(resnet_fpn_backbone(backbone_name="resnet101", weights=ResNet101_Weights.IMAGENET1K_V1, trainable_layers=T), num_classes=2, **kwargs)</code>（v2 ではない旧構成。<code>trainable_backbone_layers</code> は <code>MaskRCNN</code> ではなく <code>trainable_layers</code> として渡す）</td></tr>
+<tr><td><code>resnet101_fpn</code> + <code>coco</code></td><td>設定エラー（COCO の重みがない）</td></tr>
+</table></div>
+<p>T = <code>model.trainable_backbone_layers</code>（0〜5）。<b>kwargs で渡すもの</b>（3 つの組み合わせ共通）: <code>min_size</code>、<code>max_size</code>、<code>image_mean</code>、<code>image_std</code>、<code>rpn_fg_iou_thresh</code>、<code>rpn_bg_iou_thresh</code>、<code>rpn_batch_size_per_image</code>、<code>rpn_positive_fraction</code>、<code>rpn_pre_nms_top_n_train</code> と <code>_test</code>（画面の 1 つの値を両方に）、<code>rpn_post_nms_top_n_train</code> と <code>_test</code>（同）、<code>rpn_nms_thresh</code>、<code>box_fg_iou_thresh</code>、<code>box_bg_iou_thresh</code>、<code>box_batch_size_per_image</code>、<code>box_positive_fraction</code>、<code>box_score_thresh</code>・<code>box_nms_thresh</code>・<code>box_detections_per_img</code>（評価パラメータから）。</p>
+<p><b>COCO の重みを使うときに渡してはいけないもの</b>: <code>num_classes</code>（省略する。91 以外は例外）、<code>box_predictor</code>、<code>mask_predictor</code>。<code>rpn_anchor_generator</code>・<code>rpn_head</code>・<code>box_head</code>・<code>mask_head</code> は v2 の関数が内部で指定するので、重みの有無によらず渡さない。COCO の重みを使うとき <code>weights_backbone</code> は無視される。</p>
+<p><b>アンカー</b>: <code>anchors.sizes</code> は FPN の各階層に 1 つずつのサイズ（5 個でなければ設定エラー）、<code>anchors.aspect_ratios</code> は全階層共通。組み立て後、optimizer を作る前に <code>rpn.anchor_generator</code> を設定値で差し替える。各位置のアンカー数（= 縦横比の数）が 3 でなければ RPN ヘッドも作り直し（ResNet50-v2 は <code>conv_depth=2</code>、ResNet101 の旧構成は 1）、<code>warning</code> を出す。</p>
+<p><b>その他</b>: 最適化手法は <code>model.optimizer</code> ∈ {<code>SGD</code>（momentum 0.9）, <code>AdamW</code>}、既定 <code>SGD</code>。<code>batch_size</code> 枚ずつ、画像ごとの大きさのままリストで渡す。</p>
+<p><b>評価パラメータ</b>（run_spec の <code>eval_params</code>。画面では変更できない。推論設定とは別物）: <code>box_score_thresh</code>=0.5、<code>box_nms_thresh</code>=0.5、<code>box_detections_per_img</code>=300、<code>mask_thresh</code>=0.5。予測をラベル画像にするときは、スコアの低い順に塗り、高いものが上書きする。上書きで画素が 0 になったインスタンスは捨てる。</p>
+
+<h3 id="s10-3">10.3 Cellpose（cpsam / cpsam_v2）</h3>
+<ul>
+<li><code>CellposeModel(pretrained_model=&lt;model.pretrained_model&gt;, device=device, use_bfloat16=False)</code> を 1 つ作り、その <code>net</code> を fp32 で学習し、同じインスタンスの <code>eval</code> で推論する（推論の後は <code>net.train()</code> に戻す）。</li>
+<li>cellpose の <code>train_seg</code> は使わない（エポックごとの検証・中断・チェックポイントができないため）。損失には <code>train._loss_fn_seg</code> を使う。非公開の関数なので cellpose の版を 4.2.x に固定し（14 章）、アダプタのテストで変化を検知する。</li>
+<li>cellpose 4.2 は、モデルの構造（バックボーン）を重みファイルの中身から判定する。<code>cpsam</code> と <code>cpsam_v2</code> はどちらも SAM 系（<code>net.backbone == "sam_vitl"</code>）を前提とし、事前検査（8.2）でこれを確かめる。違えば失敗にする（アダプタ・<code>bsize</code>・容量見積もりが SAM 系を前提にしているため）。</li>
+<li>最適化手法は AdamW 固定（cellpose 4 と同じ）。<code>bsize</code> は 256 固定。</li>
+<li>1 エポック = 学習画像から <code>nimg_per_epoch</code> 枚（null なら、その fold の除外後の学習画像数）。枚数が学習画像数と違う場合は、fold の seed による乱数で重複ありで選ぶ。</li>
+<li><b>評価パラメータ</b>: <code>eval(x, channel_axis=2, normalize=False, flow_threshold=0.4, cellprob_threshold=0.0, min_size=15, max_size_fraction=0.4, bsize=256)</code>。x は (H, W, 3) の <code>[画像, 0, 0]</code>。学習時の入力の並びと一致することをテストで確認する。</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s11">
+<h2>11. 評価指標（Cellpose 方式 AP）</h2>
+<ul>
+<li><b>画像ごと</b>: IoU の閾値 t = 0.50, 0.55, …, 0.95（10 個）で、正解と予測を最適マッチングして TP/FP/FN を数える。マッチングは <code>cellpose.metrics.average_precision</code> を使う。
+  <br><code>AP_t = TP / (TP + FP + FN)</code>、画像の AP = 10 個の <code>AP_t</code> の平均。</li>
+<li><b>空の扱い（アプリ独自の規則）</b>: 正解も予測も 0 個の画像は、各閾値で <code>AP_t = 1.0</code>。正解が 0 個で予測がある画像は 0.0。</li>
+<li><b>集計</b>: 対象画像の AP の平均（画像平均。Cellpose の論文での評価方法に合わせる）。
+  <br>OOF 全体 = 実使用データ全体の画像平均。分類別 = その分類の画像の平均。対象画像が 0 件の分類は null（「対象なし」）。</li>
+<li><b>ラッパー</b>（<code>evaluation/ap.py</code>）: cellpose の関数はラベル 0（背景）が存在することを前提に物体数を数えるので、呼ぶ前に次を行う。
+  <ol>
+  <li>正解・予測とも、ラベル番号を 1 から連続する番号に詰め直す（0 は 0 のまま）。</li>
+  <li>正解・予測の両方の外周に、幅 1 画素の 0 を付け足す（背景画素のない画像でも 0 が必ず存在するようにする。IoU には影響しない）。</li>
+  <li>正解も予測も 0 個なら cellpose を呼ばずに AP = 1.0、正解が 0 個で予測があれば呼ばずに 0.0 とする。</li>
+  </ol>
+  マッチング（cellpose を呼ぶ部分、<code>match_counts</code>）と集計（numpy だけの部分、<code>aggregate</code>）は関数を分け、cellpose の import は <code>match_counts</code> の中で行う。</li>
+<li><b>参考値</b>: 全画像の TP/FP/FN を合計して求めるプール集計 <code>ΣTP / (ΣTP + ΣFP + ΣFN)</code> も <code>result.json</code> に残す（選択には使わない）。</li>
+<li><b>記録する定義</b>: <code>metric = {"id": "cellpose_ap_iou50_95_image_mean_v1", "thresholds": [...], "aggregation": "image_mean", "empty_rule": "both_empty_is_1"}</code>。設定の内部キー <code>best_metric: oof_instance_map</code> は互換のためそのまま残す。</li>
+</ul>
+<blockquote><p>画像平均は、物体の少ない画像や空画像の誤りに敏感です。選択エポックが常に安定するとは限りません。</p></blockquote>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s12">
+<h2>12. チェックポイントと容量</h2>
+
+<h3 id="s12-1">12.1 保存の規則</h3>
+<ul>
+<li>定期保存（<code>save_every</code> の倍数）と検証エポックが重なるときは、<code>checkpoints/</code> に 1 回だけ保存し、一時保存は作らない。</li>
+<li><code>selected.pt</code> は、選択エポックのファイルが <code>tmp_ckpt/</code> にあれば移動（<code>os.replace</code>）で作る。<code>checkpoints/</code> の定期保存ファイルであれば、ハードリンク（<code>os.link</code>）で作り、できなければコピーする。</li>
+<li><code>save_fold_models=false</code> のときは、fold のチェックポイント（定期・一時・selected）を一切作らない。</li>
+<li>予測ラベル画像は uint16 の PNG。インスタンスが 65,535 個を超える画像だけ uint32 の TIFF（<code>.tif</code>）にする。</li>
+</ul>
+
+<h3 id="s12-2">12.2 必要容量の計算</h3>
+<pre><code>W      = 重みのバイト数（事前検査でモデルから得る）
+K      = フォールド数、N = エポック数
+V      = 検証エポックの集合 = {v, 2v, …} ∪ {N}（v = validation_interval）
+S      = 定期保存エポックの集合 = {s, 2s, …} ≤ N（s = save_every）
+P      = Σ（各画像の H × W × 4 バイト）   … 予測ラベル画像 1 回分の上限（uint32 非圧縮。PNG・TIFF のヘッダ分は余裕に含める）
+
+fold の重み  = save_fold_models ? K × |V ∪ S| × W : 0
+selected     = save_fold_models ? K × W : 0          … コピーになった場合に備える
+予測の一時   = |V| × P
+最終学習     = W（final.pt）
+書き込み中   = W（一時ファイル）
+余裕         = 1 GiB
+
+必要容量 = fold の重み + selected + 予測の一時 + 最終学習 + 書き込み中 + 余裕</code></pre>
+<ul>
+<li>早期終了があると実際はこれより少なくなる（上限としての見積もり）。</li>
+<li>事前検査で、run_dir があるドライブの空き容量と比べる。GUI の設定検証では、代表値（Mask R-CNN ResNet50-v2 ≒ 180 MB、cpsam・cpsam_v2 ≒ 1.2 GB）による目安を警告として表示するだけにする（cpsam_v2 の値は初回取得時に実測して直す）。</li>
+<li>cpsam で既定の 40 エポック・検証間隔 5・保存間隔 10・K = 5 のとき、|V ∪ S| = 8 なので、fold の重みだけで約 48 GB（5 × 8 × 1.2 GB）になる。<code>save_fold_models</code> の既定は true のままにして、警告で知らせる。</li>
+<li>実行中に保存に失敗したら <code>failed</code>。</li>
+</ul>
+
+<h3 id="s12-3">12.3 重みファイルの場所（固定。ユーザーは変更できない）</h3>
+<p>推論時に読み込むパスが壊れないように、重みの置き場所はすべてアプリが固定します。設定画面・コマンドライン・環境変数のどれでも変更できません。</p>
+<div class="table-wrap"><table class="keys">
+<tr><th>種類</th><th>場所</th><th>規則</th></tr>
+<tr><td>学習済みの重み</td><td><code>workspace/experiments/&lt;実験&gt;/runs/attempt_NNN/checkpoints/</code></td><td>保存先は設定項目にしない。記録（<code>result.json</code>、イベント、比較候補のスナップショット）には、実験 ID・試行番号・run_dir からの相対パスだけを書き、絶対パスは書かない。使うときに <code>workspace</code> の場所から組み立てる。<code>result.json</code> を書いた後は、チェックポイントを移動・改名しない。</td></tr>
+<tr><td>事前学習済みの重み（torchvision）</td><td><code>workspace/pretrained/torch/</code></td><td>学習プロセスの <code>TORCH_HOME</code> を常にここにする（親の値や <code>XDG_CACHE_HOME</code> は使わない）。</td></tr>
+<tr><td>事前学習済みの重み（cellpose）</td><td><code>workspace/pretrained/cellpose/</code></td><td>学習プロセスの <code>CELLPOSE_LOCAL_MODELS_PATH</code> を常にここにする。cellpose は import 時にこの値を読むので、起動時の環境変数で与える。</td></tr>
+</table></div>
+<ul>
+<li><code>workspace</code> の場所自体も設定項目にしない（今どおりリポジトリ直下の <code>workspace/</code>）。</li>
+<li><b>学習済みの重みだけで推論できるようにする</b>。事前学習済みの重みが消えても、推論・再評価は壊れない。
+  <ul>
+  <li>Mask R-CNN: <code>weights=None</code>、<code>weights_backbone=None</code> で同じ構成を組み立ててから <code>state_dict</code> を読み込む（ダウンロードは起きない）。</li>
+  <li>Cellpose: <code>CellposeModel(pretrained_model=&lt;チェックポイントのパス&gt;)</code> で直接読み込む（cellpose は存在するファイルのパスが渡されたら、それをそのまま読む）。</li>
+  </ul></li>
+<li>設定検証の「重みが未取得」の警告は、<code>workspace/pretrained/</code> の中にファイルがあるかで判定する。</li>
+<li>実験は実験単位でだけ削除できる（<code>Backend.experiment_deletion_info</code> / <code>delete_experiment</code>）。対象は下書き・中断・失敗・完了の実験で、学習中・待機中の実験と、比較候補（非採用を除く）・リリース済みモデルから参照されている実験は削除しない。削除は <code>experiments/&lt;id&gt;/</code> フォルダ全体（設定・全試行・途中保存モデル・OOF・ログ）と <code>queue.json</code> のその実験の行だけを消し、<code>datasets</code>・<code>pretrained</code>・<code>augmentation</code> には触れない。試行単位の削除や移動は作らない。</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s13">
+<h2>13. 学習設定の変更</h2>
+<div class="table-wrap"><table class="keys">
+<tr><th>対象</th><th>変更</th></tr>
+<tr><td>共通</td><td><code>model.input.normalization = {method: "percentile", low_percentile: 1.0, high_percentile: 99.0}</code> を追加。<code>input_channels</code> の既定値は、選んだ学習版のチャンネルから作る（今は 1 つ）。</td></tr>
+<tr><td>エポック数</td><td><code>training.epochs</code> の既定値は、両モデルとも 40。</td></tr>
+<tr><td>Mask R-CNN</td><td><code>model.optimizer</code>（<code>SGD</code> / <code>AdamW</code>、既定 <code>SGD</code>）を追加。エポック数以外の共通学習設定の既定値は現状のまま。</td></tr>
+<tr><td>Cellpose</td><td><code>pretrained_model</code> は <code>cpsam</code> / <code>cpsam_v2</code>（既定 <code>cpsam</code>）。<code>optimizer</code>・<code>class_weights</code>・<code>rescale</code> を削除。<code>bsize</code> は 256 以外なら設定エラー。<code>scale_range</code> は 0〜1（既定 0.5）、範囲外は設定エラー。<code>nimg_per_epoch</code> の既定は null（自動）。<code>min_train_masks</code> の既定は 5。<br>Cellpose を選んだときの共通学習設定の既定値: <code>learning_rate</code> 1e-5、<code>weight_decay</code> 0.1、<code>batch_size</code> 1、<code>epochs</code> 40。エポック数が 99 以下なので、学習率は最初の 10 エポックのウォームアップの後は一定になる（10.1）。</td></tr>
+<tr><td>旧設定の移行</td><td>cyto3 / nuclei や、<code>optimizer</code> 付きの Cellpose 設定は、<code>migrate_experiment_config</code> で旧形式と判定する（再試行不可、「設定を複製して新規実験」を案内）。</td></tr>
+<tr><td>設定検証に追加</td><td>エラー: 学習用ライブラリが未導入、学習版のチャンネル不一致、ResNet101 + COCO、アンカーのサイズが 5 個でない、bsize ≠ 256。警告: 必要容量の目安、選んだ cpsam / cpsam_v2 の重みが未取得（初回ダウンロード約 1.2 GB、12.3）。情報: 1 チャンネルでは無効なチャンネル系の拡張。</td></tr>
+</table></div>
+<p>設定検証（<code>validate_experiment_config</code>）は GUI から頻繁に呼ばれるので、ファイルの中身を読む検査は行いません（件数・フォルダ数は <code>metadata.csv</code> から数える）。重い検査は学習プロセスの事前検査（8.2）で行います。</p>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s14">
+<h2>14. 依存ライブラリ</h2>
+<ul>
+<li><code>pyproject.toml</code> の <code>[ml]</code>: <code>torch</code>、<code>torchvision</code>、<code>cellpose&gt;=4.2,&lt;4.3</code>（非公開関数を使うため上限付き）、<code>scipy</code>、<code>optuna</code>。</li>
+<li>検証済みの組み合わせを <code>constraints-ml.txt</code> に固定する（例: <code>torch==2.14.0</code>、<code>torchvision==0.29.0</code>、<code>cellpose==4.2.1.1</code> と、その依存）。CPU 版と CUDA 版は <code>--index-url</code> だけを変える（<code>==2.14.0</code> は <code>2.14.0+cpu</code> や <code>2.14.0+cu126</code> にも一致する）。</li>
+<li>README のインストール手順に <code>-c constraints-ml.txt</code> を加える。</li>
+<li>学習プロセスは起動時に、実際の版と <code>constraints-ml.txt</code> を比べて警告する（8.2）。</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s15">
+<h2>15. テストと受け入れ条件</h2>
+
+<h3 id="s15-1">15.1 通常のテスト（torch 不要）</h3>
+<ul>
+<li>DatasetStore: 列挙、結合、並び順、チャンネル不一致。</li>
+<li>TrainingService: 保存と復元、キュー、試行の準備（同じ要求で試行が増えないこと。queue.json の保存に失敗した後、再起動せずに再準備しても試行が増えないこと）、終端判定の優先順位（5.2 の各行）、復旧（5.4。<code>run_spec</code> だけあってキュー行が <code>queued</code> のまま、など）。</li>
+<li>folds: 同じ入力で同じ割り当てになる、グループが fold をまたがない、層別。</li>
+<li>AP の集計（<code>aggregate</code>）と空の規則: 両方空、正解だけ空、画像平均とプール集計、対象なしの分類。</li>
+<li>protocol: 途中で切れた最終行、重複した seq、欠落した seq。</li>
+</ul>
+
+<h3 id="s15-2">15.2 学習プロセスと GUI のテスト</h3>
+<ul>
+<li>偽アダプタで、CV → OOF → 選択 → 最終学習 → manifest までを数秒で確認する（早期終了で候補エポックが減る場合、共通部分が空になる場合を含む）。</li>
+<li>AP のマッチング（<code>match_counts</code>）: 非連続ラベル、背景画素なし、手計算した小さな例との一致。cellpose が必要なので <code>@pytest.mark.ml</code>（cellpose がなければスキップ）。</li>
+<li>実際の Mask R-CNN のスモーク（ダミーの train_v000、K = 2、epochs = 2、min_size = 256）。<code>@pytest.mark.slow</code>、torch がなければスキップ。</li>
+<li>GUI: 偽の子プロセス（イベントを出して終わる／眠り続ける／途中で落ちる／<code>hello</code> を出さない／保存中に kill される）で、開始・進捗・中断・異常終了・起動失敗・GUI 再起動後の復元・キューの継続を、ユーザーの操作経路（QTest のクリック）で確認する。</li>
+</ul>
+
+<h3 id="s15-3">15.3 受け入れ条件（hybrid を既定にする前）</h3>
+<ol>
+<li>CPU の PC で、Mask R-CNN の実験をダミーデータで最後まで学習でき、実験一覧・詳細に OOF AP・選択エポック・final.pt が表示される。</li>
+<li>cpsam と cpsam_v2 のそれぞれで手動確認: SAM 系と判定されること、batch 1・256 パッチ・2 画像で forward / backward、保存 → 再読込 → 推論ができる（ウォームアップで 1 エポック目は学習率 0 なので、2 エポック以上回す）。再読込と推論は、<code>workspace/pretrained/</code> を一時的に空にした状態でもできること（12.3）。</li>
+<li>代表的な最大サイズの画像で、<code>labels_to_flows</code> の 1 回あたりの時間とメモリを CPU で測り、記録する（CUDA の PC でも後で測る）。</li>
+<li>学習中の中断、学習中のアプリ終了、学習プロセスの強制終了のそれぞれで、状態が正しく確定し、再起動後も同じ表示になる。</li>
+<li>キューに 3 件（うち 1 件は失敗するもの）を入れて、順に最後まで進む。</li>
+</ol>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s16">
+<h2>16. 実装の順序</h2>
+<p>各段階でテストが通った状態でコミットします。</p>
+<div class="table-wrap"><table class="keys">
+<tr><th>段階</th><th>内容</th><th>確認</th></tr>
+<tr><td>A. 土台（torch 不要）</td><td>DatasetStore、folds、seeds、AP、protocol、TrainingService（保存・復元・キュー・準備・終端判定）、ProfileStore</td><td>15.1</td></tr>
+<tr><td>B. 学習プロセス</td><td>run / preflight / loop / checkpoints / 偽アダプタ、前処理とプロファイル</td><td>偽アダプタで全体の流れ</td></tr>
+<tr><td>C. GUI 接続</td><td>TrainingRunner、ジョブ 2 種、Job Object、HybridBackend、既存画面の変更（6.2）、起動時の復旧、<code>--backend</code></td><td>偽の子プロセスによる GUI テスト。モックの既存テストが通ること</td></tr>
+<tr><td>D. Mask R-CNN</td><td>アダプタ、依存の導入と <code>constraints-ml.txt</code></td><td>スモークと受け入れ条件 1</td></tr>
+<tr><td>E. Cellpose</td><td>アダプタ、Cellpose の段（9.4）</td><td>受け入れ条件 2・3</td></tr>
+<tr><td>F. 仕上げ</td><td>比較へ送る（2.4）、拡張プレビューの学習版対応（6.5）、表示名の変更</td><td>受け入れ条件 4・5</td></tr>
+</table></div>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s17">
+<h2>17. 未決事項</h2>
+<ul>
+<li><b>CUDA 上の学習速度・メモリ</b>: CUDA の PC に移った時点で測り、batch_size などの既定値を見直します。</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s18">
+<h2>18. 改訂履歴</h2>
+<div class="table-wrap"><table class="rev">
+<tr><th>版</th><th>日付</th><th>内容</th></tr>
+<tr><td>v1.0</td><td>2026-09-28</td><td>初版。Claude がたたき台を作り、GPT-6 Astra とのレビュー 5 回で詰めた。</td></tr>
+<tr><td>v1.1</td><td>2026-09-28</td><td>開発者本人の指示を反映。エポック数の既定を 40 にした（13 章、12.2 の容量の例）。Cellpose の事前学習済みモデルに cpsam_v2 を加えた（1 章、10.3 ほか）。重みの保存場所を固定し、ユーザーが変更できないようにした（12.3、7.1、run_spec の相対パス）。</td></tr>
+</table></div>
+</div>
+
+</div>
+</body>
+</html>

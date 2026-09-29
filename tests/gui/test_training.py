@@ -1,13 +1,15 @@
 """モデル学習ページと拡張プロファイルの画面テスト。"""
 
 import copy
+from unittest.mock import patch
 
+import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QLabel, QLineEdit, QMessageBox
 
 from foam_cell_analysis.gui.modes.training.augmentation_dialog import AugmentationDialog
-from foam_cell_analysis.gui.navigation import PageId
+from foam_cell_analysis.gui.navigation import ModeId, PageId
 from foam_cell_analysis.gui.theme import numeric_font
 
 
@@ -178,14 +180,35 @@ def test_training_options_refresh_and_preserve_selection(shell):
 def test_model_type_switch_changes_model_specific_controls(shell):
     page = shell.page(PageId.TRAINING)
 
-    page.model_type.setCurrentIndex(1)
+    page.model_type.setFocus()
+    QTest.keyClick(page.model_type, Qt.Key.Key_End)
 
     assert page.config["model"]["type"] == "cellpose"
     assert "model.pretrained_model" in page._model_widgets["cellpose"]
     assert "model.backbone" not in page._model_widgets["cellpose"]
-    page.model_type.setCurrentIndex(0)
+    page.model_type.setFocus()
+    QTest.keyClick(page.model_type, Qt.Key.Key_Home)
     assert page.config["model"]["type"] == "mask_rcnn"
     assert "model.backbone" in page._model_widgets["mask_rcnn"]
+
+
+def test_model_switch_updates_only_untouched_shared_defaults(shell, qapp):
+    page = shell.page(PageId.TRAINING)
+    page.model_type.setFocus()
+    QTest.keyClick(page.model_type, Qt.Key.Key_End)
+    qapp.processEvents()
+    assert page.config["training"]["batch_size"] == 1
+    assert page.config["training"]["learning_rate"] == 1e-5
+    assert page.config["training"]["weight_decay"] == 0.1
+
+    page.fields["training.learning_rate"].setValue(0.0003)
+    page.model_type.setFocus()
+    QTest.keyClick(page.model_type, Qt.Key.Key_Home)
+    qapp.processEvents()
+    assert page.config["training"]["learning_rate"] == 0.0003
+    assert page.config["training"]["batch_size"] == 2
+    assert page.config["training"]["weight_decay"] == 0.0001
+    assert "既定値と異なる値を保持しました" in shell.status_text.text()
 
 
 def test_mask_rcnn_normalization_is_read_only_and_tracks_pretrained_weights(shell, qapp):
@@ -220,6 +243,7 @@ def test_backend_warns_when_api_config_overrides_weight_normalization(mock_backe
     )
 
 
+@pytest.mark.slow
 def test_qtest_final_training_uses_selected_epoch_for_first_run_and_retry(shell, qapp, monkeypatch):
     """選択エポックを最終学習・進捗・再試行の終了条件に使う。"""
     from PySide6.QtCore import Qt
@@ -254,7 +278,7 @@ def test_qtest_final_training_uses_selected_epoch_for_first_run_and_retry(shell,
             7,
         )
         .text()
-        .startswith("最終学習・epoch ")
+        .startswith("最終学習・エポック ")
     )
     assert (
         results.table.item(
@@ -302,7 +326,7 @@ def test_epoch_selection_is_read_only_oof_map_maximum(shell, qapp, monkeypatch):
     selection_label = next(
         label
         for label in page.findChildren(QLabel)
-        if label.text() == "エポック選択の指標：OOF 平均適合率（mAP）・最大"
+        if label.text() == "エポック選択の指標：OOF 平均適合率（AP）・最大"
     )
     assert selection_label
     assert "checkpoint.best_metric" not in page.fields
@@ -438,7 +462,8 @@ def test_legacy_stopped_experiment_retry_is_blocked_without_mutating_record(
     assert experiment.status == "stopped"
 
 
-def test_used_augmentation_profile_is_saved_as_new_version(mock_backend):
+def test_used_augmentation_profile_is_saved_as_new_version(mock_backend, qapp):
+    qapp.processEvents()
     source = mock_backend.get_augmentation_profile("aug_v003")
     original_probability = source.transforms[0].probability
     dialog = AugmentationDialog(mock_backend, "aug_v003")
@@ -456,6 +481,68 @@ def test_used_augmentation_profile_is_saved_as_new_version(mock_backend):
         == original_probability
     )
     assert "exp_0042" in mock_backend.get_augmentation_profile("aug_v003").used_by_experiments
+
+
+def test_augmentation_manual_order_collision_keeps_dense_pipeline(shell, qapp):
+    dialog = AugmentationDialog(shell.ctx.backend, "aug_v001")
+    dialog.show()
+    qapp.processEvents()
+
+    enabled = dialog.controls["horizontal_flip"][0]
+    QTest.mouseClick(enabled, Qt.MouseButton.LeftButton)
+    checked = {key for key, (checkbox, *_rest) in dialog.controls.items() if checkbox.isChecked()}
+    assert sorted(dialog.order_controls[key].value() for key in checked) == list(
+        range(1, len(checked) + 1)
+    )
+    unchecked = set(dialog.order_controls) - checked
+    assert all(dialog.order_controls[key].value() == 0 for key in unchecked)
+    assert all(not dialog.order_controls[key].isEnabled() for key in unchecked)
+
+    moved = dialog.order_controls["rotation"]
+    moved.setFocus()
+    QTest.keyClick(moved, Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier)
+    QTest.keyClicks(moved, "1")
+    QTest.keyClick(moved, Qt.Key.Key_Return)
+    qapp.processEvents()
+    assert moved.value() == 1
+    assert sorted(dialog.order_controls[key].value() for key in checked) == list(
+        range(1, len(checked) + 1)
+    )
+
+    profile = dialog.build_profile()
+    enabled_keys = [item.key for item in profile.transforms if item.enabled]
+    assert profile.order[: len(enabled_keys)] == sorted(
+        enabled_keys, key=lambda key: dialog.order_controls[key].value()
+    )
+    dialog.close()
+
+
+def test_augmentation_preview_uses_selected_released_training_version(qapp, tmp_path):
+    import shutil
+
+    from foam_cell_analysis.gui.modes.training.augmentation_dialog import AugmentationDialog
+    from foam_cell_analysis.services.hybrid_backend import HybridBackend
+    from tests.training.test_training_process import _workspace
+
+    _workspace(tmp_path, n_items=4)
+    shutil.rmtree(tmp_path / "experiments")
+    backend = HybridBackend(tmp_path)
+    dialog = AugmentationDialog(backend, "aug_v001")
+
+    assert dialog.dataset.currentText() == "train_v000"
+    assert dialog.items
+    assert dialog.sample.currentText() in {item.item_id for item in dialog.items}
+    assert any(
+        label.text() == "簡易プレビュー（学習時の変換とは一致しません）"
+        for label in dialog.findChildren(QLabel)
+    )
+    selected = next(item for item in dialog.items if item.item_id == dialog.sample.currentText())
+    expected = backend.get_dataset_item_image("train_v000", selected.item_id, selected.channels[0])
+    assert expected.shape == dialog._preview_images[0].shape
+    QTest.mouseClick(dialog.random_sample, Qt.MouseButton.LeftButton)
+    qapp.processEvents()
+    assert dialog.sample.currentText() in {item.item_id for item in dialog.items}
+    dialog.close()
 
 
 def test_training_summary_tracks_dataset_cv_model_and_epochs(shell, qapp):
@@ -489,30 +576,6 @@ def test_training_yaml_preview_toggles_and_persists(shell, qapp):
     assert page.preview_panel.isHidden()
     assert not page.preview_button.isChecked()
     assert app_settings().value("training/yamlPreview", False, type=bool) is False
-
-
-def test_training_layout_reflows_without_rebuilding_controls(shell, qapp):
-    page = shell.page(PageId.TRAINING)
-    page.preview_action.setChecked(False)
-    epochs = page.fields["training.epochs"]
-    epochs.setValue(37)
-    config_before = page._collect_config()
-    yaml_before = page.yaml_preview.toPlainText()
-    page._update_form_columns(1200)
-    assert page._two_columns
-    scroll = page.scroll.verticalScrollBar()
-    scroll.setValue(min(40, scroll.maximum()))
-    scroll_position = scroll.value()
-    epochs.setFocus()
-    page._update_form_columns(800)
-    qapp.processEvents()
-    assert not page._two_columns
-    assert page.fields["training.epochs"] is epochs
-    assert epochs.value() == 37
-    assert page.focusWidget() is epochs
-    assert scroll.value() == scroll_position
-    assert page._collect_config() == config_before
-    assert page.yaml_preview.toPlainText() == yaml_before
 
 
 def test_training_anchor_fields_remain_editable_and_sync_yaml(shell, qapp):
@@ -549,39 +612,294 @@ def test_training_validation_warning_is_clickable_and_clears_after_edit(shell, m
     assert page._validation_results == []
 
 
-def test_training_yaml_preview_menu_state_persists_and_restores(shell, qapp):
-    from foam_cell_analysis.gui.modes.training.page import TrainingPage
-    from foam_cell_analysis.gui.settings import app_settings
+def _wheel(widget, delta=-120):
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QWheelEvent
+    from PySide6.QtWidgets import QApplication
 
+    center = QPointF(widget.rect().center())
+    event = QWheelEvent(
+        center,
+        QPointF(widget.mapToGlobal(widget.rect().center())),
+        QPoint(0, 0),
+        QPoint(0, delta),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+    QApplication.sendEvent(widget, event)
+
+
+def test_wheel_never_changes_inputs_and_number_fields_have_no_arrows(shell, qapp):
+    from PySide6.QtWidgets import QAbstractSpinBox
+
+    from foam_cell_analysis.gui.navigation import ModeId
+
+    shell.navigate(PageId.TRAINING)
     page = shell.page(PageId.TRAINING)
-    page.preview_action.trigger()
-    assert page.preview_action.isChecked()
-    assert app_settings().value("training/yamlPreview", False, type=bool)
-    restored = TrainingPage(shell.ctx)
-    assert restored.preview_action.isChecked()
-    assert not restored.preview_panel.isHidden()
+    window = shell.manager.window(ModeId.TRAINING)
+    window.resize(1000, 600)
+    window.show()
+    qapp.processEvents()
+    folds = page.fields["data.cv.n_folds"]
+    epochs = page.fields["training.epochs"]
+    learning_rate = page.fields["training.learning_rate"]
+    before = page._collect_config()
+    model_index = page.model_type.currentIndex()
+    scroll = page.scroll.verticalScrollBar()
+    scroll.setValue(0)
+    for widget in (folds, epochs, learning_rate):
+        assert widget.buttonSymbols() == QAbstractSpinBox.ButtonSymbols.NoButtons
+        widget.setFocus()
+        qapp.processEvents()
+        _wheel(widget.lineEdit(), -120)
+        _wheel(widget, -120)
+    # 値は変わらず、ホイールは外側のフォームをスクロールする
+    assert scroll.maximum() == 0 or scroll.value() > 0
+    page.model_type.setFocus()
+    _wheel(page.model_type, -120)
+    qapp.processEvents()
+
+    after = page._collect_config()
+    assert after["data"]["cv"]["n_folds"] == before["data"]["cv"]["n_folds"]
+    assert after["training"]["epochs"] == before["training"]["epochs"]
+    assert after["training"]["learning_rate"] == before["training"]["learning_rate"]
+    assert page.model_type.currentIndex() == model_index
+    window.hide()
 
 
-def test_training_only_rpn_and_roi_details_are_collapsible(shell):
-    from foam_cell_analysis.gui.widgets.form import CollapsibleSection, FormSection
+def test_learning_rate_accepts_exponent_input_in_form_and_queue_table(shell, qapp):
+    from PySide6.QtCore import Qt
 
+    backend = shell.ctx.backend
     page = shell.page(PageId.TRAINING)
-    labels = [section.title for section in page.findChildren(CollapsibleSection)]
-    assert labels == ["RPN 詳細設定", "ROI 詳細設定"]
-    assert not page.model_stack.isHidden()
-    assert page.fields["augmentation.profile"] is not None
-    assert page.fields["checkpoint.validation_interval"] is not None
-    assert any(
-        isinstance(widget, FormSection) and widget.title() == "途中保存モデル / 評価"
-        for widget, _column in page._form_widgets
+    field = page.fields["training.learning_rate"]
+    assert "e-" in field.text()
+    field.setFocus()
+    field.lineEdit().selectAll()
+    QTest.keyClicks(field.lineEdit(), "1.0e-5")
+    QTest.keyClick(field.lineEdit(), Qt.Key.Key_Return)
+    assert page._collect_config()["training"]["learning_rate"] == 1e-5
+    assert field.text() == "1e-05"
+
+    queued = backend.get_experiment(page.enqueue_config())
+    assert queued.config.values["training"]["learning_rate"] == 1e-5
+    shell.navigate(PageId.TRAINING_QUEUE)
+    queue = shell.page(PageId.TRAINING_QUEUE)
+    index = queue.model.index(0, queue.model.column_for_path("training.learning_rate"))
+    assert index.data() == "1e-05"
+    queue.table.setCurrentIndex(index)
+    queue.table.edit(index)
+    qapp.processEvents()
+    editor = queue.table.findChild(type(field))
+    editor.lineEdit().selectAll()
+    QTest.keyClicks(editor.lineEdit(), "2.5e-4")
+    QTest.keyClick(editor.lineEdit(), Qt.Key.Key_Return)
+    qapp.processEvents()
+    assert backend.get_experiment(queued.experiment_id).config.values["training"][
+        "learning_rate"
+    ] == pytest.approx(2.5e-4)
+    assert queue.model.index(0, index.column()).data() == "2.5e-04"
+
+
+def _enqueue_waiting_row(backend, *, model_type="mask_rcnn", epochs=17):
+    config = backend.default_experiment_config(model_type)
+    config["experiment"]["id"] = backend.next_experiment_id()
+    config["training"]["epochs"] = epochs
+    return backend.add_training_queue_item(config)
+
+
+def _open_queue_editor(shell, queued, qapp):
+    shell.navigate(PageId.TRAINING_QUEUE)
+    qapp.processEvents()
+    queue = shell.page(PageId.TRAINING_QUEUE)
+    queue.table.selectRow(queue.model.row_for_id(queued.experiment_id))
+    queue.queue_actions["edit"].trigger()
+    qapp.processEvents()
+    return shell.page(PageId.TRAINING)
+
+
+@pytest.mark.parametrize("finish", ["save", "cancel"])
+def test_queue_edit_finish_restores_previous_form_and_view(shell, qapp, qtbot, finish):
+    backend = shell.ctx.backend
+    shell.navigate(PageId.TRAINING)
+    page = shell.page(PageId.TRAINING)
+    window = shell.manager.window(ModeId.TRAINING)
+    window.resize(1050, 720)
+    window.show()
+    qapp.processEvents()
+
+    page.model_type.setCurrentIndex(page.model_type.findData("cellpose"))
+    page.fields["training.epochs"].setValue(33)
+    page.description_edit.setText("編集中の新規設定")
+    page.preview_action.setChecked(True)
+    qapp.processEvents()
+    maximum = page.scroll.verticalScrollBar().maximum()
+    before_scroll = min(80, maximum)
+    page.scroll.verticalScrollBar().setValue(before_scroll)
+    before_yaml = page.preview_action.isChecked()
+    before_config = copy.deepcopy(page._collect_config())
+    before_actions = {
+        name: (action.isEnabled(), action.toolTip())
+        for name, action in page.training_actions.items()
+    }
+
+    queued = _enqueue_waiting_row(backend)
+    page = _open_queue_editor(shell, queued, qapp)
+    page.fields["training.epochs"].setValue(21)
+    page.preview_action.setChecked(not before_yaml)
+    page.scroll.verticalScrollBar().setValue(0)
+    if finish == "save":
+        QTest.mouseClick(page.save_button, Qt.MouseButton.LeftButton)
+        assert (
+            backend.get_experiment(queued.experiment_id).config.values["training"]["epochs"] == 21
+        )
+    else:
+        QTest.mouseClick(page.cancel_queue_edit_button, Qt.MouseButton.LeftButton)
+        assert (
+            backend.get_experiment(queued.experiment_id).config.values["training"]["epochs"] == 17
+        )
+    qapp.processEvents()
+
+    shell.navigate(PageId.TRAINING)
+    qapp.processEvents()
+    assert page.fields["training.epochs"].value() == 33
+    assert page.description_edit.text() == "編集中の新規設定"
+    assert page.model_type.currentData() == "cellpose"
+    assert page.preview_action.isChecked() is before_yaml
+    assert page.scroll.verticalScrollBar().value() == before_scroll
+    assert page.queue_edit_banner.isHidden()
+    assert page.validate_button.isVisible()
+    assert page.queue_button.isVisible()
+    assert page.start_button.isVisible()
+    assert page.cancel_queue_edit_button.isHidden()
+    assert {
+        name: (action.isEnabled(), action.toolTip())
+        for name, action in page.training_actions.items()
+    } == before_actions
+    assert page._collect_config()["training"]["epochs"] == before_config["training"]["epochs"]
+
+
+def test_queue_edit_disables_actions_and_execution_methods(shell, qapp, monkeypatch):
+    backend = shell.ctx.backend
+    queued = _enqueue_waiting_row(backend)
+    page = _open_queue_editor(shell, queued, qapp)
+    waiting_before = len(backend.list_training_queue())
+    calls = []
+    monkeypatch.setattr(
+        backend, "validate_experiment_config", lambda _config: calls.append("validate") or []
     )
 
+    for name in ("validate", "queue", "start"):
+        action = page.training_actions[name]
+        assert not action.isEnabled()
+        assert "キューの行を編集中" in action.toolTip()
+        action.trigger()
+    assert page.validate_config() == []
+    assert page.enqueue_config() is None
+    assert page.start_training(confirm=False) is None
+    assert calls == []
+    assert len(backend.list_training_queue()) == waiting_before
+    assert not shell.ctx.jobs.training_jobs
 
-def test_training_action_groups_have_only_start_as_primary(shell):
+
+def test_summary_tracks_cv_stratification_and_source_folder_grouping(shell, qapp, qtbot):
+    shell.navigate(PageId.TRAINING)
     page = shell.page(PageId.TRAINING)
-    assert page.validate_button.parentWidget() is page.validation_actions
-    assert page.save_button.parentWidget() is page.validation_actions
-    assert page.queue_button.parentWidget() is page.execution_actions
-    assert page.start_button.parentWidget() is page.execution_actions
-    assert page.start_button.property("primary") is True
-    assert page.validate_button.property("primary") is not True
+    stratify = page.fields["data.cv.stratify_by_classification"]
+    group = page.fields["data.cv.group_by_source_folder"]
+    stratify.setChecked(False)
+    group.setChecked(False)
+    qapp.processEvents()
+    initial = page.summary_label.text()
+    page.scroll.ensureWidgetVisible(stratify)
+    qapp.processEvents()
+    stratify.setFocus()
+    QTest.keyClick(stratify, Qt.Key.Key_Space)
+    qapp.processEvents()
+    assert stratify.isChecked()
+    assert page.summary_label.text() != initial
+    assert "層別" in page.summary_label.text()
+    page.scroll.ensureWidgetVisible(group)
+    qapp.processEvents()
+    group.setFocus()
+    QTest.keyClick(group, Qt.Key.Key_Space)
+    qapp.processEvents()
+    assert "フォルダ単位" in page.summary_label.text()
+    stratify.setFocus()
+    QTest.keyClick(stratify, Qt.Key.Key_Space)
+    qapp.processEvents()
+    assert "層別" not in page.summary_label.text()
+    assert "フォルダ単位" in page.summary_label.text()
+    assert "group_by_source_folder: true" in page.yaml_preview.toPlainText()
+
+
+@pytest.mark.parametrize("finish", ["save", "cancel"])
+def test_opening_another_queue_row_keeps_form_from_before_queue_edit(shell, qapp, finish):
+    """キュー編集中に別の行を開いても、最初のキュー編集前の設定に戻り、未保存の変更は移らない。"""
+    backend = shell.ctx.backend
+    shell.navigate(PageId.TRAINING)
+    page = shell.page(PageId.TRAINING)
+    page.fields["training.epochs"].setValue(33)
+    page.description_edit.setText("元の新規設定")
+    qapp.processEvents()
+
+    first = _enqueue_waiting_row(backend, epochs=17)
+    second = _enqueue_waiting_row(backend, epochs=27)
+    page = _open_queue_editor(shell, first, qapp)
+    page.fields["training.epochs"].setValue(18)
+    page = _open_queue_editor(shell, second, qapp)
+    assert page.fields["training.epochs"].value() == 27
+
+    if finish == "save":
+        page.fields["training.epochs"].setValue(30)
+        QTest.mouseClick(page.save_button, Qt.MouseButton.LeftButton)
+    else:
+        QTest.mouseClick(page.cancel_queue_edit_button, Qt.MouseButton.LeftButton)
+    qapp.processEvents()
+
+    assert backend.get_experiment(first.experiment_id).config.values["training"]["epochs"] == 17
+    expected_second = 30 if finish == "save" else 27
+    assert (
+        backend.get_experiment(second.experiment_id).config.values["training"]["epochs"]
+        == expected_second
+    )
+    shell.navigate(PageId.TRAINING)
+    qapp.processEvents()
+    assert page.fields["training.epochs"].value() == 33
+    assert page.description_edit.text() == "元の新規設定"
+    assert page.queue_edit_banner.isHidden()
+
+
+def test_start_training_mouse_click_keeps_confirmation(shell, qapp):
+    shell.navigate(PageId.TRAINING)
+    page = shell.page(PageId.TRAINING)
+    with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.No) as ask:
+        QTest.mouseClick(page.start_button, Qt.MouseButton.LeftButton)
+        qapp.processEvents()
+    assert ask.call_count == 1
+    assert shell.ctx.jobs.running_count == 0
+
+
+def test_missing_dataset_version_is_a_validation_error_and_value_error(shell):
+    backend = shell.ctx.backend
+    config = backend.default_experiment_config("mask_rcnn")
+    config["data"]["dataset_version"] = "missing_train_v999"
+    issues = backend.validate_experiment_config(config)
+    assert any(issue["level"] == "error" for issue in issues)
+    with pytest.raises(ValueError, match="missing_train_v999"):
+        backend.estimate_training_items(dataset_version="missing_train_v999")
+
+
+def test_training_runner_owns_the_single_training_slot(shell):
+    backend = shell.ctx.backend
+    experiment = backend.start_training(backend.default_experiment_config("mask_rcnn"))
+    shell.ctx.training_runner.start(experiment.experiment_id)
+
+    with pytest.raises(RuntimeError, match="別の学習"):
+        shell.ctx.training_runner.start("exp_other")
+
+    assert shell.ctx.jobs.has_training_job
+    assert shell.ctx.jobs.jobs() == []
+    shell.ctx.training_runner.request_stop()

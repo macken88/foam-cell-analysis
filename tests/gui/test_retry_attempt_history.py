@@ -1,5 +1,8 @@
 """再試行を別の実行試行として保存する GUI 回帰テスト。"""
 
+import copy
+
+import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QMessageBox
@@ -141,6 +144,8 @@ def test_active_retry_runs_as_another_attempt_without_new_experiment(shell, monk
     backend = shell.ctx.backend
     original = backend.get_experiment("exp_0044")
     original.status = "stopped"
+    # やり直しが最後まで走るのを待つので、短い学習にしておく
+    original.config.values["training"]["epochs"] = 1
     run_count = len(original.runs)
     ids_before = {item.experiment_id for item in backend.list_experiments()}
     config = backend.default_experiment_config("mask_rcnn")
@@ -174,8 +179,8 @@ def test_active_retry_runs_as_another_attempt_without_new_experiment(shell, monk
     assert {item.experiment_id for item in backend.list_experiments()} == ids_before | {
         active.experiment_id
     }
-    assert len(backend.list_training_queue()) == 2
-    assert backend.list_training_queue()[-1].experiment_id == original.experiment_id
+    # 終わった行（元の学習とやり直しの予約）は、結果が実験一覧に残るためキューから外れる
+    assert wait_for(qapp, lambda: backend.list_training_queue() == [])
     for job in shell.ctx.jobs.training_jobs:
         job.cancel()
 
@@ -292,3 +297,19 @@ def test_rereserving_after_cancel_keeps_retry_reservations_distinct(shell, monke
     assert active.experiment_id in {entry.experiment_id for entry in backend.list_training_queue()}
     for job in shell.ctx.jobs.training_jobs:
         job.cancel()
+
+
+def test_legacy_retry_api_rejects_without_migrating_existing_config(shell):
+    backend = shell.ctx.backend
+    experiment = backend.get_experiment("exp_0044")
+    config = experiment.config.values
+    config["data"].pop("cv", None)
+    config["data"]["split_id"] = "split_001"
+    config["checkpoint"].pop("save_fold_models", None)
+    config["checkpoint"]["best_metric"] = "instance_map"
+    config["checkpoint"]["best_mode"] = "min"
+    experiment.status = "stopped"
+    saved = copy.deepcopy(config)
+    with pytest.raises(ValueError, match="旧形式"):
+        backend.retry_experiment(experiment.experiment_id)
+    assert experiment.config.values == saved

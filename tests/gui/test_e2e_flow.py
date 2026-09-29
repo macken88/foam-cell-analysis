@@ -51,7 +51,7 @@ def test_training_candidate_release_and_routing_flow(shell, qtbot, monkeypatch):
     training.fields["training.epochs"].setValue(2)
     experiment_id = training.start_training(confirm=False)
     assert shell.current_page() is shell.page(PageId.EXPERIMENTS)
-    assert shell.ctx.jobs.jobs()
+    assert shell.ctx.training_runner.is_busy
     _wait_for(qtbot, lambda: shell.ctx.backend.get_experiment(experiment_id).status == "completed")
     experiment = shell.ctx.backend.get_experiment(experiment_id)
     assert any(checkpoint.name == "final.pt" for checkpoint in experiment.checkpoints)

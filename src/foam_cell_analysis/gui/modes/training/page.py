@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import math
 from typing import Any
 
 from PySide6.QtCore import QEvent, Qt
@@ -32,16 +31,16 @@ from PySide6.QtWidgets import (
 
 from ....services.backend import normalization_for_weights
 from ...context import DEFAULT_CHANNEL, AppContext
-from ...jobs import FakeJob
 from ...labels import (
     config_key_label,
+    format_exponent,
     model_type_label,
     training_choice_label,
 )
 from ...navigation import PageId
 from ...settings import app_settings
 from ...theme import Color, body_font, mono_font, numeric_font, set_style
-from ...widgets.form import CollapsibleSection, FormSection
+from ...widgets.form import CollapsibleSection, FormSection, ScientificDoubleSpinBox
 from ...widgets.page_base import BasePage
 from ...widgets.table import bind_button_action, mark_primary
 from .augmentation_dialog import AugmentationDialog
@@ -232,8 +231,13 @@ class TrainingPage(BasePage):
         self.preview_button.setChecked(self.preview_action.isChecked())
         self.preview_button.clicked.connect(self.preview_action.toggle)
         self.preview_panel.setVisible(self.preview_action.isChecked())
-        self.augmentation_action = QAction("データ拡張プロファイルの編集…", self)
+        self.augmentation_action = QAction("データ拡張を設定…", self)
         self.augmentation_action.triggered.connect(self.open_augmentation_dialog)
+        self.reset_defaults_action = QAction("既定値に戻す", self)
+        self.reset_defaults_action.setToolTip(
+            "現在のモデルの既定値に戻します。実験群・説明・データセット版は保持します。"
+        )
+        self.reset_defaults_action.triggered.connect(self.reset_defaults)
         bind_button_action(self.validate_button, self.training_actions["validate"])
         bind_button_action(self.save_button, self.training_actions["save"])
         bind_button_action(self.queue_button, self.training_actions["queue"])
@@ -267,6 +271,7 @@ class TrainingPage(BasePage):
 
     def menu_actions(self):
         return {
+            "edit": [self.reset_defaults_action],
             "file": [self.training_actions["new"], self.training_actions["save"]],
             "training": [
                 self.training_actions["validate"],
@@ -277,6 +282,25 @@ class TrainingPage(BasePage):
             "view": [self.preview_action],
             "tools": [self.augmentation_action],
         }
+
+    def reset_defaults(self) -> None:
+        """現在のモデルの既定値に戻し、実験の識別情報を保つ。"""
+        if (
+            QMessageBox.question(self, "既定値に戻す", "現在のモデルの既定値に戻しますか？")
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        current = self._collect_config()
+        defaults = self.ctx.backend.default_experiment_config(self.model_type.currentData())
+        defaults["experiment"]["study_id"] = current["experiment"].get("study_id", "foam_study")
+        defaults["experiment"]["description"] = current["experiment"].get("description", "")
+        defaults["data"]["dataset_version"] = current["data"].get("dataset_version")
+        defaults["experiment"]["id"] = current["experiment"].get("id")
+        self.config = defaults
+        self._configs_by_model[self.model_type.currentData()] = copy.deepcopy(defaults)
+        self._clear_validation_results()
+        self._build_form()
+        self._refresh_yaml()
 
     def _build_form(self) -> None:
         """共通フォームとモデル別スタックを組み立てる。"""
@@ -365,11 +389,10 @@ class TrainingPage(BasePage):
             self.fields.update(widgets)
             self._add_form_widget(section, 0 if key == "training" else 1)
             if key == "augmentation":
-                self.profile_preview_button = QPushButton("プロファイルをプレビュー")
-                self.profile_edit_button = QPushButton("表示 / 編集…")
-                for button in (self.profile_preview_button, self.profile_edit_button):
-                    button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-                self.profile_preview_button.clicked.connect(self.open_augmentation_dialog)
+                self.profile_edit_button = QPushButton("データ拡張を設定…")
+                self.profile_edit_button.setSizePolicy(
+                    QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+                )
                 self.profile_edit_button.clicked.connect(self.open_augmentation_dialog)
                 profile_label = QLabel("プロファイル")
                 profile = widgets["augmentation.profile"]
@@ -382,7 +405,6 @@ class TrainingPage(BasePage):
                     profile_label = old_label
                 profile_row = QHBoxLayout()
                 profile_row.addWidget(profile, 1)
-                profile_row.addWidget(self.profile_preview_button)
                 profile_row.addWidget(self.profile_edit_button)
                 profile_row.addStretch(1)
                 section.form.addRow(profile_label, profile_row)
@@ -452,7 +474,10 @@ class TrainingPage(BasePage):
             if widget.parentWidget() is not target_parent:
                 widget.setParent(target_parent)
             target_layout.addWidget(widget)
-            widget.show()
+            if widget is self.model_note:
+                widget.setVisible(self.model_type.currentData() == "cellpose")
+            else:
+                widget.show()
         self.right_column_widget.setVisible(two_columns)
         self._two_columns = two_columns
         self.form_layout.activate()
@@ -469,8 +494,10 @@ class TrainingPage(BasePage):
         if widget is None:
             return ""
         while widget is not None and widget is not self.form_host:
-            if widget.toolTip():
-                return widget.toolTip()
+            # 入力が不正な間はツールチップが範囲の説明に替わるため、元の値を優先する
+            path = widget.property("baseToolTip") or widget.toolTip()
+            if path:
+                return str(path)
             widget = widget.parentWidget()
         return ""
 
@@ -509,9 +536,7 @@ class TrainingPage(BasePage):
                 "model.pretrained_weights", str(model.get("pretrained_weights", "coco"))
             )
         else:
-            model_spec = training_choice_label(
-                "model.pretrained_model", str(model.get("pretrained_model", "cpsam"))
-            )
+            model_spec = str(model.get("pretrained_model", "cpsam"))
         fields = [
             ("データ", f"{dataset}・{classification}・{quality}・学習 {train} 件"),
             (
@@ -538,7 +563,7 @@ class TrainingPage(BasePage):
                 "学習",
                 f"{config['training']['epochs']} エポック・"
                 f"バッチ {config['training']['batch_size']}・"
-                f"学習率 {config['training']['learning_rate']}",
+                f"学習率 {format_exponent(float(config['training']['learning_rate']))}",
             ),
         ]
         num_family = numeric_font().family()
@@ -583,7 +608,21 @@ class TrainingPage(BasePage):
     ) -> None:
         for key, value in values.items():
             path = f"{prefix}.{key}"
-            if path in {"data.used_item_ids", "data.input_channels"}:
+            if path == "data.used_item_ids":
+                continue
+            if path == "model.input_channels":
+                continue
+            if (
+                top == "model"
+                and model_name == "cellpose"
+                and path
+                in {
+                    "model.optimizer",
+                    "model.class_weights",
+                    "model.rescale",
+                    "model.normalize",
+                }
+            ):
                 continue
             if (
                 top == "model"
@@ -611,18 +650,35 @@ class TrainingPage(BasePage):
                         self.model_normalization_note.setWordWrap(True)
                         set_style(self.model_normalization_note, role="note")
                         child.form.addRow("画像平均・標準偏差", self.model_normalization_note)
-                    section.form.addRow(child)
+                    if path == "model.input.normalization":
+                        section.form.addRow(CollapsibleSection("前処理 詳細設定", child))
+                    else:
+                        section.form.addRow(child)
                 continue
             if path == "model.type":
                 continue
             if path == "checkpoint.best_metric":
                 section.add_row(
                     "",
-                    QLabel("エポック選択の指標：OOF 平均適合率（mAP）・最大"),
+                    QLabel("エポック選択の指標：OOF 平均適合率（AP）・最大"),
                     path,
                 )
                 continue
-            control = self._control(path, value)
+            if path == "data.input_channels":
+                control = QLabel("A（単一チャンネル）")
+                control.setToolTip(path)
+            elif path == "model.input.normalization.method":
+                control = QLabel("画像ごとのパーセンタイル（下位〜上位を 0〜1 に）")
+                control.setToolTip(path)
+            elif path == "model.bsize":
+                control = QLabel("256（cpsam 系は固定）")
+                control.setToolTip(path)
+            else:
+                control = self._control(path, value)
+            if path == "model.nimg_per_epoch" and isinstance(control, QLineEdit):
+                control.setPlaceholderText("自動（フォールドの学習画像数）")
+            if path == "model.bsize":
+                control.setEnabled(False)
             control.installEventFilter(self)
             for child in control.findChildren(QWidget):
                 child.installEventFilter(self)
@@ -656,6 +712,9 @@ class TrainingPage(BasePage):
         if isinstance(value, bool):
             control = QCheckBox()
             control.setChecked(value)
+        elif path == "training.learning_rate" and isinstance(value, int | float):
+            control = ScientificDoubleSpinBox()
+            control.setValue(float(value))
         elif isinstance(value, int):
             control = QSpinBox()
             control.setRange(0, 1000000)
@@ -709,6 +768,24 @@ class TrainingPage(BasePage):
         previous = self._configs_by_model[old_type]
         for section in ("experiment", "data", "training", "augmentation", "checkpoint"):
             self.config[section] = copy.deepcopy(previous[section])
+        old_defaults = self.ctx.backend.default_experiment_config(old_type)["training"]
+        new_defaults = self.ctx.backend.default_experiment_config(model_type)["training"]
+        target_saved = self._configs_by_model.get(model_type)
+        retained_custom_values = False
+        for key in ("learning_rate", "weight_decay", "batch_size"):
+            current_value = previous["training"][key]
+            if current_value == old_defaults[key]:
+                saved_value = (
+                    target_saved["training"][key] if target_saved is not None else new_defaults[key]
+                )
+                self.config["training"][key] = copy.deepcopy(saved_value)
+                retained_custom_values |= saved_value != new_defaults[key]
+            else:
+                self.config["training"][key] = copy.deepcopy(current_value)
+                retained_custom_values = True
+        if retained_custom_values:
+            self.ctx.status.show_message("既定値と異なる値を保持しました")
+        self._configs_by_model[model_type] = copy.deepcopy(self.config)
         self._active_model = model_type
         self._clear_validation_results()
         self._build_form()
@@ -717,10 +794,13 @@ class TrainingPage(BasePage):
     def _update_model_stack(self) -> None:
         self.model_stack.setCurrentIndex(0 if self.model_type.currentData() == "mask_rcnn" else 1)
         is_cellpose = self.model_type.currentData() == "cellpose"
-        self.model_note.setVisible(is_cellpose)
-        self.model_note.setText(
-            "セル確率閾値・フロー閾値はモデル比較・リリースの推論設定で管理します。"
-        )
+        if is_cellpose:
+            self.model_stack.setFixedHeight(self._model_fields["cellpose"].sizeHint().height())
+        else:
+            self.model_stack.setMinimumHeight(0)
+            self.model_stack.setMaximumHeight(16_777_215)
+        self.model_note.setHidden(not is_cellpose)
+        self.model_note.setText("セル確率閾値・フロー閾値は推論設定で管理します。")
         if not is_cellpose:
             self._update_normalization_note()
 
@@ -791,6 +871,12 @@ class TrainingPage(BasePage):
         widgets = dict(self.fields)
         widgets.update(self._model_widgets.get(model_type, {}))
         for path, widget in widgets.items():
+            if isinstance(widget, QLabel) and path in {
+                "data.input_channels",
+                "model.input.normalization.method",
+                "model.bsize",
+            }:
+                continue
             key_path = path.split(".")
             value = self._read_control(path, widget)
             target = result
@@ -1157,6 +1243,12 @@ class TrainingPage(BasePage):
             action.setEnabled(not editing)
             action.setToolTip(message if editing else "")
             action.setStatusTip(message if editing else "")
+        self.reset_defaults_action.setEnabled(not editing)
+        self.reset_defaults_action.setToolTip(
+            message
+            if editing
+            else "現在のモデルの既定値に戻します。実験群・説明・データセット版は保持します。"
+        )
 
     def refresh_next_identifier(self) -> None:
         """既存実験やキュー追加と衝突しない次の識別子を表示する。"""
@@ -1176,123 +1268,68 @@ class TrainingPage(BasePage):
         return False
 
     def start_training(self, confirm: bool = True) -> str | None:
-        """学習を登録してジョブを開始し、実験一覧へ移る。"""
+        """設定をキューの末尾に追加し、学習していなければキューの実行を始める。"""
         if self._queue_edit_id:
             return None
-        self.config = self._collect_config()
-        results = self.ctx.backend.validate_experiment_config(self.config)
+        config = self._collect_config()
+        results = self.ctx.backend.validate_experiment_config(config)
         errors = [item for item in results if item["level"] == "error"]
         if errors:
             QMessageBox.warning(self, "設定エラー", "\n".join(item["message"] for item in errors))
             return None
+        if self._has_non_draft_id(config["experiment"]["id"]):
+            QMessageBox.warning(self, "学習開始", "下書き以外の実験識別子は使用できません。")
+            return None
         controller = self.ctx.queue_controller
-        training_jobs = self.ctx.jobs.training_jobs
-        if training_jobs:
-            active_id = training_jobs[0].key.removeprefix("training:")
-            answer = QMessageBox.question(
-                self,
-                "学習中",
-                f"学習を実行中です（{active_id}）。この学習をキューの末尾に追加しますか？",
+        busy = controller.executing or self.ctx.training_runner.is_busy
+        warnings = [item["message"] for item in results if item["level"] == "warning"]
+        if confirm and (warnings or not busy):
+            waiting = sum(
+                entry.status == "queued" for entry in self.ctx.backend.list_training_queue()
             )
-            if answer == QMessageBox.StandardButton.Yes:
-                queued_id = self.enqueue_config()
-                if queued_id and controller is not None and not controller.executing:
-                    controller.start()
-                return queued_id
-            return None
-        if controller is not None and controller.executing:
-            answer = QMessageBox.question(
-                self, "学習キュー", "キューを実行中です。この設定をキューの末尾に追加しますか？"
-            )
-            if answer == QMessageBox.StandardButton.Yes:
-                return self.enqueue_config()
-            return None
-        if confirm:
-            warnings = [item["message"] for item in results if item["level"] == "warning"]
-            prompt = "この設定で学習を開始しますか？"
+            if busy:
+                prompt = "学習中のため、この設定はキューの末尾に追加します。"
+            elif waiting:
+                prompt = (
+                    f"キューに待機中の学習が {waiting} 件あります。"
+                    "この設定をキューの末尾に追加し、キューを先頭から実行しますか？"
+                )
+            else:
+                prompt = "この設定で学習を開始しますか？"
             if warnings:
                 prompt += "\n\n警告:\n" + "\n".join(warnings)
             if QMessageBox.question(self, "学習開始", prompt) != QMessageBox.StandardButton.Yes:
                 return None
-        if self._has_non_draft_id(self.config["experiment"]["id"]):
-            QMessageBox.warning(self, "学習開始", "下書き以外の実験識別子は使用できません。")
-            return None
-        experiment = self.ctx.backend.start_training(self.config, self._edit_id)
-        experiment_id = experiment.experiment_id
-
-        def finished(ok, _message):
-            status = (
-                "failed"
-                if experiment_id in getattr(self.ctx.backend, "fail_training_ids", set())
-                else "completed"
-                if ok
-                else "stopped"
+        experiment_id = self._add_to_queue(config)
+        if busy:
+            waiting = sum(
+                entry.status == "queued" for entry in self.ctx.backend.list_training_queue()
             )
-            self.ctx.backend.finish_training(experiment_id, status)
-
-        try:
-            if controller is not None:
-                controller.launch_training(experiment, finished)
-            else:
-                job = self.create_training_job(experiment)
-                job.finished.connect(finished)
-                self.ctx.jobs.start(job)
-        except RuntimeError as error:
-            self.ctx.backend.finish_training(experiment_id, "failed")
-            QMessageBox.warning(self, "学習を開始できません", str(error))
-            return None
-        self.ctx.status.show_message(f"{experiment_id} の学習を開始しました")
-        self._edit_id = None
-        self.config["experiment"]["id"] = self.ctx.backend.next_experiment_id()
-        self.experiment_id.setText(self.config["experiment"]["id"])
-        self._refresh_yaml()
+            self.ctx.status.show_message(
+                f"学習中のため、{experiment_id} をキューの末尾に追加しました（待機 {waiting} 件）"
+            )
+            if not controller.executing:
+                controller.start()
+            return experiment_id
+        controller.start()
+        self.ctx.status.show_message(f"{experiment_id} をキューに追加し、キューの実行を始めました")
         self.ctx.navigator.navigate(PageId.EXPERIMENTS, select=experiment_id)
         return experiment_id
 
-    def create_training_job(self, experiment) -> FakeJob:
-        """保存済み実験用の交差検証・最終学習ジョブを共通生成する。"""
-        experiment_id = experiment.experiment_id
-        epochs = max(1, experiment.total_epochs)
-        folds = int(experiment.config.values["data"]["cv"]["n_folds"])
-        total = epochs * (folds + 1)
-        interval = max(1, int(experiment.config.values["checkpoint"]["validation_interval"]))
-
-        def record(step: int) -> None:
-            phase_step = (step - 1) % epochs + 1
-            phase_index = (step - 1) // epochs
-            progress = phase_step / epochs
-            loss = max(0.01, 1.2 * math.exp(-3 * progress) + 0.01 * (phase_step % 3))
-            if phase_index < folds:
-                map_value = (
-                    min(0.99, 0.35 + 0.6 * progress)
-                    if phase_step % interval == 0 or phase_step == epochs
-                    else None
-                )
-                self.ctx.backend.record_epoch(
-                    experiment_id, phase_step, loss, map_value, phase_index + 1
-                )
-                if phase_index == folds - 1 and phase_step == epochs:
-                    job.total_steps = step + max(1, experiment.selected_epoch or epochs)
-            else:
-                self.ctx.backend.record_epoch(experiment_id, phase_step, loss)
-
-        job = FakeJob(
-            f"学習 {experiment_id}",
-            total_steps=total,
-            interval_ms=30,
-            on_step=record,
-            key=f"training:{experiment_id}",
-        )
-        return job
+    def _add_to_queue(self, config: dict[str, Any]) -> str:
+        """検証済みの設定をキュー末尾へ登録し、フォームを次の実験の識別子へ進める。"""
+        item = self.ctx.backend.add_training_queue_item(config)
+        self._edit_id = None
+        self.config = config
+        self.config["experiment"]["id"] = self.ctx.backend.next_experiment_id()
+        self.experiment_id.setText(self.config["experiment"]["id"])
+        self._refresh_yaml()
+        self.ctx.queue_controller.changed.emit()
+        return item.experiment_id
 
     def enqueue_config(self) -> str | None:
         """現在の設定を検証してキュー末尾へ登録する。"""
         if self._queue_edit_id:
-            return None
-        if self._edit_id:
-            QMessageBox.warning(
-                self, "キューに追加", "編集中のキュー項目は「キューに保存」で更新してください。"
-            )
             return None
         config = self._collect_config()
         issues = self.ctx.backend.validate_experiment_config(config)
@@ -1300,13 +1337,13 @@ class TrainingPage(BasePage):
         if errors:
             QMessageBox.warning(self, "設定エラー", "\n".join(issue["message"] for issue in errors))
             return None
-        item = self.ctx.backend.add_training_queue_item(config)
-        self.refresh_next_identifier()
+        if self._has_non_draft_id(config["experiment"]["id"]):
+            QMessageBox.warning(self, "キューに追加", "下書き以外の実験識別子は使用できません。")
+            return None
+        experiment_id = self._add_to_queue(config)
         waiting = sum(entry.status == "queued" for entry in self.ctx.backend.list_training_queue())
-        self.ctx.status.show_message(
-            f"{item.experiment_id} をキューに追加しました（待機 {waiting} 件）"
-        )
-        return item.experiment_id
+        self.ctx.status.show_message(f"{experiment_id} をキューに追加しました（待機 {waiting} 件）")
+        return experiment_id
 
     def on_enter(self, params: dict[str, Any]) -> None:
         """複製・下書き編集の設定を読み込む。"""

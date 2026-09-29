@@ -1,18 +1,17 @@
 """ホームとモードウィンドウの遷移・状態表示。"""
 
-from datetime import datetime
+from unittest.mock import patch
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QMessageBox
 
 from foam_cell_analysis.gui.home_summary import build_home_summary
-from foam_cell_analysis.gui.jobs import FakeJob
 from foam_cell_analysis.gui.navigation import ModeId, PageId
 from foam_cell_analysis.gui.window_manager import (
     MODE_PAGES,
     PAGE_TO_MODE_TAB,
     PAGE_TYPES,
-    WindowManager,
 )
 
 
@@ -24,6 +23,55 @@ def test_every_page_can_be_opened(shell, qapp):
         window = shell.manager.window(mode)
         assert window.stack.currentWidget() is shell.page(page_id)
         assert shell.manager.current_page_id(mode) == page_id
+
+
+def test_shutdown_confirmation_explains_that_training_will_stop(shell, qapp, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from foam_cell_analysis.gui import training_runner as training_module
+
+    real_fake_job = training_module.FakeTrainingJob
+
+    def slow_fake_job(*args, **kwargs):
+        kwargs["interval_ms"] = 5000
+        return real_fake_job(*args, **kwargs)
+
+    monkeypatch.setenv("FOAM_MOCK_SPEED", "1")
+    monkeypatch.setattr(training_module, "FakeTrainingJob", slow_fake_job)
+    prompts = []
+
+    def decline(_parent, _title, message, *_args, **_kwargs):
+        prompts.append(message)
+        return (
+            QMessageBox.StandardButton.Yes
+            if message == "この設定で学習を開始しますか？"
+            else QMessageBox.StandardButton.No
+        )
+
+    monkeypatch.setattr(QMessageBox, "question", decline)
+    shell.navigate(PageId.TRAINING)
+    page = shell.page(PageId.TRAINING)
+    QTest.mouseClick(page.start_button, Qt.MouseButton.LeftButton)
+    qapp.processEvents()
+    assert shell.ctx.training_runner.is_busy
+
+    file_menu = next(
+        action.menu()
+        for action in shell.home.menuBar().actions()
+        if action.text().startswith("ファイル")
+    )
+    file_menu.popup(shell.home.mapToGlobal(shell.home.menuBar().rect().topLeft()))
+    qapp.processEvents()
+    exit_action = next(action for action in file_menu.actions() if action.text() == "終了")
+    QTest.mouseClick(
+        file_menu,
+        Qt.MouseButton.LeftButton,
+        pos=file_menu.actionGeometry(exit_action).center(),
+    )
+    qapp.processEvents()
+    assert prompts == ["この設定で学習を開始しますか？", "学習を中断して終了しますか？"]
+    assert shell.home.isVisible()
+    shell.ctx.training_runner.job.kill()
 
 
 def test_reopening_mode_uses_single_window(shell):
@@ -114,20 +162,6 @@ def test_ctrl_h_brings_home_forward(shell, qtbot):
     assert shell.home.isVisible()
 
 
-def test_job_count_and_autosave_time_are_shown(shell):
-    shell.navigate(PageId.TRAINING)
-    window = shell.manager.window(ModeId.TRAINING)
-    assert window.job_count.text() == "実行中ジョブ 0"
-    job = shell.ctx.jobs.start(FakeJob("確認", total_steps=100, key="training:exp_0046"))
-    assert window.job_count.text() == "実行中ジョブ 1"
-    assert shell.ctx.jobs.find("training:exp_0046") is job
-    saved_at = datetime.now().astimezone()
-    shell.ctx.status.notify_saved(saved_at)
-    assert window.autosave_text.text() == f"自動保存 {saved_at.strftime('%H:%M:%S')}"
-    job.cancel()
-    assert window.job_count.text() == "実行中ジョブ 0"
-
-
 def test_home_summary_values_match_backend(shell):
     summary = build_home_summary(shell.ctx.backend, shell.ctx.jobs)
     train = shell.ctx.backend.summarize_working_changes("train")
@@ -141,17 +175,58 @@ def test_home_summary_values_match_backend(shell):
     assert summary.routing == shell.ctx.backend.get_routing()
 
 
-def test_mode_window_geometry_is_saved_and_restored(shell, qapp):
+def test_window_activation_refreshes_the_active_page(shell, qapp):
+    shell.navigate(PageId.CANDIDATES)
+    page = shell.page(PageId.CANDIDATES)
+    window = shell.manager.window(ModeId.COMPARISON)
+    for item in shell.ctx.backend.get_working_items():
+        if item.usage in {"train", "val"}:
+            item.classification = item.classification or "分類A"
+            item.quality = item.quality or "良"
+            if not item.mask_revisions:
+                item.mask_revisions = ["rev_001"]
+                item.selected_mask_revision = "rev_001"
+    train_item = next(
+        item for item in shell.ctx.backend.get_working_items() if item.usage == "train"
+    )
+    shell.ctx.backend.update_item("all", train_item.item_id, usage="val")
+    shell.ctx.backend.finalize_working_dataset("ウィンドウ再表示の確認")
+    assert page.validation.findText("val_v004") < 0
+    QTest.qWait(550)
+    qapp.sendEvent(window, QEvent(QEvent.Type.WindowDeactivate))
+    qapp.sendEvent(window, QEvent(QEvent.Type.WindowActivate))
+    qapp.processEvents()
+    assert page.validation.findText("val_v004") >= 0
+
+
+def test_reopening_current_mode_from_home_keeps_active_tab(shell, qapp):
+    shell.navigate(PageId.EXPERIMENTS)
+    window = shell.manager.window(ModeId.TRAINING)
+    QTest.mouseClick(shell.home.pipeline._stages[1], Qt.MouseButton.LeftButton)
+    qapp.processEvents()
+    assert window.tabs.currentIndex() == 2
+    assert shell.manager.current_page_id(ModeId.TRAINING) == PageId.EXPERIMENTS
+
+
+def test_home_refreshes_progress_from_started_training(shell, qapp, monkeypatch):
+    from foam_cell_analysis.gui import training_runner as training_module
+
+    real_fake_job = training_module.FakeTrainingJob
+
+    def quick_job(*args, **kwargs):
+        kwargs["interval_ms"] = 20
+        return real_fake_job(*args, **kwargs)
+
+    monkeypatch.setattr(training_module, "FakeTrainingJob", quick_job)
     shell.navigate(PageId.TRAINING)
-    first = shell.manager.window(ModeId.TRAINING)
-    first.showNormal()
-    first.setGeometry(50, 60, 1024, 768)
+    page = shell.page(PageId.TRAINING)
+    with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+        QTest.mouseClick(page.start_button, Qt.MouseButton.LeftButton)
     qapp.processEvents()
-    first.close()
-    saved = shell.manager.settings.value("windows/training/geometry")
-    assert saved
-    second_manager = WindowManager(shell.ctx, shell.manager.settings)
-    second_manager.navigate(PageId.TRAINING)
-    second = second_manager.window(ModeId.TRAINING)
+    assert shell.ctx.jobs.running_count == 1
+    QTest.qWait(60)
     qapp.processEvents()
-    assert second.geometry().size() == first.geometry().size()
+    assert shell.home._summary.running_experiment
+    assert shell.home._summary.running_epoch >= 1
+    assert shell.home.pipeline._values[1].text() == str(shell.home._summary.running_epoch)
+    shell.ctx.training_runner.job.cancel()

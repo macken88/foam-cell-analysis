@@ -89,6 +89,16 @@ _CONFIG_LABELS = {
     "image_mean": "画像平均",
     "model.input.image_std": "画像標準偏差",
     "image_std": "画像標準偏差",
+    "model.input.normalization": "画像正規化",
+    "model.input.normalization.method": "正規化方式",
+    "model.input.normalization.low": "下位パーセンタイル",
+    "model.input.normalization.high": "上位パーセンタイル",
+    "model.input.normalization.low_percentile": "下位パーセンタイル",
+    "model.input.normalization.high_percentile": "上位パーセンタイル",
+    "normalization": "画像正規化",
+    "method": "方式",
+    "low": "下位パーセンタイル",
+    "high": "上位パーセンタイル",
     "model.anchors.sizes": "アンカーサイズ",
     "anchor_sizes": "アンカーサイズ",
     "model.anchors.aspect_ratios": "アンカー縦横比",
@@ -189,6 +199,7 @@ def training_choice_label(path: str, value: str) -> str:
             "cyto3": "細胞質（cyto3）",
             "nuclei": "核（nuclei）",
             "cpsam": "Cellpose SAM（cpsam）",
+            "cpsam_v2": "Cellpose SAM v2（cpsam_v2）",
         }.get(value, value)
     if path == "augmentation.profile" and value.startswith("aug_v"):
         return f"プロファイル {value.removeprefix('aug_v')}"
@@ -228,3 +239,67 @@ def autosave_label(value: datetime) -> str:
 def config_key_label(dotted_key: str) -> str:
     """仕様書14章の内部キーを表示名へ変換する。"""
     return _CONFIG_LABELS.get(dotted_key, dotted_key)
+
+
+def format_exponent(value: float) -> str:
+    """学習率などの小さな値を指数表記（例: 1e-05、2.5e-04）で返す。"""
+    if value == 0:
+        return "0"
+    mantissa, exponent = f"{value:.6e}".split("e")
+    mantissa = mantissa.rstrip("0").rstrip(".")
+    return f"{mantissa}e{exponent}"
+
+
+def format_bytes(size: int) -> str:
+    """ファイル容量を「約 2.4 GB」の形で返す。"""
+    value = float(size)
+    for unit in ("B", "KB", "MB", "GB"):
+        if value < 1024 or unit == "GB":
+            break
+        value /= 1024
+    text = f"{value:.0f}" if unit == "B" or value >= 100 else f"{value:.1f}"
+    return f"約 {text} {unit}"
+
+
+def _training_folds(experiment) -> int:
+    return int(experiment.config.values.get("data", {}).get("cv", {}).get("n_folds", 5) or 5)
+
+
+def training_progress_text(experiment) -> str:
+    """実行中の学習の段階を「分割 2/5・エポック 12/40」の形で返す。"""
+    if experiment.phase == "final_training":
+        total = experiment.selected_epoch or experiment.total_epochs
+        return f"最終学習・エポック {experiment.current_epoch}/{total}"
+    fold = max(experiment.fold_histories, default=1)
+    return (
+        f"分割 {fold}/{_training_folds(experiment)}・エポック "
+        f"{experiment.current_epoch}/{experiment.total_epochs}"
+    )
+
+
+def training_progress_fraction(experiment) -> float:
+    """交差検証と最終学習を合わせた全体の進み具合（0〜1）を返す。"""
+    epochs = max(1, int(experiment.total_epochs or 1))
+    cross_validation = _training_folds(experiment) * epochs
+    final = int(experiment.selected_epoch or epochs)
+    if experiment.phase == "final_training":
+        done = cross_validation + experiment.current_epoch
+    else:
+        fold = max(experiment.fold_histories, default=1)
+        done = (fold - 1) * epochs + experiment.current_epoch
+    return max(0.0, min(1.0, done / (cross_validation + final)))
+
+
+def training_elapsed_text(experiment, now: datetime | None = None) -> str:
+    """実行中の試行の経過時間を「経過 8 分」の形で返す。分からなければ空文字。"""
+    run = experiment.runs[-1] if experiment.runs else None
+    if run is None or run.finished_at is not None:
+        return ""
+    if now is None:
+        now = datetime.now() if run.started_at.tzinfo is None else datetime.now().astimezone()
+    minutes = int((now - run.started_at).total_seconds() // 60)
+    if minutes < 1:
+        return "経過 1 分未満"
+    if minutes < 60:
+        return f"経過 {minutes} 分"
+    return f"経過 {minutes // 60} 時間 {minutes % 60} 分"

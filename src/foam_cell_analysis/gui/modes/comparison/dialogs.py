@@ -100,6 +100,7 @@ class CandidateDialog(QDialog):
             if index >= 0:
                 self.experiment.setCurrentIndex(index)
                 self.checkpoint.setCurrentText(preset.get("checkpoint", ""))
+            self.comment.setText(preset.get("comment", ""))
         self._toggle_config_mode()
 
     def _experiment_changed(self, experiment_id: str) -> None:

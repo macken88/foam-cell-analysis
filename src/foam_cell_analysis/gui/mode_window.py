@@ -8,6 +8,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMessageBox,
+    QProgressBar,
     QSizePolicy,
     QStackedWidget,
     QTabBar,
@@ -17,9 +19,14 @@ from PySide6.QtWidgets import (
 )
 
 from .context import AppContext
-from .labels import autosave_label, running_jobs_label
+from .labels import (
+    autosave_label,
+    running_jobs_label,
+    training_progress_fraction,
+    training_progress_text,
+)
 from .navigation import ModeId, PageId
-from .theme import numeric_font
+from .theme import install_input_guard, numeric_font
 from .widgets.marks import LayoutButton
 
 MODE_LABELS = {
@@ -63,6 +70,7 @@ class ModeWindow(QMainWindow):
 
     def __init__(self, mode: ModeId, ctx: AppContext, page_ids: list[PageId], parent=None) -> None:
         super().__init__(parent)
+        install_input_guard()
         self.mode = ModeId(mode)
         self.ctx = ctx
         self.page_ids = page_ids
@@ -132,6 +140,18 @@ class ModeWindow(QMainWindow):
         self.autosave_text = QLabel()
         self.autosave_text.setFont(numeric_font())
         self.statusBar().addWidget(self.status_text, 1)
+        # 学習中はどのタブからでも進み具合が見えるように、ステータスバーに常に出す
+        self.training_progress_label = QLabel()
+        self.training_progress_label.setFont(numeric_font())
+        self.training_progress_bar = QProgressBar()
+        self.training_progress_bar.setObjectName("trainingProgressBar")
+        self.training_progress_bar.setRange(0, 1000)
+        self.training_progress_bar.setTextVisible(False)
+        self.training_progress_bar.setFixedSize(120, 8)
+        self.training_progress_label.hide()
+        self.training_progress_bar.hide()
+        self.statusBar().addPermanentWidget(self.training_progress_label)
+        self.statusBar().addPermanentWidget(self.training_progress_bar)
         self.statusBar().addPermanentWidget(self.job_count)
         self.statusBar().addPermanentWidget(self.autosave_text)
         self.ctx.status.message.connect(self.status_text.setText)
@@ -164,6 +184,19 @@ class ModeWindow(QMainWindow):
             self._menus["dataset"] = self.menuBar().addMenu("データセット(&D)")
         elif self.mode == ModeId.TRAINING:
             self._menus["training"] = self.menuBar().addMenu("学習(&L)")
+            self.stop_training_action = self._add_action(
+                self._menus["training"], "■ 今すぐ停止", self._stop_training_now
+            )
+            self.stop_training_action.setToolTip(
+                "今の学習をすぐに止め、キューも止めます。今の学習は「中断」になり、"
+                "途中までの結果だけが残ります。止める前に確認します。"
+            )
+            self.ctx.queue_controller.changed.connect(self._update_stop_training_action)
+            self.ctx.training_runner.busy_changed.connect(self._update_stop_training_action)
+            self._update_stop_training_action()
+            self.ctx.training_runner.busy_changed.connect(self._update_training_progress)
+            self.ctx.training_runner.progressed.connect(self._update_training_progress)
+            self._update_training_progress()
         elif self.mode == ModeId.COMPARISON:
             self._menus["candidate"] = self.menuBar().addMenu("候補(&C)")
             self._menus["release"] = self.menuBar().addMenu("リリース(&R)")
@@ -214,7 +247,6 @@ class ModeWindow(QMainWindow):
         previous_item = False
         pending_separator = None
         for action in menu.actions():
-            action.setStatusTip("")
             if action.isSeparator():
                 if previous_item and pending_separator is None:
                     pending_separator = action
@@ -231,6 +263,61 @@ class ModeWindow(QMainWindow):
                 self._normalize_menu_tree(action.menu())
         if pending_separator is not None:
             menu.removeAction(pending_separator)
+
+    def _update_stop_training_action(self, *_args) -> None:
+        controller = self.ctx.queue_controller
+        can_stop = (
+            controller.executing
+            or controller.waiting_for_training
+            or self.ctx.training_runner.is_busy
+        )
+        self.stop_training_action.setEnabled(can_stop)
+        if not can_stop:
+            self.stop_training_action.setToolTip("学習を実行していないときは使えません")
+        else:
+            self.stop_training_action.setToolTip(
+                "今の学習をすぐに止め、キューも止めます。今の学習は「中断」になり、"
+                "途中までの結果だけが残ります。止める前に確認します。"
+            )
+
+    def _update_training_progress(self, *_args) -> None:
+        """実行中の学習の段階と全体の進み具合をステータスバーに出す。"""
+        runner = self.ctx.training_runner
+        experiment = None
+        if runner.is_busy and runner.experiment_id:
+            try:
+                experiment = self.ctx.backend.get_experiment(runner.experiment_id)
+            except KeyError:
+                experiment = None
+        visible = experiment is not None
+        self.training_progress_label.setVisible(visible)
+        self.training_progress_bar.setVisible(visible)
+        if not visible:
+            return
+        text = f"{experiment.experiment_id} 学習中：{training_progress_text(experiment)}"
+        self.training_progress_label.setText(text)
+        self.training_progress_bar.setValue(round(training_progress_fraction(experiment) * 1000))
+        self.training_progress_bar.setToolTip(text)
+
+    def _stop_training_now(self) -> None:
+        controller = self.ctx.queue_controller
+        runner = self.ctx.training_runner
+        if not (controller.executing or controller.waiting_for_training or runner.is_busy):
+            return
+        if (
+            QMessageBox.question(
+                self,
+                "今すぐ停止",
+                "今の学習をすぐに止め、キューも止めますか？\n"
+                "今の学習は「中断」になり、途中までの結果だけが残ります。",
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        if controller.executing or controller.waiting_for_training:
+            controller.stop_now()
+        elif runner.is_busy:
+            runner.request_stop("user_stop")
 
     def _display_changed(self, name: str) -> None:
         for value, action in self._display_actions.items():

@@ -10,10 +10,12 @@ from typing import Any, ClassVar
 
 import numpy as np
 
+from ...training.folds import assign_folds
 from ..backend import normalization_for_weights
 from ..models import (
     AugmentationProfile,
     Candidate,
+    CandidateSnapshot,
     Checkpoint,
     CheckResult,
     DataItem,
@@ -22,12 +24,16 @@ from ..models import (
     Evaluation,
     Experiment,
     ExperimentConfig,
+    ExperimentDeletionInfo,
     ExternalResult,
     ImportCandidate,
     InferenceConfig,
+    JobExit,
+    PreparedRun,
     ReleasedModel,
     RoutingHistory,
     RunAttempt,
+    TrainingOutcome,
     TransformSetting,
     ValidationIssue,
     ValidationReport,
@@ -51,7 +57,7 @@ class MockBackend:
         "参照先が一意に確定",
     ]
 
-    def __init__(self) -> None:
+    def __init__(self, seed_samples: bool = True) -> None:
         self.working: dict[str, WorkingDataset] = {}
         self.versions: list[DatasetVersion] = []
         self.experiments: dict[str, Experiment] = {}
@@ -59,14 +65,23 @@ class MockBackend:
         self.training_retry_reservations: dict[str, dict[str, Any]] = {}
         self._retry_reservation_seq = 0
         self.fail_training_ids: set[str] = set()
+        self._prepared_queue_runs: dict[str, PreparedRun] = {}
+        self._stop_requests: dict[tuple[str, int], str] = {}
+        self._retry_prepared: set[str] = set()
         self.profiles: dict[str, AugmentationProfile] = {}
         self.inference_configs: dict[str, InferenceConfig] = {}
         self.candidates: dict[str, Candidate] = {}
         self.released: dict[str, ReleasedModel] = {}
         self.routing: dict[str, str | None] = {name: None for name in self.classifications}
         self.routing_history: list[RoutingHistory] = []
-        self._seed()
-        items_by_id = {item.item_id: item for item in self.working["all"].items}
+        if seed_samples:
+            self._seed()
+        else:
+            empty = WorkingDataset("all", "", [])
+            self.working = {purpose: empty for purpose in ("all", "train", "val")}
+            self._seed_inference_configs()
+        empty_dataset = WorkingDataset("all", "", [])
+        items_by_id = {item.item_id: item for item in self.working.get("all", empty_dataset).items}
         self._version_items = {
             version.version: [
                 copy.deepcopy(items_by_id[item_id])
@@ -389,6 +404,23 @@ class MockBackend:
             "mask_rcnn",
             {"box_score_thresh": 0.35, "box_nms_thresh": 0.55, "box_detections_per_img": 100},
         )
+
+    def _seed_validation_data(self) -> None:
+        """hybrid 比較画面の正式評価に使う模擬検証版だけを作る。"""
+        if self.versions:
+            return
+        items = self._items("val", 30, 1000)
+        version = DatasetVersion(
+            version="val_v003",
+            purpose="val",
+            parent_version=None,
+            created_at=self._now(),
+            item_ids=[item.item_id for item in items],
+            n_images=len(items),
+        )
+        self.versions.append(version)
+        self.working["val"] = WorkingDataset("val", version.version, items)
+        self._version_items[version.version] = copy.deepcopy(items)
 
     def _seed_candidates_and_releases(self, exp42: Experiment, exp43: Experiment) -> None:
         """候補・リリース・振り分けの参照関係を作る。"""
@@ -1060,6 +1092,21 @@ class MockBackend:
             return labels.copy()
         return predict_like(labels, item.seed + self._seed_number(revision)).copy()
 
+    def get_dataset_item_image(self, version: str, item_id: str, channel: str) -> np.ndarray:
+        """確定版の指定画像を返す。"""
+        item = next(item for item in self._items_for_version(version) if item.item_id == item_id)
+        if channel not in item.channels:
+            raise ValueError(f"指定チャンネルがありません: {channel}")
+        images, _ = make_sample(item.seed, channels=(channel,))
+        return images[channel].copy()
+
+    def get_dataset_item_mask(self, version: str, item_id: str, revision: str) -> np.ndarray:
+        """確定版の指定ラベル画像を返す。"""
+        purpose = next(
+            (dataset.purpose for dataset in self.versions if dataset.version == version), "train"
+        )
+        return self.get_item_mask(purpose, item_id, revision)
+
     def get_candidate_prediction(self, candidate_id: str, item_id: str) -> np.ndarray:
         """候補別に決定的な予測ラベルを返す。"""
         if candidate_id not in self.candidates:
@@ -1105,8 +1152,8 @@ class MockBackend:
             "channels": ["A", "B", "C"],
             "backbones": ["resnet50_fpn_v2", "resnet101_fpn"],
             "pretrained": ["coco", "imagenet"],
-            "cellpose_models": ["cyto3", "nuclei", "cpsam"],
-            "optimizers": ["Adam", "SGD"],
+            "cellpose_models": ["cpsam", "cpsam_v2"],
+            "optimizers": ["SGD", "AdamW"],
             "profiles": list(self.profiles),
         }
 
@@ -1128,7 +1175,7 @@ class MockBackend:
                 "used_item_ids": [],
             },
             "training": {
-                "epochs": 100,
+                "epochs": 40,
                 "batch_size": 2,
                 "learning_rate": 0.001,
                 "weight_decay": 0.0001,
@@ -1149,11 +1196,17 @@ class MockBackend:
                 "backbone": "resnet50_fpn_v2",
                 "trainable_backbone_layers": 3,
                 "num_classes": 2,
+                "optimizer": "SGD",
                 "input": {
                     "min_size": 800,
                     "max_size": 1333,
                     "image_mean": [0.485, 0.456, 0.406],
                     "image_std": [0.229, 0.224, 0.225],
+                    "normalization": {
+                        "method": "percentile",
+                        "low_percentile": 1.0,
+                        "high_percentile": 99.0,
+                    },
                 },
                 "anchors": {"sizes": [32, 64, 128, 256, 512], "aspect_ratios": [0.5, 1.0, 2.0]},
                 "rpn": {
@@ -1173,17 +1226,24 @@ class MockBackend:
                 },
             }
         elif model_type == "cellpose":
+            common["training"].update(
+                {"batch_size": 1, "learning_rate": 0.00001, "weight_decay": 0.1}
+            )
             model = {
                 "type": "cellpose",
-                "pretrained_model": "cyto3",
-                "optimizer": "Adam",
-                "normalize": True,
+                "pretrained_model": "cpsam",
                 "scale_range": 0.5,
-                "rescale": None,
                 "bsize": 256,
-                "nimg_per_epoch": 100,
-                "min_train_masks": 0,
-                "class_weights": [1.0],
+                "nimg_per_epoch": None,
+                "min_train_masks": 5,
+                "input_channels": ["A"],
+                "input": {
+                    "normalization": {
+                        "method": "percentile",
+                        "low_percentile": 1.0,
+                        "high_percentile": 99.0,
+                    }
+                },
             }
         else:
             raise ValueError(f"未対応のモデル種類です: {model_type}")
@@ -1340,12 +1400,16 @@ class MockBackend:
     def next_experiment_id(self) -> str:
         """次の実験識別子を返す。"""
         numbers = [int(key[-4:]) for key in self.experiments]
-        return f"exp_{max(numbers, default=0) + 1:04d}"
+        # 削除した実験の番号は再利用しない
+        numbers.append(getattr(self, "_max_deleted_experiment_number", 0))
+        return f"exp_{max(numbers) + 1:04d}"
 
     def add_training_queue_item(self, config: dict[str, Any]) -> Experiment:
         saved = copy.deepcopy(config)
         expid = saved.setdefault("experiment", {}).get("id") or self.next_experiment_id()
-        if expid in self.experiments:
+        existing = self.experiments.get(expid)
+        # 試行のない下書きは同じ識別子のままキューへ移す
+        if existing is not None and (existing.status != "draft" or existing.runs):
             saved["experiment"]["id"] = self.next_experiment_id()
         item = self._save_experiment(saved, None, "queued")
         if item.experiment_id not in self.training_queue_ids:
@@ -1470,9 +1534,9 @@ class MockBackend:
                 reservation = self.training_retry_reservations[key]
                 if reservation["status"] != "queued":
                     continue
-                experiment = self.retry_experiment(reservation["experiment_id"])
+                experiment = self.get_experiment(reservation["experiment_id"])
                 reservation["status"] = "running"
-                reservation["attempt"] = len(experiment.runs)
+                reservation["attempt"] = len(experiment.runs) + 1
                 queue_item = copy.deepcopy(experiment)
                 queue_item.queue_id = key
                 queue_item.queue_is_retry = True
@@ -1543,15 +1607,169 @@ class MockBackend:
         self, config: dict[str, Any], experiment_id: str | None = None
     ) -> Experiment:
         """下書きを新規保存または更新する。"""
+        if experiment_id in self.experiments and self.experiments[experiment_id].runs:
+            raise ValueError("試行がある実験の設定は上書きできません")
         return self._save_experiment(config, experiment_id, "draft")
 
     def start_training(
         self, config: dict[str, Any], experiment_id: str | None = None
     ) -> Experiment:
-        """実行試行を追加して学習を開始状態にする。"""
-        experiment = self._save_experiment(config, experiment_id, "running")
-        experiment.runs.append(RunAttempt(len(experiment.runs) + 1, self._now()))
+        """設定を保存して実行待ち状態にする。試行は prepare で作る。"""
+        return self._save_experiment(config, experiment_id, "running")
+
+    def fail_training_preparation(self, experiment_id: str) -> None:
+        """試行作成前の失敗を実験へ反映する。"""
+        experiment = self.experiments.get(experiment_id)
+        if experiment is not None and not experiment.runs:
+            experiment.status = "failed"
+
+    def record_training_process(
+        self, experiment_id: str, attempt: int, pid: int, creation_time: float
+    ) -> None:
+        """メモリ内モックではプロセス識別情報を保持しない。"""
+        del experiment_id, attempt, pid, creation_time
+
+    def prepare_training_run(
+        self, experiment_id: str, queue_id: str | None = None, retry: bool = False
+    ) -> PreparedRun:
+        """新契約で試行を準備し、同じキュー要求には同じ fake job を返す。"""
+        if queue_id and queue_id in self._prepared_queue_runs:
+            return self._prepared_queue_runs[queue_id]
+        experiment = self.get_experiment(experiment_id)
+        config, legacy = self.migrate_experiment_config(experiment.config.values)
+        if retry and legacy:
+            raise ValueError("旧形式設定は再試行できません")
+        errors = [
+            item["message"]
+            for item in self.validate_experiment_config(config)
+            if item["level"] == "error"
+        ]
+        if errors:
+            raise ValueError("設定エラー: " + "、".join(errors))
+        if not experiment.runs:
+            started = self._save_experiment(config, experiment_id, "running")
+            experiment = started
+        elif retry:
+            if experiment_id in self._retry_prepared:
+                self._retry_prepared.remove(experiment_id)
+            else:
+                experiment = self.retry_experiment(experiment_id)
+                self._retry_prepared.discard(experiment_id)
+        else:
+            raise ValueError("この実験にはすでに試行があります")
+        attempt = len(experiment.runs) + 1
+        experiment.runs.append(RunAttempt(attempt, self._now()))
+        run_id = f"{experiment_id}/attempt_{attempt:03d}"
+        run = PreparedRun(run_id, f"mock://{run_id}", "mock", [], {}, fake=True)
+        if queue_id:
+            self._prepared_queue_runs[queue_id] = run
+            self.finish_training_queue_item(queue_id, "running")
+        return run
+
+    def apply_training_event(self, experiment_id: str, event: dict[str, Any]) -> Experiment:
+        """イベントをモック実験の履歴へ反映する。"""
+        experiment = self.get_experiment(experiment_id)
+        kind = event["type"]
+        if kind == "phase":
+            experiment.phase = "cross_validation" if event["phase"] == "cv" else "final_training"
+            experiment.current_epoch = 0
+        elif kind == "epoch":
+            point = EpochMetrics(event["epoch"], float(event["loss"]), None)
+            if event["phase"] == "cv":
+                experiment.fold_histories.setdefault(int(event["fold"]), []).append(point)
+            else:
+                experiment.final_history.append(point)
+                experiment.phase = "final_training"
+            experiment.current_epoch = event["epoch"]
+        elif kind == "val":
+            points = experiment.fold_histories.setdefault(int(event["fold"]), [])
+            point = next((value for value in points if value.epoch == event["epoch"]), None)
+            if point:
+                point.map = float(event["ap"])
+        elif kind == "oof":
+            losses = []
+            for fold_key in event.get("per_fold", {}):
+                fold = int(fold_key)
+                point = next(
+                    (
+                        value
+                        for value in experiment.fold_histories.get(fold, [])
+                        if value.epoch == event["epoch"]
+                    ),
+                    None,
+                )
+                if point:
+                    losses.append(point.loss)
+            loss = sum(losses) / len(losses) if losses else 0.0
+            experiment.oof_history.append(
+                EpochMetrics(int(event["epoch"]), loss, float(event["ap"]))
+            )
+            experiment.history = experiment.oof_history
+        elif kind == "selected":
+            per_class = {
+                label: (value[0], int(value[1])) for label, value in event["per_class"].items()
+            }
+            experiment.selected_epoch = int(event["epoch"])
+            experiment.oof_evaluation = Evaluation(float(event["ap"]), per_class)
+        elif kind == "checkpoint":
+            name = event["path"].replace("\\", "/").rsplit("/", maxsplit=1)[-1]
+            fold = event.get("fold")
+            epoch = int(event["epoch"])
+            score = (
+                next(
+                    (
+                        value.map
+                        for value in experiment.fold_histories.get(int(fold), [])
+                        if value.epoch == epoch
+                    ),
+                    None,
+                )
+                if fold is not None
+                else None
+            )
+            if not any(item.name == name and item.fold == fold for item in experiment.checkpoints):
+                experiment.checkpoints.append(
+                    Checkpoint(name, epoch, score, self._now(), fold=fold)
+                )
+        self._capture_current_attempt(experiment, detach=False)
         return experiment
+
+    def request_training_stop(self, experiment_id: str, attempt: int, reason: str) -> None:
+        """中断要求をモック内部に記録する。"""
+        if reason not in {"user_stop", "app_exit"}:
+            raise ValueError("中断理由は user_stop または app_exit です")
+        self._stop_requests[(experiment_id, attempt)] = reason
+
+    def conclude_training_run(
+        self, experiment_id: str, attempt: int, job_exit: JobExit | None = None
+    ) -> TrainingOutcome:
+        """モックの失敗注入と停止要求を試行の終端状態にする。"""
+        experiment = self.get_experiment(experiment_id)
+        reason = self._stop_requests.get((experiment_id, attempt))
+        if reason:
+            status = "stopped"
+        elif experiment_id in self.fail_training_ids or (job_exit and job_exit.start_failed):
+            status, reason = (
+                "failed",
+                "start_failed" if job_exit and job_exit.start_failed else "error",
+            )
+        else:
+            status = "completed"
+        experiment.status = status
+        if experiment.runs and len(experiment.runs) >= attempt:
+            experiment.runs[attempt - 1].result = status
+            experiment.runs[attempt - 1].finished_at = self._now()
+        queue_id = next(
+            (
+                key
+                for key, run in self._prepared_queue_runs.items()
+                if run.run_id == f"{experiment_id}/attempt_{attempt:03d}"
+            ),
+            None,
+        )
+        if queue_id:
+            self.finish_training_queue_item(queue_id, status)
+        return TrainingOutcome(experiment_id, attempt, queue_id, status, reason)
 
     def _capture_current_attempt(self, experiment: Experiment, *, detach: bool = True) -> None:
         """実験の現在結果を最新の実行試行へスナップショットする。"""
@@ -1581,70 +1799,20 @@ class MockBackend:
                 run.oof_evaluation = self._oof_evaluation(experiment, selected.map)
 
     def _assign_folds(self, config: dict[str, Any], item_ids: list[str]) -> dict[str, int]:
-        """分類別件数を均しながら、同じ取込元フォルダを同じ fold に置く。"""
+        """共通の group_greedy_v1 実装へ fold 割り当てを委譲する。"""
         cv = config.get("data", {}).get("cv", {})
-        count = int(cv.get("n_folds", 5))
-        if len(item_ids) < count:
-            raise ValueError(f"交差検証には画像が最低 {count} 件必要です")
         by_id = {
             item.item_id: item
             for item in self._items_for_version(config["data"]["dataset_version"])
         }
-        groups: dict[str, list[DataItem]] = {}
-        for item_id in item_ids:
-            item = by_id.get(item_id)
-            if item is not None:
-                key = item.source_folder if cv.get("group_by_source_folder", True) else item_id
-                groups.setdefault(key, []).append(item)
-        if len(groups) < count:
-            raise ValueError(f"交差検証には異なる取込元フォルダが最低 {count} 個必要です")
-        rng = np.random.default_rng(int(config.get("data", {}).get("seed", 42)))
-        keys = list(groups)
-        rng.shuffle(keys)
-        keys.sort(key=lambda key: len(groups[key]), reverse=True)
-        fold_counts = [0] * count
-        class_counts: list[dict[str, int]] = [dict() for _ in range(count)]
-        target_count = len(item_ids) / count
-        class_totals: dict[str, int] = {}
-        for group in groups.values():
-            for item in group:
-                label = item.classification or "未分類"
-                class_totals[label] = class_totals.get(label, 0) + 1
-        assignments: dict[str, int] = {}
-        for key in keys:
-            group = groups[key]
-            classes: dict[str, int] = {}
-            for item in group:
-                label = item.classification or "未分類"
-                classes[label] = classes.get(label, 0) + 1
-
-            def placement_cost(
-                fold_index: int,
-                group_size: int = len(group),
-                group_classes: dict[str, int] = classes,
-            ) -> float:
-                previous_total = (fold_counts[fold_index] - target_count) ** 2
-                next_total = (fold_counts[fold_index] + group_size - target_count) ** 2
-                cost = next_total - previous_total
-                if cv.get("stratify_by_classification", True):
-                    for label, class_total in class_totals.items():
-                        target_class = class_total / count
-                        before = (class_counts[fold_index].get(label, 0) - target_class) ** 2
-                        after = (
-                            class_counts[fold_index].get(label, 0)
-                            + group_classes.get(label, 0)
-                            - target_class
-                        ) ** 2
-                        cost += after - before
-                return cost
-
-            fold = min(range(count), key=placement_cost)
-            for item in group:
-                assignments[item.item_id] = fold + 1
-                label = item.classification or "未分類"
-                class_counts[fold][label] = class_counts[fold].get(label, 0) + 1
-                fold_counts[fold] += 1
-        return assignments
+        items = [by_id[item_id] for item_id in sorted(item_ids) if item_id in by_id]
+        return assign_folds(
+            items,
+            int(cv.get("n_folds", 5)),
+            int(config.get("data", {}).get("seed", 42)),
+            group_by_source_folder=cv.get("group_by_source_folder", True),
+            stratify_by_classification=cv.get("stratify_by_classification", True),
+        )
 
     def _filtered_training_items(self, config: dict[str, Any]) -> list[DataItem]:
         """学習版、分類、品質条件を適用した画像を返す。"""
@@ -1662,64 +1830,6 @@ class MockBackend:
         elif quality == "good_and_acceptable":
             items = [item for item in items if item.quality in {"良", "可"}]
         return items
-
-    def record_epoch(
-        self,
-        experiment_id: str,
-        epoch: int,
-        loss: float,
-        map_value: float | None = None,
-        fold: int | None = None,
-    ) -> Experiment:
-        """指定 fold の CV 履歴または最終学習 loss を記録する。"""
-        experiment = self.get_experiment(experiment_id)
-        experiment.current_epoch = epoch
-        if fold is None:
-            experiment.phase = "final_training"
-            experiment.final_history.append(EpochMetrics(epoch, loss, None))
-            self._capture_current_attempt(experiment, detach=False)
-            return experiment
-        experiment.phase = "cross_validation"
-        points = experiment.fold_histories.setdefault(fold, [])
-        if map_value is not None:
-            seed = int(experiment.config.values["data"].get("seed", 42))
-            rng = np.random.default_rng(seed + fold * 104729 + epoch * 1009)
-            direction = -1.0 if fold % 2 else 1.0
-            map_value = max(0.0, min(1.0, map_value + direction * float(rng.uniform(0.01, 0.03))))
-        points.append(EpochMetrics(epoch, loss, map_value))
-        if map_value is not None:
-            n_folds = int(experiment.config.values["data"]["cv"]["n_folds"])
-            values = []
-            fold_losses = []
-            for fold_points in experiment.fold_histories.values():
-                match = next((p for p in reversed(fold_points) if p.epoch == epoch), None)
-                if match is not None:
-                    if match.map is not None:
-                        values.append(match.map)
-                    fold_losses.append(match.loss)
-            if len(values) == n_folds:
-                oof = EpochMetrics(
-                    epoch, sum(fold_losses) / len(fold_losses), sum(values) / n_folds
-                )
-                experiment.oof_history.append(oof)
-                experiment.history = experiment.oof_history
-                experiment.selected_epoch = max(
-                    experiment.oof_history, key=lambda p: p.map or 0
-                ).epoch
-        checkpoint_config = experiment.config.values["checkpoint"]
-        interval = max(1, int(checkpoint_config["save_every"]))
-        if (
-            fold is not None
-            and checkpoint_config.get("save_fold_models", True)
-            and epoch % interval == 0
-        ):
-            name = f"epoch_{epoch:03d}.pt"
-            if not any(item.name == name and item.fold == fold for item in experiment.checkpoints):
-                experiment.checkpoints.append(
-                    Checkpoint(name, epoch, map_value, self._now(), fold=fold)
-                )
-        self._capture_current_attempt(experiment, detach=False)
-        return experiment
 
     def finish_training(self, experiment_id: str, status: str = "completed") -> Experiment:
         """学習を完了・失敗・中断状態にする。"""
@@ -1819,8 +1929,67 @@ class MockBackend:
         experiment.selected_epoch = None
         experiment.oof_evaluation = None
         experiment.oof_predictions.clear()
-        experiment.runs.append(RunAttempt(len(experiment.runs) + 1, self._now()))
+        self._retry_prepared.add(experiment_id)
         return experiment
+
+    def _experiment_reference_reason(self, experiment_id: str) -> str:
+        """実験を参照するリリース済みモデル・比較候補があれば、削除できない理由を返す。"""
+        for model in self.released.values():
+            if model.experiment_id == experiment_id:
+                return (
+                    f"リリース済みモデル {model.model_id} がこの実験を参照しているため、"
+                    "削除できません"
+                )
+        for candidate in self.candidates.values():
+            referenced = candidate.experiment_id == experiment_id or (
+                candidate.snapshot is not None and candidate.snapshot.experiment_id == experiment_id
+            )
+            if referenced and candidate.status != "rejected":
+                return (
+                    f"比較候補 {candidate.candidate_id} がこの実験を参照しています。"
+                    "先に候補を非採用・削除してください"
+                )
+        return ""
+
+    def experiment_deletion_info(
+        self, experiment_id: str, *, measure_size: bool = True
+    ) -> ExperimentDeletionInfo:
+        """削除の可否を返す。メモリ内モックは容量を持たない。"""
+        del measure_size
+        experiment = self.get_experiment(experiment_id)
+        running_reservation = any(
+            reservation["experiment_id"] == experiment_id and reservation["status"] == "running"
+            for reservation in self.training_retry_reservations.values()
+        )
+        if experiment.status == "running" or running_reservation:
+            reason = "学習中の実験は削除できません。学習を停止してから削除してください"
+        elif experiment.status == "queued":
+            reason = "キューで待機中の実験は、学習キューの表から削除してください"
+        elif experiment.status not in {"draft", "stopped", "failed", "completed"}:
+            reason = "この状態の実験は削除できません"
+        else:
+            reason = self._experiment_reference_reason(experiment_id)
+        return ExperimentDeletionInfo(experiment_id, not reason, reason, len(experiment.runs))
+
+    def delete_experiment(self, experiment_id: str) -> None:
+        """実験とそのキュー行をメモリから削除する。"""
+        info = self.experiment_deletion_info(experiment_id)
+        if not info.allowed:
+            raise ValueError(info.reason)
+        del self.experiments[experiment_id]
+        self._max_deleted_experiment_number = max(
+            getattr(self, "_max_deleted_experiment_number", 0), int(experiment_id[-4:])
+        )
+        for key, reservation in list(self.training_retry_reservations.items()):
+            if reservation["experiment_id"] == experiment_id:
+                del self.training_retry_reservations[key]
+        self.training_queue_ids = [
+            key
+            for key in self.training_queue_ids
+            if key in self.training_retry_reservations or key in self.experiments
+        ]
+        self._retry_prepared.discard(experiment_id)
+        self._sync_profile_usage()
 
     def list_experiments(self) -> list[Experiment]:
         """実験一覧を識別子順で返す。"""
@@ -1907,6 +2076,47 @@ class MockBackend:
         self.candidates[candidate.candidate_id] = candidate
         return candidate
 
+    def add_candidate_from_snapshot(
+        self, snapshot: CandidateSnapshot, inference_config_id: str, comment: str = ""
+    ) -> Candidate:
+        """実測 OOF と実験設定を保持したスナップショットを比較候補へ加える。"""
+        inference = self.inference_configs.get(inference_config_id)
+        model_config = snapshot.experiment_config.get("model", {})
+        model_type = model_config.get("type")
+        if inference is None or inference.model_type != model_type:
+            raise ValueError("実験のモデル種類に合う推論設定を選択してください")
+        if not snapshot.checkpoint_path or snapshot.checkpoint_path.startswith(("/", "\\")):
+            raise ValueError("候補のチェックポイント参照が不正です")
+        if any(
+            candidate.experiment_id == snapshot.experiment_id
+            and candidate.source_attempt_number == snapshot.attempt
+            and candidate.inference_config_id == inference_config_id
+            for candidate in self.candidates.values()
+        ):
+            raise ValueError("この試行と推論設定の候補は登録済みです")
+        raw_oof = copy.deepcopy(snapshot.oof_evaluation)
+        per_class = {
+            str(name): (float(values[0]), int(values[1]))
+            for name, values in raw_oof.get("per_class", {}).items()
+        }
+        evaluation = Evaluation(float(raw_oof["ap"]), per_class)
+        number = max((int(key[-3:]) for key in self.candidates), default=0) + 1
+        candidate = Candidate(
+            candidate_id=f"RC-{number:03d}",
+            experiment_id=snapshot.experiment_id,
+            checkpoint="final.pt",
+            inference_config_id=inference_config_id,
+            oof_evaluation=evaluation,
+            oof_experiment_id=snapshot.experiment_id,
+            oof_epoch=snapshot.selected_epoch,
+            comment=comment,
+            source_attempt_number=snapshot.attempt,
+            checkpoint_reference=f"試行 {snapshot.attempt}/final.pt",
+            snapshot=copy.deepcopy(snapshot),
+        )
+        self.candidates[candidate.candidate_id] = candidate
+        return candidate
+
     def _candidate_oof_evaluation(
         self, experiment: Experiment, inference_config_id: str
     ) -> Evaluation:
@@ -1986,14 +2196,21 @@ class MockBackend:
         if validation_version not in candidate.evaluations:
             raise ValueError("評価済み候補のみリリースできます")
         number = max((int(key[-3:]) for key in self.released), default=0) + 1
-        experiment = self.get_experiment(candidate.experiment_id)
+        experiment = (
+            None if candidate.snapshot is not None else self.get_experiment(candidate.experiment_id)
+        )
         inference = self.inference_configs[candidate.inference_config_id]
+        preprocessing = (
+            candidate.snapshot.experiment_config["model"]
+            if candidate.snapshot is not None
+            else experiment.config.values["model"]
+        )
         model = ReleasedModel(
             model_id=f"model_{number:03d}",
             candidate_id=candidate_id,
             experiment_id=candidate.experiment_id,
             checkpoint=candidate.checkpoint,
-            preprocessing_config=copy.deepcopy(experiment.config.values["model"]),
+            preprocessing_config=copy.deepcopy(preprocessing),
             inference_config=copy.deepcopy(inference.params),
             validation_dataset=validation_version,
             evaluation_result=candidate.evaluations[validation_version],

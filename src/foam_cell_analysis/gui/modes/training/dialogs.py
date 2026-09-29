@@ -46,7 +46,7 @@ def flatten_config(value: dict[str, Any], prefix: str = "") -> dict[str, Any]:
 
 
 class ExperimentCompareDialog(QDialog):
-    """複数実験の設定差分と mAP 曲線を表示する。"""
+    """複数実験の設定差分と AP 曲線を表示する。"""
 
     def __init__(self, experiments: list[Experiment], parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -65,7 +65,7 @@ class ExperimentCompareDialog(QDialog):
         plot_panel = QWidget()
         plot_layout = QVBoxLayout(plot_panel)
         plot_layout.setContentsMargins(0, 0, 0, 0)
-        plot_layout.addWidget(QLabel("OOF mAP の推移"))
+        plot_layout.addWidget(QLabel("OOF AP の推移"))
         plot_layout.addWidget(self.chart)
         split.addWidget(self.table)
         split.addWidget(plot_panel)
@@ -146,7 +146,7 @@ class ExperimentCompareDialog(QDialog):
         if key == "data.quality_filter":
             return quality_filter_label(str(value))
         if key == "checkpoint.best_metric" and value == "oof_instance_map":
-            return "OOF 平均適合率（mAP）・最大"
+            return "OOF 平均適合率（AP）・最大"
         if key == "model.pretrained_weights":
             return {"coco": "COCO", "imagenet": "ImageNet"}.get(str(value), str(value))
         if key == "model.backbone":
