@@ -53,7 +53,7 @@ from .dialogs import ExperimentCompareDialog, SendToCandidatesDialog, flatten_co
 RETRY_LABEL = "同じ設定でやり直す"
 RETRY_TIP = (
     "同じ実験の新しい試行として、同じ設定で最初から学習し直します。"
-    "学習中のときはキューの末尾に予約します。"
+    "キューに追加して実行します（学習中のときはキューの末尾で順番を待ちます）。"
 )
 STOP_TIP = (
     "今の学習をすぐに止め、キューも止めます。今の学習は「中断」になり、"
@@ -926,7 +926,8 @@ class ExperimentListPage(BasePage):
         if not experiment or experiment.status not in {"failed", "stopped"}:
             return
         controller = self.ctx.queue_controller
-        if self.ctx.training_runner.is_busy or controller.executing:
+        busy = self.ctx.training_runner.is_busy or controller.executing
+        if busy:
             if self.ctx.training_runner.is_busy:
                 active_id = self.ctx.training_runner.experiment_id
                 prompt = f"学習を実行中です（{active_id}）。この学習をキューの末尾に追加しますか？"
@@ -934,26 +935,21 @@ class ExperimentListPage(BasePage):
                 prompt = "キューを実行中です。やり直しをキューの末尾に追加しますか？"
             if QMessageBox.question(self, "学習中", prompt) != QMessageBox.StandardButton.Yes:
                 return
-            try:
-                queued = self.ctx.backend.add_training_retry_reservation(experiment.experiment_id)
-            except ValueError as error:
-                QMessageBox.warning(self, "やり直せません", str(error))
-                return
-            controller.sync_training_identifier()
-            if not controller.executing:
-                controller.start()
-            self.ctx.status.show_message(
-                f"{queued.experiment_id}（再試行 {queued.queue_retry_attempt}）を"
-                "キューに予約しました"
-            )
-            self.refresh()
-            return
+        # 学習の開始はすべてキューを通す（空いていればそのままキューを実行する）
         try:
-            experiment = self.ctx.backend.retry_experiment(experiment.experiment_id)
-            self.ctx.training_runner.start(experiment.experiment_id, retry=True)
+            queued = self.ctx.backend.add_training_retry_reservation(experiment.experiment_id)
         except ValueError as error:
             QMessageBox.warning(self, "やり直せません", str(error))
             return
+        controller.sync_training_identifier()
+        if not controller.executing:
+            controller.start()
+        label = f"{queued.experiment_id}（再試行 {queued.queue_retry_attempt}）"
+        self.ctx.status.show_message(
+            f"{label}をキューに予約しました"
+            if busy
+            else f"{label}をキューに追加して実行を始めました"
+        )
         self.refresh()
 
     @staticmethod
