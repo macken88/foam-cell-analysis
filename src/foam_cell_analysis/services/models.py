@@ -423,6 +423,35 @@ class EvaluationRecord:
 
 
 @dataclass
+class EvaluationOutcome:
+    """確定した評価 1 件の結果（EvaluationRunner.ended で通知する）。
+
+    evaluation_id は準備に失敗した・開始前に取り消したときは None。
+    reason は stopped / failed の理由（user_stop、app_exit、interrupted、error、
+    start_failed、prepare_failed、cancelled、conclusion_failed など）。
+    """
+
+    candidate_id: str
+    evaluation_id: str | None
+    status: str
+    message: str = ""
+    reason: str | None = None
+    validation_version: str = ""
+
+
+@dataclass
+class EvaluationProgress:
+    """実行中の評価の進み具合（画面表示用。保存しない）。"""
+
+    candidate_id: str
+    evaluation_id: str
+    validation_version: str
+    completed: int = 0
+    total: int = 0
+    phase: str = "starting"
+
+
+@dataclass
 class RoutingState:
     """振り分けの現在値と、楽観的排他に使う revision。"""
 

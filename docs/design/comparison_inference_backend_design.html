@@ -255,9 +255,9 @@ DatasetStore.select_evaluation_items(version: str) -&gt; list[DataItem]  # 3.2</
 <tr><td>external.json</td><td>schema=1, records（9.4）。</td></tr>
 <tr><td>評価の run_spec.json</td><td>schema=1, protocol=1, run_id（<code>RC-001/val_v000/eval_001</code>）, candidate_id, evaluation_id, weights（workspace からの相対パス・バイト数・sha256）, model_type, model_config, preprocessing, effective_params, validation（版、manifest・metadata の sha256、対象 item_id の一覧）, contamination_source（元の試行の学習版と used_item_ids）, metric（学習 11 章と同じ定義）, device_request（<code>auto</code>）, app_version, git_commit, input_fingerprint（5.4）。</td></tr>
 <tr><td>resolved_data.json</td><td>検証済みの sha256、各画像の大きさ・正解インスタンス数・分類、学習混入の検査結果、必要容量と空き容量、実際の device。</td></tr>
-<tr><td>per_image.csv</td><td>item_id, classification, ap, IoU 0.5 での tp/fp/fn, n_true, n_pred。</td></tr>
+<tr><td>per_image.csv</td><td>列は item_id, classification, ap, tp, fp, fn, n_true, n_pred（tp・fp・fn は IoU 0.5 での値）。</td></tr>
 <tr><td>eval_counts.npz / instances.csv</td><td>9.5。</td></tr>
-<tr><td>評価の result.json</td><td>完成 manifest。evaluation_id, validation_version, input_fingerprint, overall {ap, n_images}, per_class {分類: {ap, n_images}}, pooled_ap（参考値）, metric, contamination {status, pairs}, predictions（item_id → 相対パス・shape・dtype・バイト数・sha256）, per_image_csv・eval_counts・instances_csv（相対パス・sha256）, device, completed_at。</td></tr>
+<tr><td>評価の result.json</td><td>完成 manifest。evaluation_id, validation_version, input_fingerprint, overall {ap, n_images}, per_class {分類: {ap, n_images}}, pooled_ap（参考値）, metric, contamination {status, pairs, reason}, predictions（item_id → 相対パス・shape・dtype・バイト数・sha256）, per_image_csv・eval_counts・instances_csv（相対パス・バイト数・sha256）, device, versions, completed_at。</td></tr>
 <tr><td>error.json / status.json</td><td>学習 4.2 と同じ形。</td></tr>
 <tr><td>release.json</td><td>13.1。</td></tr>
 <tr><td>routing.json</td><td>14 章。</td></tr>
@@ -467,7 +467,7 @@ per_class = {"分類A": {"ap": float | null, "n_images": int}, ...}
 <p>予測のラベル画像は全件残り、検証版は確定後に変わらないので、どの指標も後から計算できます。そのうえで、よく使う分析をマッチングのやり直しなしでできるように、次の 2 つを保存します。</p>
 <div class="table-wrap"><table class="keys">
 <tr><th>ファイル</th><th>中身</th><th>できること</th></tr>
-<tr><td>eval_counts.npz</td><td>学習の <code>eval/fold_k/epoch_XXX.npz</code> と同じ形式。item_id（文字列の配列）、tp・fp・fn（画像数 × 10 閾値の int64）、thresholds。</td><td>IoU 0.5 / 0.75 などでの AP・適合率・再現率・F1 を、分類別や品質別に集計する。</td></tr>
+<tr><td>eval_counts.npz</td><td>学習の <code>eval/fold_k/epoch_XXX.npz</code> と同じ形式。item_ids（文字列の配列。学習側と同じキー名）、tp・fp・fn（画像数 × 10 閾値の int64）、thresholds。</td><td>IoU 0.5 / 0.75 などでの AP・適合率・再現率・F1 を、分類別や品質別に集計する。</td></tr>
 <tr><td>instances.csv</td><td>item_id, side（true / pred）, label, area（画素数）, best_iou（相手側で最も IoU が高いものとの IoU。相手がなければ 0）, best_label。</td><td>気泡の大きさ別の見逃し・過剰検出、IoU の分布。</td></tr>
 </table></div>
 <ul>
@@ -629,7 +629,7 @@ get_candidate_prediction(candidate_id, evaluation_id, item_id) -&gt; np.ndarray<
     def start(self, candidate_ids: list[str], validation_version: str) -&gt; None
     def request_stop(self) -&gt; None     # 実行中の 1 件を中断し、待機中の残りも取り消す
     def shutdown(self) -&gt; None</code></pre>
-<p>終端処理は runner だけが 1 回だけ行う（学習 6.1 と同じ）。アプリ終了時は学習 6.3 と同じ手順（確認 → stop_request.json → kill → 最大 10 秒待つ）。</p>
+<p>終端処理は runner だけが 1 回だけ行う（学習 6.1 と同じ）。アプリ終了時は学習 6.3 と同じ手順（確認 → stop_request.json → kill → 最大 10 秒待つ）。終端処理の保存に失敗したときは、待機中の残りの候補を取り消して ended を出し（状態は「取り消し」）、調停役を止まった状態にする（15.1）。</p>
 
 <h3>15.3 共通化する部分と分ける部分</h3>
 <div class="table-wrap"><table class="keys">

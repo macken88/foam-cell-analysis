@@ -72,12 +72,18 @@ class AppContext:
     workspace_lock: QObject | None = None
     # 学習と評価の計算処理を 1 件ずつにする排他制御（比較・推論設計 15.1）
     compute: ComputeCoordinator = field(default_factory=ComputeCoordinator)
+    # 検証用データセットでの評価を候補ごとに順に実行する（比較・推論設計 15.2）
+    evaluation_runner: QObject | None = None
 
     def __post_init__(self) -> None:
-        """すべての画面が共有する学習 runner を準備する。"""
+        """すべての画面が共有する学習・評価の runner を準備する。"""
         if self.training_runner is None:
             from .training_runner import TrainingRunner
 
             self.training_runner = TrainingRunner(self.backend, compute=self.compute)
+        if self.evaluation_runner is None:
+            from .evaluation_runner import EvaluationRunner
+
+            self.evaluation_runner = EvaluationRunner(self.backend, compute=self.compute)
         if hasattr(self.jobs, "set_training_runner"):
             self.jobs.set_training_runner(self.training_runner)

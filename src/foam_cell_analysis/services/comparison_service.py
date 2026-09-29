@@ -1,7 +1,9 @@
 """モデル比較・リリース・振り分けの保存と復元（比較・評価設計 4〜7・9・13・14 章）。
 
-Qt・torch に依存しない。評価プロセスの起動・終端判定（7.1〜7.6）とマスク出力（12 章）は
-別の段階で実装し、ここでは評価フォルダの読み取り（7.5 の妥当性、7.7 の採用と破損）だけを持つ。
+Qt・torch に依存しない。評価は準備（7.1）・プロセスの記録・停止要求・進捗・終端判定（7.5）・
+起動時の復旧（7.6）と、評価フォルダの読み取り（7.7 の採用と破損）を持つ。
+評価プロセスの起動そのものは GUI 側（gui/evaluation_runner.py）が行う。
+マスク出力（12 章）は別の段階。
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ import math
 import os
 import re
 import shutil
+import sys
 import time
 import uuid
 from collections.abc import Callable, Iterable
@@ -25,13 +28,24 @@ from typing import Any
 
 import numpy as np
 
+from foam_cell_analysis.jobs.lifecycle import (
+    decide_terminal_state,
+    process_alive,
+    terminate_process,
+    write_process_record,
+)
+from foam_cell_analysis.jobs.protocol import classify_seq
 from foam_cell_analysis.services.models import (
     Candidate,
     CandidateSnapshot,
     Evaluation,
+    EvaluationOutcome,
+    EvaluationProgress,
     EvaluationRecord,
     ExternalResult,
     InferenceConfig,
+    JobExit,
+    PreparedRun,
     ReleasedModel,
     RoutingHistory,
     RoutingState,
@@ -350,6 +364,10 @@ def _verify_evaluation_hashes(run_dir: Path) -> bool:
     return True
 
 
+_default_process_alive = process_alive
+_default_terminate_process = terminate_process
+
+
 class ComparisonService:
     """推論設定・比較候補・評価の読み取り・外部解析・リリース・振り分けの窓口。"""
 
@@ -360,6 +378,8 @@ class ComparisonService:
         *,
         is_evaluation_active: Callable[[str], bool] | None = None,
         app_version: str | None = None,
+        process_alive: Callable[[dict[str, Any]], bool] | None = None,
+        process_terminator: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.workspace_root = Path(workspace_root)
         self.training_service = training_service
@@ -372,6 +392,12 @@ class ComparisonService:
             lambda _candidate_id: False
         )
         self.app_version = app_version or getattr(training_service, "app_version", "0.1.0")
+        self.git_commit = getattr(training_service, "git_commit", None)
+        self.process_alive = process_alive or _default_process_alive
+        self.process_terminator = process_terminator or _default_terminate_process
+        # 実行中の評価の進捗（保存しない）と、評価ごとの最後の seq
+        self._progress: dict[str, EvaluationProgress] = {}
+        self._last_event_seq: dict[tuple[str, str], int] = {}
 
     # ---- 起動時の復旧 ----
 
@@ -935,6 +961,345 @@ class ComparisonService:
         if shape is not None and list(array.shape) != list(shape):
             raise ValueError(BROKEN_MESSAGE)
         return array
+
+    # ---- 評価の準備・記録・終端判定・復旧（7.1〜7.6） ----
+
+    def _next_evaluation_number(self, candidate_id: str) -> int:
+        """候補ごとの通し番号（検証版をまたいで同じ番号を使わない）。"""
+        root = self._evaluations_root(candidate_id)
+        numbers = [
+            _number(_EVALUATION_ID, path.name) or 0
+            for path in root.glob("*/eval_*")
+            if path.is_dir() and not path.parent.name.startswith(".")
+        ]
+        return max(numbers, default=0) + 1
+
+    def _contamination_source(self, record: dict[str, Any]) -> dict[str, Any]:
+        """学習混入の検査（3.4）に使う、元の試行の学習版と used_item_ids。
+
+        元の試行の run_spec.json を読めなければ used_item_ids を None にする（評価側で unknown）。
+        """
+        source = record.get("source") or {}
+        dataset = source.get("training_dataset") or {}
+        version = dataset.get("version")
+        hashes = dataset.get("sha256")
+        result: dict[str, Any] = {
+            "run_id": source.get("run_id"),
+            "dataset_version": version if isinstance(version, str) else None,
+            "dataset_sha256": dict(hashes) if isinstance(hashes, dict) else None,
+            "used_item_ids": None,
+        }
+        try:
+            spec = read_json(self._run_dir(source) / "run_spec.json")
+            spec_dataset = spec.get("dataset") or {}
+            used = spec.get("used_item_ids")
+            if isinstance(used, list) and all(isinstance(item, str) for item in used):
+                result["used_item_ids"] = list(used)
+            if isinstance(spec_dataset.get("version"), str):
+                result["dataset_version"] = spec_dataset["version"]
+            if isinstance(spec_dataset.get("sha256"), dict):
+                result["dataset_sha256"] = dict(spec_dataset["sha256"])
+        except (OSError, ValueError) as error:
+            logger.warning(
+                "候補 %s の元の試行の記録を読めません: %s", record["candidate_id"], error
+            )
+        version = result["dataset_version"]
+        if version is not None and (_NAME.fullmatch(version) is None or version in {".", ".."}):
+            result["dataset_version"] = None
+            result["used_item_ids"] = None
+        return result
+
+    def _process_env(self) -> dict[str, str]:
+        """評価プロセスの環境変数。TORCH_HOME などは学習と同じ場所に固定する（7.2）。"""
+        env = os.environ.copy()
+        env.update(
+            {
+                "PYTHONUNBUFFERED": "1",
+                "PYTHONIOENCODING": "utf-8",
+                "TORCH_HOME": str(self.workspace_root / "pretrained" / "torch"),
+                "CELLPOSE_LOCAL_MODELS_PATH": str(self.workspace_root / "pretrained" / "cellpose"),
+            }
+        )
+        return env
+
+    def prepare_evaluation_run(self, candidate_id: str, validation_version: str) -> PreparedRun:
+        """評価の唯一の作成口（7.1）。run_spec を書いてから eval_NNN へ改名する。
+
+        再評価は常に新しい eval_NNN を作り、過去の評価は変更・削除しない。
+        """
+        from foam_cell_analysis.evaluation.ap import METRIC
+        from foam_cell_analysis.inference.protocol import evaluation_run_id, validate_run_spec
+
+        try:
+            record = self._read_candidate(candidate_id)
+        except KeyError as error:
+            raise ValueError(f"比較候補がありません: {candidate_id}") from error
+        if record.get("status") != "candidate":
+            raise ValueError("候補状態のモデルだけ評価できます")
+        version = _check_name(validation_version, "検証版")
+        if version not in self.dataset_store.list_versions("val"):
+            raise ValueError(f"検証用データセット {version} がありません")
+        items = self.dataset_store.select_evaluation_items(version)
+        if not items:
+            raise ValueError(f"検証用データセット {version} に画像がありません")
+        source = record["source"]
+        experiment_config = source.get("experiment_config") or {}
+        channels = list((experiment_config.get("data") or {}).get("input_channels") or [])
+        for channel in channels:
+            if any(channel not in item.channels for item in items):
+                raise ValueError(
+                    "この検証用データセットには、モデルが使うチャンネル "
+                    f"{channel} がない画像があります"
+                )
+        folder = self.workspace_root / "datasets" / version
+        dataset_sha = {
+            name: file_sha256(folder / name) for name in ("manifest.csv", "metadata.csv")
+        }
+        item_ids = [item.item_id for item in items]
+        input_fingerprint = compute_input_fingerprint(record["fingerprint"], dataset_sha, item_ids)
+        weights = source["weights"]
+        run_relative = self._run_dir(source).relative_to(self.workspace_root)
+        weights_relative = PurePosixPath(
+            run_relative.as_posix(), PureWindowsPath(weights["path"]).as_posix()
+        ).as_posix()
+        root = self._evaluations_root(candidate_id) / version
+        root.mkdir(parents=True, exist_ok=True)
+        number = self._next_evaluation_number(candidate_id)
+        evaluation_id = f"eval_{number:03d}"
+        run_id = evaluation_run_id(candidate_id, version, evaluation_id)
+        spec = {
+            "schema": SCHEMA,
+            "protocol": 1,
+            "run_id": run_id,
+            "candidate_id": candidate_id,
+            "evaluation_id": evaluation_id,
+            "created_at": _now(),
+            "weights": {
+                "path": weights_relative,
+                "size": weights["size"],
+                "sha256": str(weights["sha256"]).lower(),
+            },
+            "model_type": source.get("model_type"),
+            "model_config": copy.deepcopy(experiment_config.get("model") or {}),
+            "preprocessing": copy.deepcopy(source.get("preprocessing") or {}),
+            "effective_params": copy.deepcopy(record.get("effective_params") or {}),
+            "validation": {
+                "version": version,
+                "path": f"datasets/{version}",
+                "sha256": dataset_sha,
+                "item_ids": item_ids,
+            },
+            "contamination_source": self._contamination_source(record),
+            "metric": copy.deepcopy(METRIC),
+            "device_request": "auto",
+            "app_version": self.app_version,
+            "git_commit": self.git_commit,
+            "input_fingerprint": input_fingerprint,
+        }
+        final_dir = root / evaluation_id
+        validate_run_spec(spec, final_dir)
+        preparing = root / f".preparing_{uuid.uuid4()}"
+        preparing.mkdir()
+        _write_json(preparing / "run_spec.json", spec)
+        # ここで初めて評価として数える
+        os.replace(preparing, final_dir)
+        run_dir = str(final_dir.resolve())
+        return PreparedRun(
+            run_id,
+            run_dir,
+            str(Path(sys.executable).resolve()),
+            ["-m", "foam_cell_analysis.inference.run", "--run-dir", run_dir],
+            self._process_env(),
+        )
+
+    def record_evaluation_process(
+        self, candidate_id: str, evaluation_id: str, pid: int, creation_time: float
+    ) -> None:
+        """評価プロセスの PID と作成時刻を process.json に保存する（復旧時の照合用）。"""
+        _version, run_dir = self._locate_evaluation(candidate_id, evaluation_id)
+        write_process_record(run_dir, pid, creation_time)
+
+    def request_evaluation_stop(self, candidate_id: str, evaluation_id: str, reason: str) -> None:
+        """stop_request.json を保存する。親は kill の前に呼ぶ。"""
+        if reason not in {"user_stop", "app_exit"}:
+            raise ValueError("中断理由は user_stop または app_exit です")
+        _version, run_dir = self._locate_evaluation(candidate_id, evaluation_id)
+        _write_json(run_dir / "stop_request.json", {"reason": reason, "requested_at": _now()})
+
+    @staticmethod
+    def _apply_progress(progress: EvaluationProgress, event: dict[str, Any]) -> None:
+        kind = event["type"]
+        if kind == "started":
+            progress.phase = "preflight"
+        elif kind == "preflight":
+            progress.phase = "inference"
+            progress.total = int(event["n_images"])
+        elif kind == "image_done":
+            progress.phase = "inference"
+            progress.completed = int(event["completed"])
+            progress.total = int(event["total"])
+        elif kind == "completed":
+            progress.phase = "completed"
+        elif kind == "error":
+            progress.phase = "error"
+
+    def apply_evaluation_event(
+        self, candidate_id: str, evaluation_id: str, event: dict[str, Any]
+    ) -> EvaluationProgress | None:
+        """評価イベントを検証して進捗へ反映する。成功は確定しない（7.4・7.5）。
+
+        必須項目の欠けたイベントは ValueError（呼び出し側がプロトコルエラーとして扱う）。
+        seq の重複は無視し、欠落は events.jsonl から再生して埋める。
+        """
+        from foam_cell_analysis.inference.protocol import parse_run_id, read_events, validate_event
+
+        validate_event(event, allow_hello=True)
+        if event["type"] == "hello":
+            return self.get_evaluation_progress(candidate_id)
+        event_candidate, version, event_evaluation = parse_run_id(event["run_id"])
+        if event_candidate != candidate_id or event_evaluation != evaluation_id:
+            raise ValueError("イベントの run_id が評価に対応していません")
+        key = (candidate_id, evaluation_id)
+        progress = self._progress.get(candidate_id)
+        if progress is None or progress.evaluation_id != evaluation_id:
+            progress = EvaluationProgress(candidate_id, evaluation_id, version)
+            self._progress[candidate_id] = progress
+        last_seq = self._last_event_seq.get(key, 0)
+        state = classify_seq(last_seq, event["seq"])
+        if state == "duplicate":
+            return copy.copy(progress)
+        if state == "gap":
+            _version, run_dir = self._locate_evaluation(candidate_id, evaluation_id)
+            events = read_events(run_dir / "events.jsonl", expected_run_id=event["run_id"])
+            progress = EvaluationProgress(candidate_id, evaluation_id, version)
+            self._progress[candidate_id] = progress
+            for recorded in events:
+                self._apply_progress(progress, recorded)
+            last_seq = events[-1]["seq"] if events else 0
+            self._last_event_seq[key] = last_seq
+            if event["seq"] <= last_seq:
+                return copy.copy(progress)
+            if event["seq"] != last_seq + 1:
+                raise ValueError("イベント seq の欠落を events.jsonl から復元できません")
+        self._apply_progress(progress, event)
+        self._last_event_seq[key] = event["seq"]
+        return copy.copy(progress)
+
+    def get_evaluation_progress(self, candidate_id: str) -> EvaluationProgress | None:
+        """実行中の評価の進捗（completed / total）を返す。なければ None。"""
+        progress = self._progress.get(candidate_id)
+        return copy.copy(progress) if progress is not None else None
+
+    def _conclude_evaluation(
+        self, candidate_id: str, version: str, run_dir: Path, job_exit: JobExit | None
+    ) -> EvaluationOutcome:
+        """7.5: 共通の優先順位で終端状態を決め、未保存なら status.json を書く。"""
+        status_path = run_dir / "status.json"
+        stop_path = run_dir / "stop_request.json"
+        error_path = run_dir / "error.json"
+        process_path = run_dir / "process.json"
+        protocol_error = bool(job_exit and job_exit.protocol_error)
+        decision = decide_terminal_state(
+            existing_status=read_json(status_path) if status_path.exists() else None,
+            stop_request=read_json(stop_path) if stop_path.exists() else None,
+            result_valid=lambda: validate_evaluation_result(run_dir),
+            error_present=lambda: error_path.exists() or protocol_error,
+            start_failed=bool(job_exit and job_exit.start_failed),
+            process_alive=lambda: (
+                bool(job_exit and job_exit.process_alive)
+                or self.process_alive(read_json(process_path) if process_path.exists() else {})
+            ),
+        )
+        evaluation_id = run_dir.name
+        if decision is None:
+            return EvaluationOutcome(
+                candidate_id, evaluation_id, "running", validation_version=version
+            )
+        message = decision.message
+        if decision.source == "start_failed" or (
+            decision.source == "error" and not error_path.exists()
+        ):
+            message = job_exit.message if job_exit else ""
+        elif decision.source == "error":
+            try:
+                message = str(read_json(error_path).get("message", ""))
+            except (OSError, ValueError):
+                message = "評価プロセスのエラー記録を読めません"
+        outcome = EvaluationOutcome(
+            candidate_id,
+            evaluation_id,
+            decision.status,
+            message,
+            decision.reason,
+            version,
+        )
+        if decision.source != "existing":
+            _write_json(
+                status_path,
+                {
+                    "status": outcome.status,
+                    "reason": outcome.reason,
+                    "message": outcome.message,
+                    "concluded_at": _now(),
+                    "returncode": job_exit.returncode if job_exit else None,
+                },
+            )
+        return outcome
+
+    def conclude_evaluation_run(
+        self, candidate_id: str, evaluation_id: str, job_exit: JobExit | None = None
+    ) -> EvaluationOutcome:
+        """評価の終端処理（7.5）。runner が 1 回だけ呼ぶ。status.json の保存に失敗すれば例外。"""
+        version, run_dir = self._locate_evaluation(candidate_id, evaluation_id)
+        outcome = self._conclude_evaluation(candidate_id, version, run_dir, job_exit)
+        progress = self._progress.get(candidate_id)
+        if outcome.status != "running" and progress and progress.evaluation_id == evaluation_id:
+            del self._progress[candidate_id]
+        return outcome
+
+    def recover_evaluations(self) -> list[EvaluationOutcome]:
+        """起動時の復旧（7.6）。未確定の評価を確定し、*.tmp と .preparing_* を消す。
+
+        生きている評価プロセス（PID と作成時刻が一致）は終了させてから確定する。
+        実行中だった評価は stopped（interrupted、停止要求があればその理由）になり、
+        自動では再開しない。
+        """
+        outcomes: list[EvaluationOutcome] = []
+        if not self.candidates_root.is_dir():
+            return outcomes
+        for candidate_dir in sorted(self.candidates_root.iterdir()):
+            if _number(_CANDIDATE_ID, candidate_dir.name) is None or not candidate_dir.is_dir():
+                continue
+            candidate_id = candidate_dir.name
+            root = candidate_dir / "evaluations"
+            if not root.is_dir():
+                continue
+            for version in self._evaluated_versions(candidate_id):
+                for _evaluation_id, run_dir in self._evaluation_dirs(candidate_id, version):
+                    if (run_dir / "status.json").exists():
+                        continue
+                    try:
+                        process_file = run_dir / "process.json"
+                        if process_file.exists():
+                            process = read_json(process_file)
+                            if self.process_alive(process):
+                                self.process_terminator(process)
+                                deadline = time.monotonic() + 5.0
+                                while self.process_alive(process) and time.monotonic() < deadline:
+                                    time.sleep(0.1)
+                                if self.process_alive(process):
+                                    logger.error("評価プロセスを終了できませんでした: %s", run_dir)
+                                    continue
+                        outcomes.append(
+                            self._conclude_evaluation(candidate_id, version, run_dir, None)
+                        )
+                    except (OSError, ValueError) as error:
+                        logger.error("評価の状態を確定できませんでした (%s): %s", run_dir, error)
+            for path in root.glob("*/.preparing_*"):
+                self._remove(path)
+            for path in root.rglob("*.tmp"):
+                self._remove(path)
+        return outcomes
 
     # ---- 外部解析結果（9.4） ----
 
