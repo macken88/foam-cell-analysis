@@ -1,8 +1,10 @@
 """メニューバー、タブの主操作、右クリックの利用者経路。"""
 
-from PySide6.QtCore import QItemSelectionModel, Qt
+from collections import Counter
+
+from PySide6.QtCore import QEvent, QItemSelectionModel, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QMenu
+from PySide6.QtWidgets import QFileDialog, QMenu
 
 from foam_cell_analysis.gui.navigation import ModeId, PageId
 
@@ -243,3 +245,186 @@ def test_right_click_selects_unselected_row_and_preserves_multiselection(shell, 
     row_one = queue.table.visualRect(queue.model.index(1, 0)).center()
     QTest.mouseClick(queue.table.viewport(), Qt.MouseButton.RightButton, pos=row_one)
     assert {row.row() for row in selection.selectedRows()} == {0, 1}
+
+
+def _menus(window):
+    pending = [action.menu() for action in window.menuBar().actions() if action.menu()]
+    while pending:
+        menu = pending.pop()
+        yield menu
+        pending.extend(action.menu() for action in menu.actions() if action.menu())
+
+
+def test_all_mode_menus_have_unique_sibling_item_names(shell, qapp):
+    mode_for_page = {
+        PageId.DATA_PREPARATION: ModeId.DATA_PREPARATION,
+        PageId.DATASET_HISTORY: ModeId.DATA_PREPARATION,
+        PageId.TRAINING: ModeId.TRAINING,
+        PageId.TRAINING_QUEUE: ModeId.TRAINING,
+        PageId.EXPERIMENTS: ModeId.TRAINING,
+        PageId.CANDIDATES: ModeId.COMPARISON,
+        PageId.MASK_COMPARISON: ModeId.COMPARISON,
+        PageId.RELEASED_MODELS: ModeId.COMPARISON,
+        PageId.INFERENCE: ModeId.INFERENCE,
+    }
+    violations = []
+    for page_id, mode_id in mode_for_page.items():
+        shell.navigate(page_id)
+        qapp.processEvents()
+        window = shell.manager.window(mode_id)
+        for menu in _menus(window):
+            names = [
+                action.text().split("\t", 1)[0]
+                for action in menu.actions()
+                if not action.isSeparator()
+            ]
+            duplicates = [name for name, count in Counter(names).items() if count > 1]
+            if duplicates:
+                violations.append((page_id, menu.title(), duplicates))
+    assert violations == []
+
+
+def test_changed_filter_menu_has_one_action_and_lower_entry_is_safe(shell, qapp):
+    shell.navigate(PageId.DATA_PREPARATION)
+    page = shell.page(PageId.DATA_PREPARATION)
+    window = shell.manager.window(ModeId.DATA_PREPARATION)
+    filter_menu_action = next(
+        action
+        for menu in _menus(window)
+        for action in menu.actions()
+        if action.menu() and action.text().split("\t", 1)[0] == "絞り込み"
+    )
+    changed = [
+        action
+        for action in filter_menu_action.menu().actions()
+        if action.text().split("\t", 1)[0] == "変更あり"
+    ]
+    assert len(changed) == 1
+    before = page.model.changed_only
+    changed[0].trigger()
+    qapp.processEvents()
+    assert page.model.changed_only is not before
+
+
+def test_archive_menu_action_records_archive_for_latest_versions(shell, monkeypatch):
+    shell.page(PageId.DATA_PREPARATION)
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *_args: "C:/archive")
+    window = shell.manager.window(ModeId.DATA_PREPARATION)
+    file_menu = next(
+        action.menu()
+        for action in window.menuBar().actions()
+        if action.text().startswith("ファイル")
+    )
+    action = next(action for action in file_menu.actions() if action.text() == "アーカイブを作成…")
+    assert action.isEnabled()
+    action.trigger()
+    latest = {}
+    for version in shell.ctx.backend.list_dataset_versions():
+        latest[version.purpose] = version
+    assert all(version.archive_status == "COMPLETED" for version in latest.values())
+
+
+def test_mask_import_menu_action_adds_revision_to_selected_item(shell):
+    page = shell.page(PageId.DATA_PREPARATION)
+    item = next(item for item in page.items if item.item_id in page._selected_ids)
+    previous_revisions = len(item.mask_revisions)
+    window = shell.manager.window(ModeId.DATA_PREPARATION)
+    file_menu = next(
+        action.menu()
+        for action in window.menuBar().actions()
+        if action.text().startswith("ファイル")
+    )
+    action = next(
+        action for action in file_menu.actions() if action.text() == "新しいマスク版を取り込む…"
+    )
+    assert action.isEnabled()
+    action.trigger()
+    assert len(item.mask_revisions) == previous_revisions + 1
+
+
+def _menu_action(window, top_label, item_label):
+    root = next(
+        action.menu()
+        for action in window.menuBar().actions()
+        if action.text().startswith(top_label)
+    )
+
+    def find(menu):
+        for action in menu.actions():
+            if action.text().split("\t", 1)[0] == item_label:
+                return action
+            if action.menu():
+                result = find(action.menu())
+                if result:
+                    return result
+        return None
+
+    return find(root)
+
+
+def test_wrong_training_tab_keeps_queue_actions_disabled_after_refreshes(shell, qapp, monkeypatch):
+    shell.navigate(PageId.TRAINING_QUEUE)
+    queue = shell.page(PageId.TRAINING_QUEUE)
+    window = shell.manager.window(ModeId.TRAINING)
+    shell.ctx.backend.add_training_queue_item(
+        shell.ctx.backend.default_experiment_config("mask_rcnn")
+    )
+    queue.refresh()
+    run_action = _menu_action(window, "学習", "▶ キューをすべて実行")
+    assert run_action.isEnabled()
+
+    shell.navigate(PageId.EXPERIMENTS)
+    assert not run_action.isEnabled()
+    assert "学習キュータブ" in run_action.toolTip()
+    starts = []
+    monkeypatch.setattr(shell.ctx.queue_controller, "start", lambda: starts.append(True))
+    run_action.trigger()
+    assert starts == []
+
+    shell.ctx.queue_controller.changed.emit()
+    qapp.processEvents()
+    queue.refresh()
+    assert not run_action.isEnabled()
+    assert "学習キュータブ" in run_action.toolTip()
+    shell.ctx.queue_controller.progressed.emit()
+    shell.ctx.jobs.jobs_changed.emit(shell.ctx.jobs.running_count)
+    qapp.sendEvent(window, QEvent(QEvent.Type.WindowDeactivate))
+    qapp.sendEvent(window, QEvent(QEvent.Type.WindowActivate))
+    qapp.processEvents()
+
+    assert not run_action.isEnabled()
+    assert "学習キュータブ" in run_action.toolTip()
+
+
+def test_inactive_comparison_page_cannot_enable_candidate_actions(shell, qapp):
+    shell.navigate(PageId.CANDIDATES)
+    page = shell.page(PageId.CANDIDATES)
+    action = page.candidate_actions["evaluate"]
+    shell.navigate(PageId.MASK_COMPARISON)
+    assert not action.isEnabled()
+
+    page.table.selectRow(0)
+    qapp.processEvents()
+
+    assert not action.isEnabled()
+    assert "リリース候補タブ" in action.toolTip()
+
+
+def test_returning_to_data_page_restores_menu_tooltip(shell, qapp):
+    shell.navigate(PageId.DATA_PREPARATION)
+    data = shell.page(PageId.DATA_PREPARATION)
+    window = shell.manager.window(ModeId.DATA_PREPARATION)
+    import_action = _menu_action(window, "ファイル", "画像を取り込む…")
+    original_tooltip = import_action.toolTip()
+    assert original_tooltip != ""
+
+    shell.navigate(PageId.DATASET_HISTORY)
+    assert not import_action.isEnabled()
+    assert "作業中データタブ" in import_action.toolTip()
+    shell.navigate(PageId.DATA_PREPARATION)
+    qapp.processEvents()
+
+    assert import_action.isEnabled()
+    assert import_action.toolTip() == original_tooltip
+    data.refresh_menu_actions()
+    assert import_action.toolTip() == original_tooltip

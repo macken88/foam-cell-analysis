@@ -13,7 +13,7 @@ from foam_cell_analysis.gui.modes.comparison.dialogs import (
     MaskExportDialog,
 )
 from foam_cell_analysis.gui.modes.comparison.mask_compare import MaskComparisonPage
-from foam_cell_analysis.gui.navigation import Navigator, PageId
+from foam_cell_analysis.gui.navigation import ModeId, Navigator, PageId
 from foam_cell_analysis.services.mock.backend import MockBackend
 
 
@@ -270,3 +270,34 @@ def test_detail_evaluation_and_mask_export_dialogs(qtbot):
     assert not export.classification.isEnabled()
     export.scope.setCurrentIndex(1)
     assert export.classification.isEnabled()
+
+
+def test_candidate_page_refreshes_validation_versions_from_home(shell, qapp):
+    shell.navigate(PageId.CANDIDATES)
+    page = shell.page(PageId.CANDIDATES)
+    for candidate in shell.ctx.backend.get_working_items():
+        if candidate.usage in {"train", "val"}:
+            candidate.classification = candidate.classification or "分類A"
+            candidate.quality = candidate.quality or "良"
+            if not candidate.mask_revisions:
+                candidate.mask_revisions = ["rev_001"]
+                candidate.selected_mask_revision = "rev_001"
+    item = next(item for item in shell.ctx.backend.get_working_items() if item.usage == "train")
+    shell.ctx.backend.update_item("all", item.item_id, usage="val")
+    shell.ctx.backend.finalize_working_dataset("検証用版を追加")
+    window = shell.manager.window(ModeId.COMPARISON)
+    assert window.tabs.currentIndex() == 0
+    QTest.mouseClick(shell.home.pipeline._stages[2], Qt.MouseButton.LeftButton)
+    qapp.processEvents()
+    assert window.tabs.currentIndex() == 0
+    assert page.validation.findText("val_v004") >= 0
+
+
+def test_candidate_menu_actions_disable_without_selection(qapp, qtbot):
+    page = CandidatesPage(AppContext(MockBackend(), Navigator(), JobManager()))
+    qtbot.addWidget(page)
+    page.show()
+    assert not page.menu_actions["export"].isEnabled()
+    assert not page.menu_actions["reject"].isEnabled()
+    page.menu_actions["export"].trigger()
+    assert not page.menu_actions["export"].isEnabled()

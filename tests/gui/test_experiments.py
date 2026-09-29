@@ -2,7 +2,7 @@
 
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QDialog
+from PySide6.QtWidgets import QDialog, QMessageBox
 
 from foam_cell_analysis.gui.modes.training.dialogs import (
     ExperimentCompareDialog,
@@ -218,3 +218,28 @@ def test_run_tab_button_retries_stopped_experiment_with_same_settings(shell, qap
     assert runner.experiment_id == "exp_0044"
     runner.request_stop()
     window.hide()
+
+
+def test_experiment_queue_copy_refreshes_open_training_identifier(shell, monkeypatch):
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
+    )
+    training = shell.page(PageId.TRAINING)
+    shell.navigate(PageId.TRAINING)
+    stale = training.experiment_id.text()
+    shell.navigate(PageId.EXPERIMENTS)
+    experiments = shell.page(PageId.EXPERIMENTS)
+    source = shell.ctx.backend.list_experiments()[0]
+    row = next(
+        row
+        for row in range(experiments.table.rowCount())
+        if experiments.table.item(row, 1).text() == source.experiment_id
+    )
+    experiments.table.item(row, 0).setCheckState(Qt.CheckState.Checked)
+    experiments.action_map["queue_copy"].trigger()
+    queued = shell.ctx.backend.list_training_queue()[-1]
+    assert queued.experiment_id == stale
+    assert training.experiment_id.text() != queued.experiment_id
+    assert training.experiment_id.text() == shell.ctx.backend.next_experiment_id()

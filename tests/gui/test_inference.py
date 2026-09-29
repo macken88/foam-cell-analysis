@@ -12,8 +12,8 @@ from PySide6.QtWidgets import QApplication
 
 from foam_cell_analysis.gui.context import AppContext, StatusBus
 from foam_cell_analysis.gui.jobs import JobManager
-from foam_cell_analysis.gui.modes.inference.page import InferencePage
-from foam_cell_analysis.gui.navigation import Navigator
+from foam_cell_analysis.gui.modes.inference.page import InferenceInput, InferencePage
+from foam_cell_analysis.gui.navigation import Navigator, PageId
 from foam_cell_analysis.services.mock.backend import MockBackend
 
 
@@ -105,3 +105,15 @@ def test_result_preview_mode_shortcut_changes_display_and_status(qapp, mock_back
     QTest.keyClick(page.image_view, Qt.Key.Key_M)
     assert page.display_toggle.is_alternate
     page.close()
+
+
+def test_inference_cannot_start_a_second_job_mid_run(shell, qapp):
+    page = shell.page(PageId.INFERENCE)
+    page.inputs = [InferenceInput(f"{index}.png", "分類A", "model_007") for index in range(3)]
+    page.output_path = "C:/output"
+    page._refresh_table()
+    QTest.mouseClick(page.run_button, Qt.MouseButton.LeftButton)
+    assert shell.ctx.jobs.running_count == 1
+    assert not page.run_button.isEnabled()
+    QTest.mouseClick(page.run_button, Qt.MouseButton.LeftButton)
+    assert shell.ctx.jobs.running_count == 1

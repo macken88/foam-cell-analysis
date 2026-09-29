@@ -1,7 +1,10 @@
 """ホームとモードウィンドウの遷移・状態表示。"""
 
-from PySide6.QtCore import Qt
+from unittest.mock import patch
+
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QMessageBox
 
 from foam_cell_analysis.gui.home_summary import build_home_summary
 from foam_cell_analysis.gui.navigation import ModeId, PageId
@@ -170,3 +173,60 @@ def test_home_summary_values_match_backend(shell):
     assert summary.candidate_count == len(shell.ctx.backend.list_candidates())
     assert summary.released_count == len(shell.ctx.backend.list_released_models())
     assert summary.routing == shell.ctx.backend.get_routing()
+
+
+def test_window_activation_refreshes_the_active_page(shell, qapp):
+    shell.navigate(PageId.CANDIDATES)
+    page = shell.page(PageId.CANDIDATES)
+    window = shell.manager.window(ModeId.COMPARISON)
+    for item in shell.ctx.backend.get_working_items():
+        if item.usage in {"train", "val"}:
+            item.classification = item.classification or "分類A"
+            item.quality = item.quality or "良"
+            if not item.mask_revisions:
+                item.mask_revisions = ["rev_001"]
+                item.selected_mask_revision = "rev_001"
+    train_item = next(
+        item for item in shell.ctx.backend.get_working_items() if item.usage == "train"
+    )
+    shell.ctx.backend.update_item("all", train_item.item_id, usage="val")
+    shell.ctx.backend.finalize_working_dataset("ウィンドウ再表示の確認")
+    assert page.validation.findText("val_v004") < 0
+    QTest.qWait(550)
+    qapp.sendEvent(window, QEvent(QEvent.Type.WindowDeactivate))
+    qapp.sendEvent(window, QEvent(QEvent.Type.WindowActivate))
+    qapp.processEvents()
+    assert page.validation.findText("val_v004") >= 0
+
+
+def test_reopening_current_mode_from_home_keeps_active_tab(shell, qapp):
+    shell.navigate(PageId.EXPERIMENTS)
+    window = shell.manager.window(ModeId.TRAINING)
+    QTest.mouseClick(shell.home.pipeline._stages[1], Qt.MouseButton.LeftButton)
+    qapp.processEvents()
+    assert window.tabs.currentIndex() == 2
+    assert shell.manager.current_page_id(ModeId.TRAINING) == PageId.EXPERIMENTS
+
+
+def test_home_refreshes_progress_from_started_training(shell, qapp, monkeypatch):
+    from foam_cell_analysis.gui import training_runner as training_module
+
+    real_fake_job = training_module.FakeTrainingJob
+
+    def quick_job(*args, **kwargs):
+        kwargs["interval_ms"] = 20
+        return real_fake_job(*args, **kwargs)
+
+    monkeypatch.setattr(training_module, "FakeTrainingJob", quick_job)
+    shell.navigate(PageId.TRAINING)
+    page = shell.page(PageId.TRAINING)
+    with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+        QTest.mouseClick(page.start_button, Qt.MouseButton.LeftButton)
+    qapp.processEvents()
+    assert shell.ctx.jobs.running_count == 1
+    QTest.qWait(60)
+    qapp.processEvents()
+    assert shell.home._summary.running_experiment
+    assert shell.home._summary.running_epoch >= 1
+    assert shell.home.pipeline._values[1].text() == str(shell.home._summary.running_epoch)
+    shell.ctx.training_runner.job.cancel()
