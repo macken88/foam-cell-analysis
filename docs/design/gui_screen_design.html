@@ -295,6 +295,7 @@ table.rev{font-size:.92rem}
 <tr><td>v2.9</td><td>2026-09-28</td><td>学習キュー編集終了時のフォーム・YAML・スクロール・操作状態の復元、編集中の操作抑止、列切替時のフォーカス保持、YAML 行の完全パス強調、交差検証の層別・フォルダ単位を要約に表示</td><td>実装済み</td></tr>
 <tr><td>v3.0</td><td>2026-09-29</td><td>前処理詳細の折りたたみ、キュー停止操作分離、拡張設定表・直接順序編集、既定値リセット、ホイール抑止、無効メニュー色</td><td>実装済み</td></tr>
 <tr><td>v3.1</td><td>2026-09-29</td><td>入力欄はホイールで値を変えず上下ボタンなし、学習率の指数表記、学習開始をキュー経由に一本化、キュー状態セルの進捗バー・ステータスバーの学習進捗、終わった行の自動削除、「同じ設定でやり直す」、実験の削除</td><td>実装済み</td></tr>
+<tr><td>v3.2</td><td>2026-09-29</td><td>モデル比較・リリース（7〜9章）を実データへ接続する設計を <a href="comparison_inference_backend_design.html">モデル比較・評価バックエンド設計書</a> 16.2 に記載。mAP 表記を AP に、OOF AP の「対象外」表示、試行の選択、推論設定の範囲、評価の中止、実際のマスク出力、リリース画面の実験非依存化など。7〜9章の本文は実装時に更新する</td><td>設計のみ</td></tr>
 </tbody></table></div>
 <nav><strong>目次</strong><ol class="toc"><li><a href="#sec1">1. ソース構成</a></li><li><a href="#sec2">2. アプリ全体の画面構成</a> <br><a href="#sec2-6">2.6 見た目の設計（色・フォント・部品）</a> <span class="badge">v2.3</span></li><li><a href="#sec3">3. 共通部品</a></li><li><a href="#sec4">4. データ準備（PageId.DATA_PREPARATION）</a> </li><li><a href="#sec5">5. モデル学習（PageId.TRAINING）</a></li><li><a href="#sec6">6. 実験一覧（PageId.EXPERIMENTS）</a></li><li><a href="#sec7">7. モデル比較・リリース（PageId.CANDIDATES）</a></li><li><a href="#sec8">8. マスク比較（PageId.MASK_COMPARISON）</a></li><li><a href="#sec9">9. リリース済みモデル・モデル振り分け（PageId.RELEASED_MODELS）</a></li><li><a href="#sec10">10. 本番推論（PageId.INFERENCE）</a></li><li><a href="#sec11">11. MockBackend</a></li><li><a href="#sec12">12. テスト（tests/gui/）</a></li></ol></nav>
 </header>
@@ -1187,6 +1188,7 @@ table.rev{font-size:.92rem}
 <section class="card" id="sec7">
 <h2>7. モデル比較・リリース（<code>PageId.CANDIDATES</code>）</h2>
 <p>仕様: モデル比較・リリース仕様 1〜4章、6〜9章、11章、13章、15章。</p>
+<p class="small">実データへの接続で変わる点は <a href="comparison_inference_backend_design.html#s16">モデル比較・評価バックエンド設計書 16.2</a> を参照（7〜9章の本文は実装時に更新する）。</p>
 <h3 id="sec7-1">7.1 レイアウト</h3>
 <div class="mock"><div class="mock-title">モデル比較・リリース — 気泡インスタンスセグメンテーション</div>
 <div class="mock-body">

@@ -1,0 +1,834 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>モデル比較・評価バックエンド設計書 - 気泡インスタンスセグメンテーションアプリ</title>
+<style>
+:root{--bg:#f5f7fa;--card:#fff;--text:#1f2937;--muted:#6b7280;--line:#dce2ea;--accent:#2563eb;--accent-soft:#eff6ff;--good:#15803d;--good-soft:#ecfdf3;--warn:#b45309;--warn-soft:#fff8e8}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:"BIZ UDPGothic","Yu Gothic UI","Meiryo UI",sans-serif;line-height:1.72}
+.container{max-width:1180px;margin:0 auto;padding:36px 22px 72px}
+.hero,.card{background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:0 2px 10px rgba(17,24,39,.035)}
+.hero{padding:32px;margin-bottom:22px}.card{padding:26px;margin:20px 0}
+h1,h2,h3,h4{line-height:1.35;color:#172033}h1{margin:0 0 6px;font-size:2rem}
+h2{margin-top:0;padding-bottom:8px;border-bottom:2px solid #e8ebf0;font-size:1.4rem}
+h3{margin-top:28px;font-size:1.12rem}
+.small{color:var(--muted);font-size:.93rem}
+code{font-family:Consolas,"Courier New",monospace;background:#f1f4f8;padding:1px 5px;border-radius:4px;font-size:.92em}
+pre{background:#111827;color:#f9fafb;padding:16px;border-radius:10px;overflow-x:auto;line-height:1.5}
+pre code{background:none;padding:0;color:inherit}
+.table-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;margin:12px 0 20px;background:#fff}
+th,td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
+th{background:#f1f4f8}
+blockquote{margin:14px 0;padding:10px 16px;background:var(--warn-soft);border-left:5px solid #d69e2e;border-radius:8px}
+blockquote p{margin:0}
+.note{background:var(--accent-soft);border-left:5px solid var(--accent);padding:14px 18px;border-radius:9px;margin:16px 0}
+.note ol,.note ul{margin:6px 0 0}
+.good{background:var(--good-soft);border-left:5px solid var(--good);padding:14px 18px;border-radius:9px;margin:16px 0}
+.toc{columns:2;margin:6px 0 0;list-style:none;padding-left:0}
+.toc a{color:var(--accent);text-decoration:none}
+table.keys td:first-child{white-space:nowrap}
+table.rev td:nth-child(2){white-space:nowrap}
+td.nowrap{white-space:nowrap}
+</style>
+</head>
+<body>
+<div class="container">
+
+<div class="hero">
+<h1>モデル比較・評価バックエンド設計書</h1>
+<p class="small">気泡インスタンスセグメンテーションアプリ / モデル比較・リリースモードの実装設計（v1.1、2026-09-29）</p>
+<p>モデル比較・リリースの GUI は完成済みで、今は <code>MockBackend</code> と模擬ジョブ（<code>FakeJob</code>）で動いています。本書は、これを実際の学習済みモデルによる推論・評価・保存に置き換えるための設計です。
+仕様は <a href="../specs/foam_cell_segmentation_model_comparison_release_spec_v2.html">モデル比較・リリース仕様</a>、画面は <a href="gui_screen_design.html">GUI 画面設計書</a> 7〜9 章、学習側は <a href="training_backend_design.html">学習バックエンド設計書</a> を前提とします。</p>
+<p class="small">読み手: 実装担当と開発者本人。学習バックエンド設計書と同じく、判断が割れそうな箇所はファイル形式・関数の形・優先順位まで固定しています。学習設計書の章は「学習 5.2」のように参照します。</p>
+<ul class="toc">
+<li><a href="#s1">1. 範囲と前提</a></li>
+<li><a href="#s2">2. 全体構成</a></li>
+<li><a href="#s3">3. 検証用データセット</a></li>
+<li><a href="#s4">4. 保存形式</a></li>
+<li><a href="#s5">5. 推論設定と比較候補</a></li>
+<li><a href="#s6">6. OOF AP の扱い</a></li>
+<li><a href="#s7">7. 評価の流れ</a></li>
+<li><a href="#s8">8. 推論（評価プロセス内）</a></li>
+<li><a href="#s9">9. 評価結果と指標</a></li>
+<li><a href="#s10">10. 粒子分離（後処理）</a></li>
+<li><a href="#s11">11. マスク比較</a></li>
+<li><a href="#s12">12. 粒子解析用マスク出力</a></li>
+<li><a href="#s13">13. リリース登録</a></li>
+<li><a href="#s14">14. モデル振り分け</a></li>
+<li><a href="#s15">15. ジョブの排他と共通基盤</a></li>
+<li><a href="#s16">16. GUI との接続</a></li>
+<li><a href="#s17">17. テストと受け入れ条件</a></li>
+<li><a href="#s18">18. 実装の順序</a></li>
+<li><a href="#s19">19. 成果物の整理</a></li>
+<li><a href="#s20">20. 先送りした拡張</a></li>
+<li><a href="#s21">21. 未決事項</a></li>
+<li><a href="#s22">22. 改訂履歴</a></li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s1">
+<h2>1. 範囲と前提</h2>
+<p>次の項目は確定事項です。本書の他の章はすべてこれに従います。</p>
+<div class="table-wrap"><table class="keys">
+<tr><th>項目</th><th>内容</th></tr>
+<tr><td>実装範囲</td><td>推論設定、比較候補、検証用データセットでの評価（実推論）、マスク比較、粒子解析用マスク出力、外部解析結果の保存、リリース登録、モデル振り分け、学習成果物（重みなど）の整理（19 章）、AP 表記の統一（9.3）。</td></tr>
+<tr><td>範囲外</td><td><strong>本番推論（PageId.INFERENCE）はモックのまま</strong>（2.4 で境界を決める）。データ準備もモックのまま（検証用データセットは 3 章の方法で用意する）。<strong>OOF による推論設定の調整と、最終学習の分離は先送りする</strong>（20 章）。</td></tr>
+<tr><td>指標</td><td>学習と同じ Cellpose 方式 AP（学習 11 章、<code>evaluation/ap.py</code>）。画面・仕様上の「mAP」は「AP」に改める（9.3）。</td></tr>
+<tr><td>実行方式</td><td>検証用データセットでの評価は、学習と同じく GUI とは別のプロセスで実行する。粒子解析用マスク出力は保存済みの予測から作るので、GUI プロセス内のワーカースレッドで行う。</td></tr>
+<tr><td>排他</td><td>重い ML プロセス（学習・評価）は同時に 1 つだけ動かす（15.1）。</td></tr>
+<tr><td>環境</td><td>学習と同じ（pip のみ、開発は CPU、後で CUDA）。</td></tr>
+</table></div>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s2">
+<h2>2. 全体構成</h2>
+<pre><code>GUI プロセス（PySide6。torch は import しない）
+  AppContext.compute : ComputeCoordinator   … 学習・評価の排他と待ち順（15.1）
+  AppContext.training_runner : TrainingRunner       … 既存。開始時に compute から占有を受ける
+  AppContext.evaluation_runner : EvaluationRunner   … 新規。候補ごとに評価プロセスを順に起動
+  AppContext.backend : HybridBackend | MockBackend
+     HybridBackend
+       ├ TrainingService     … 学習系（既存）
+       ├ ComparisonService   … 比較・評価・出力・リリース・振り分け（新規）
+       └ MockBackend         … データ準備・本番推論
+                 │
+                 │  python -m foam_cell_analysis.inference.run --run-dir &lt;絶対パス&gt;
+                 │  stdin: 開始合図・生存確認 / stdout: イベント(JSON Lines) / stderr: ログ
+                 ▼
+評価プロセス（torch, torchvision, cellpose）
+  inference/run.py → preflight → loop（画像ごとに推論・AP・予測保存）→ result.json</code></pre>
+
+<h3>2.1 パッケージ配置</h3>
+<div class="table-wrap"><table class="keys">
+<tr><th>場所</th><th>役割</th><th>依存</th></tr>
+<tr><td><code>services/comparison_service.py</code></td><td>推論設定・候補・外部解析・評価の準備と確定・リリース・振り分けの保存と復元。公開 API の窓口</td><td>Qt・torch 非依存</td></tr>
+<tr><td><code>jobs/protocol.py</code></td><td>学習と評価に共通のイベント外形（v, run_id, seq, time, type）、JSON / JSON Lines の読み書き、原子的な書き込み（<code>training/protocol.py</code> から移す）</td><td>標準ライブラリ</td></tr>
+<tr><td><code>jobs/lifecycle.py</code></td><td>終端状態の判定（15.3 の純粋関数）とプロセス識別（pid + 作成時刻）</td><td>標準ライブラリ</td></tr>
+<tr><td><code>inference/protocol.py</code></td><td>評価用の run_spec・イベント必須項目・result.json の検証</td><td>torch 非依存</td></tr>
+<tr><td><code>inference/run.py</code>、<code>inference/loop.py</code></td><td>評価プロセス本体（7.3）</td><td>torch</td></tr>
+<tr><td><code>inference/adapters.py</code></td><td>推論用アダプタの生成口（8.1）</td><td>torch（Cellpose のみ cellpose）</td></tr>
+<tr><td><code>inference/particle_split.py</code></td><td>粒子分離（10 章）。表示と出力で共有する</td><td>numpy, scipy</td></tr>
+<tr><td><code>inference/mask_export.py</code></td><td>粒子解析用マスク出力（12 章）。ワーカースレッドから呼ぶ</td><td>numpy, pillow, tifffile</td></tr>
+<tr><td><code>gui/process_job.py</code></td><td>QProcess の起動・hello/go・Job Object・ログ保存（<code>gui/training_jobs.py</code> から共通部分を移す）</td><td>PySide6, ctypes</td></tr>
+<tr><td><code>gui/compute_coordinator.py</code></td><td>学習と評価の排他（15.1）</td><td>PySide6</td></tr>
+<tr><td><code>gui/evaluation_runner.py</code></td><td>EvaluationRunner と評価ジョブ 2 種（ProcessEvaluationJob / FakeEvaluationJob）</td><td>PySide6</td></tr>
+</table></div>
+<p class="small">既存の <code>training/protocol.py</code> は、共通部分を <code>jobs/protocol.py</code> へ移した後も、学習固有のイベント定義を持つモジュールとして残す（import 先の変更は最小限にする）。</p>
+
+<h3>2.2 HybridBackend の委譲</h3>
+<p>比較・リリース系の API は、<code>__getattr__</code> に頼らず<strong>明示的に</strong> ComparisonService へ委譲します（漏れて MockBackend に流れると、実データと模擬データが混ざるため）。</p>
+<div class="table-wrap"><table class="keys">
+<tr><th>メソッド群</th><th>委譲先</th></tr>
+<tr><td>推論設定、候補、評価、候補の予測、外部解析、マスク出力、リリース、振り分け（16.1 の一覧すべて）</td><td>ComparisonService</td></tr>
+<tr><td><code>list_validation_versions</code>、<code>list_dataset_versions("val")</code>、<code>list_validation_items</code>、検証版の <code>get_dataset_item_image / mask</code></td><td>TrainingService.dataset_store（3 章で val に対応）</td></tr>
+<tr><td><code>experiment_deletion_info</code>、<code>delete_experiment</code></td><td>TrainingService ＋ ComparisonService の参照確認（13.5）</td></tr>
+<tr><td><code>get_inference_result</code> ほか本番推論</td><td>MockBackend（2.4）</td></tr>
+<tr><td>その他（データ準備）</td><td>MockBackend</td></tr>
+</table></div>
+<p>hybrid 時の MockBackend は、比較候補・推論設定・リリース・振り分けの初期データも作らない（今の <code>seed_samples=False</code> に含める）。<code>_seed_validation_data()</code> の呼び出しはやめる（検証用データは 3 章の実データを使う）。</p>
+
+<h3>2.3 MockBackend</h3>
+<p>MockBackend は mock モードとテストのために残し、16.1 の新しい API の形に合わせて変更します。中身は今どおり合成値（評価値・予測は合成、ファイルは作らない）。GUI は mock と hybrid のどちらでも同じ呼び出しで動くこと。</p>
+
+<h3>2.4 本番推論画面との境界（hybrid 時）</h3>
+<p>本番推論は範囲外ですが、hybrid 時にも画面が落ちないようにします。</p>
+<ul>
+<li>適用モデルの決定（<code>get_routing</code>、<code>resolve_model</code>、<code>list_released_models</code>）は ComparisonService の実データを使う。</li>
+<li>推論結果（<code>get_inference_result(filename, model_id)</code>）は MockBackend の合成値のまま。今は <code>self.released[model_id]</code> を引いているので、モック内のリリースに依存しないよう、ファイル名と model_id の文字列だけから seed を作る形に変える。</li>
+<li>本番推論画面の表示・文言は変えない（画面はすでに仮の構成と明記されている）。</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s3">
+<h2>3. 検証用データセット</h2>
+
+<h3>3.1 置き場所と読み込み</h3>
+<p>学習版と同じ構造（学習 3 章）で <code>workspace/datasets/val_vNNN/</code> に置きます。<code>dataset_info.json</code> の <code>purpose</code> が <code>val</code>、<code>status</code> が <code>RELEASED</code> のフォルダを検証版とします。データ準備はモックなので、当面は次の方法で用意します。</p>
+<ul>
+<li><code>scripts/generate_dummy_dataset.py</code> に <code>--purpose train|val</code> と <code>--version</code> を追加する。val のときは <code>usage=val</code>、既定の seed を学習と別の値（1042）にし、<code>is_dummy=true</code> を残す。受け入れ確認用に <code>val_v000</code>（12 枚、分類A・B、空画像を含む）を作る。</li>
+<li>実データの検証版は、同じ構造で手作業で置けば読める（データ準備の実装で正式な作成口ができる）。</li>
+</ul>
+<pre><code>DatasetStore.list_versions(purpose: str = "train") -&gt; list[str]      # 既定は今どおり train
+DatasetStore.get_items(version: str, *, expected_purpose: str | None = None) -&gt; list[DataItem]
+DatasetStore.select_evaluation_items(version: str) -&gt; list[DataItem]  # 3.2</code></pre>
+<p>読み込みの補強（学習版にも効く）: <code>manifest.csv</code>・<code>metadata.csv</code> に同じ <code>item_id</code> が 2 行以上あれば、その版を読めない版として一覧から外し、ログに理由を残す（今は辞書化で後の行が黙って勝つ）。版名とフォルダ名が一致しない版も外す。</p>
+
+<h3>3.2 評価対象</h3>
+<ul>
+<li><strong>検証版に収録された全画像</strong>を評価対象とする。学習時の分類・品質・usage の絞り込みは再適用しない。空マスクの画像も対象（AP の空の規則は学習 11 章）。</li>
+<li>順番は <code>item_id</code> の昇順。評価の run_spec に対象 ID の一覧を固定する。</li>
+<li>チャンネル: 候補の実験設定の <code>input_channels</code> に一致しない画像があれば、除外せず評価前のエラーにする（「この検証用データセットには、モデルが使うチャンネル A がない画像があります」）。</li>
+<li>0 件の検証版はエラー。</li>
+</ul>
+
+<h3>3.3 評価の事前検査（評価プロセス内）</h3>
+<ol>
+<li><code>dataset_info.json</code> が <code>purpose=val</code>・<code>RELEASED</code> で、版名がフォルダ名と一致する。</li>
+<li>manifest と metadata が <code>item_id</code> で 1 対 1 に対応し、重複がない。</li>
+<li>manifest・metadata と、対象の画像・マスクの sha256 が一致する。</li>
+<li>画像は 2 次元の uint8 / uint16、マスクは画像と同じ大きさの非負の整数ラベル。</li>
+<li>候補の重み（<code>final.pt</code>）の sha256 が候補に記録した値と一致する。</li>
+<li>学習混入の検査（3.4）。</li>
+<li>予測の保存に必要な容量（Σ H×W×4 バイト + 1 GiB）が空いている。</li>
+</ol>
+<p>1〜5・7 のどれかに失敗したら評価は failed。</p>
+
+<h3>3.4 学習混入の検査</h3>
+<p>候補の元になった試行の学習データに、検証画像と同じ内容の画像が入っていないかを確かめます。</p>
+<ul>
+<li>比べるもの: 検証版の各画像の sha256（3.3 で照合済み）と、元の試行の <code>run_spec.json</code> の学習版で <code>used_item_ids</code> に含まれる画像の、manifest 上の sha256。</li>
+<li>結果は 3 値で result.json に保存する: <code>none</code>（重複なし）、<code>found</code>（重複あり。該当する item_id の組を記録）、<code>unknown</code>（学習版のフォルダが見つからない・読めない）。</li>
+<li><code>found</code> でも評価は最後まで行い（比較・調査には使える）、warning を出す。<strong><code>found</code> の評価ではリリースできない</strong>（13.1）。<code>unknown</code> はリリースできるが、登録ダイアログに理由を表示し、リリース記録に残す。</li>
+<li><code>none</code> の意味は「<strong>同じ内容のファイルの重複がない</strong>」ことだけである。同じ試料の別視野・切り出し違い・同じ撮影系列の画像は検出できない。試料単位の独立性はデータ準備（試料識別情報による確認。データ準備仕様 6 章）の責務とし、画面・記録では「同一画像の混入なし」と表示する（「独立性を確認済み」とは書かない）。</li>
+</ul>
+
+<h3>3.5 評価に使う検証版の選び方</h3>
+<p>学習用の版は、基準とする検証版を参照情報として持ちます（<code>dataset_info.json</code> の <code>base_validation_version</code>。仕様 7 章）。評価ではこの組み合わせを強制せず、次のように扱います。</p>
+<ul>
+<li>どの検証版でも評価できる（新しい検証版で過去のモデルを評価し直せるように）。学習混入の検査（3.4）は毎回行う。</li>
+<li>候補一覧を初めて開いたときの検証版は、最も新しく作った候補の学習用の版が参照する検証版にする。参照がない・その版がないときは、最も新しい検証版にする。</li>
+<li>詳細評価ダイアログとリリース登録ダイアログに「学習用データセットの基準検証版: val_v00x」を表示し、評価に使った検証版と違えば「基準とは別の検証用データセットで評価しています」と注記する。リリース記録にも両方を残す。</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s4">
+<h2>4. 保存形式</h2>
+<pre><code>workspace/
+  comparison/
+    inference_configs/
+      infer_v001.json                       … ComparisonService。作成後は変更しない
+    candidates/
+      RC-001/
+        candidate.json                      … ComparisonService
+        external.json                       … ComparisonService（外部解析結果、9.4）
+        evaluations/
+          val_v000/
+            .preparing_&lt;uuid&gt;/            … 準備中だけ使う（7.1）
+            eval_001/
+              run_spec.json                 … ComparisonService が準備時に書き、以後変更しない
+              process.json                  … 親（評価ジョブ）が起動後に書く
+              stop_request.json             … 親が中断要求時、kill の前に書く
+              environment.json              … 評価プロセス
+              resolved_data.json            … 評価プロセス（事前検査の結果）
+              events.jsonl                  … 評価プロセス（追記のみ）
+              predictions/&lt;item_id&gt;.png    … 評価プロセス（uint16 PNG。65,535 個を超える画像だけ uint32 .tif）
+              per_image.csv                 … 評価プロセス
+              eval_counts.npz               … 評価プロセス（全 10 閾値の TP/FP/FN、9.5）
+              instances.csv                 … 評価プロセス（インスタンスごとの面積と IoU、9.5）
+              result.json | error.json      … 評価プロセス（最後に 1 つだけ）
+              status.json                   … 親または起動時の復旧処理だけが書く
+              stdout.log, stderr.log        … 親が保存
+  releases/
+    .preparing_&lt;uuid&gt;/                   … リリース準備中だけ使う（13.2）
+    model_001/
+      release.json                          … ComparisonService。公開後は変更しない
+      model.pt                              … 候補の final.pt の独立コピー
+    routing.json                            … ComparisonService（現在の振り分けと履歴、14 章）
+  experiments/&lt;実験&gt;/runs/attempt_NNN/
+    pruned.json                             … TrainingService（成果物の整理の記録、19 章）</code></pre>
+
+<h3>4.1 書き込みの規則</h3>
+<ul>
+<li>各ファイルの書き手は上の表記どおり 1 者に限る。「ComparisonService」は GUI プロセス内のサービスのことで、画面のウィジェットから直接ファイルを書かない。</li>
+<li>JSON・CSV・PNG・TIFF・重みは、同じフォルダの一時ファイル（<code>*.tmp</code>）に書き、flush・fsync・close してから <code>os.replace</code> で置き換える。完成名へ直接書かない。</li>
+<li>JSON は <code>allow_nan=False</code>。「対象なし」の AP は <code>null</code>。</li>
+<li>events.jsonl は 1 行ずつ追記して flush する。読み手は途中で切れた最終行を無視する。</li>
+<li>result.json は、全成果物の保存が終わった後に最後に書く。</li>
+<li>Windows の一時的な共有違反（PermissionError）は、0.1 秒間隔で最大 5 回まで再試行してよい。それでも失敗したら失敗として扱う。</li>
+<li>記録するパスは基準フォルダからの相対パスだけ（学習 12.3 と同じ）。読むときは、絶対パス・<code>..</code>・ドライブ指定・基準フォルダの外へ出るパスを拒否する。</li>
+<li><code>*.tmp</code> と <code>.preparing_*</code> の削除は、起動時の復旧（7.6、13.3）だけが行う。</li>
+</ul>
+
+<h3>4.2 主なファイルの中身</h3>
+<div class="table-wrap"><table class="keys">
+<tr><th>ファイル</th><th>中身</th></tr>
+<tr><td>infer_vNNN.json</td><td>schema=1, config_id, model_type, params（ユーザーが変更できる項目だけ、5.1）, created_at。</td></tr>
+<tr><td>candidate.json</td><td>schema=1, candidate_id, created_at, comment, status（candidate / rejected / released）, released_model_id（リリース後のみ）, inference_config_id, <strong>effective_params</strong>（5.2）, source（下の表）, oof（6 章）, fingerprint（5.4）。status 以外は作成後に変更しない（comment は外部解析の保存で変えてよい）。</td></tr>
+<tr><td>candidate.json の source</td><td>experiment_id, attempt, run_id, selected_epoch, model_type, weights（run_dir からの相対パス <code>checkpoints/final.pt</code>、バイト数、sha256）, experiment_config（実験設定のコピー）, preprocessing（正規化設定）, training_dataset（版と sha256）, training_eval_params（学習時の評価パラメータ、run_spec から）。</td></tr>
+<tr><td>external.json</td><td>schema=1, records（9.4）。</td></tr>
+<tr><td>評価の run_spec.json</td><td>schema=1, protocol=1, run_id（<code>RC-001/val_v000/eval_001</code>）, candidate_id, evaluation_id, weights（workspace からの相対パス・バイト数・sha256）, model_type, model_config, preprocessing, effective_params, validation（版、manifest・metadata の sha256、対象 item_id の一覧）, contamination_source（元の試行の学習版と used_item_ids）, metric（学習 11 章と同じ定義）, device_request（<code>auto</code>）, app_version, git_commit, input_fingerprint（5.4）。</td></tr>
+<tr><td>resolved_data.json</td><td>検証済みの sha256、各画像の大きさ・正解インスタンス数・分類、学習混入の検査結果、必要容量と空き容量、実際の device。</td></tr>
+<tr><td>per_image.csv</td><td>item_id, classification, ap, IoU 0.5 での tp/fp/fn, n_true, n_pred。</td></tr>
+<tr><td>eval_counts.npz / instances.csv</td><td>9.5。</td></tr>
+<tr><td>評価の result.json</td><td>完成 manifest。evaluation_id, validation_version, input_fingerprint, overall {ap, n_images}, per_class {分類: {ap, n_images}}, pooled_ap（参考値）, metric, contamination {status, pairs}, predictions（item_id → 相対パス・shape・dtype・バイト数・sha256）, per_image_csv・eval_counts・instances_csv（相対パス・sha256）, device, completed_at。</td></tr>
+<tr><td>error.json / status.json</td><td>学習 4.2 と同じ形。</td></tr>
+<tr><td>release.json</td><td>13.1。</td></tr>
+<tr><td>routing.json</td><td>14 章。</td></tr>
+</table></div>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s5">
+<h2>5. 推論設定と比較候補</h2>
+
+<h3>5.1 推論設定（ユーザーが変更できる項目）</h3>
+<div class="table-wrap"><table class="keys">
+<tr><th>モデル</th><th>キー</th><th>画面の名前</th><th>範囲</th><th>初期値</th></tr>
+<tr><td rowspan="3">Mask R-CNN</td><td><code>box_score_thresh</code></td><td>検出スコア閾値</td><td>0〜1</td><td>0.5</td></tr>
+<tr><td><code>box_nms_thresh</code></td><td>Box NMS閾値</td><td>0〜1</td><td>0.5</td></tr>
+<tr><td><code>box_detections_per_img</code></td><td>最大検出数</td><td>1〜1000 の整数</td><td>300</td></tr>
+<tr><td rowspan="2">Cellpose</td><td><code>cellprob_threshold</code></td><td>セル確率閾値</td><td>−6〜6</td><td>0.0</td></tr>
+<tr><td><code>flow_threshold</code></td><td>フロー閾値</td><td>0〜3（0 はフロー誤差による除外をしない）</td><td>0.4</td></tr>
+</table></div>
+<ul>
+<li>初期値は学習時の評価パラメータ（学習 10.2・10.3）と同じにする。こうすると、初期値のままの候補は OOF AP をそのまま比べられる（6 章）。今の候補追加ダイアログは最大検出数の初期値が 100、閾値の範囲が一律 −10〜10 なので、この表に合わせて直す。</li>
+<li>範囲外は保存時に ValueError（日本語の理由付き）。</li>
+<li>同じ model_type で params がすべて同じ推論設定がすでにあれば、新しく作らずそれを返す（ID が違うだけの同一設定を増やさない）。</li>
+<li>推論設定は作成後に変更しない。</li>
+</ul>
+
+<h3>5.2 実効パラメータ</h3>
+<p>推論で実際に使う値の全体を <code>effective_params</code> と呼び、候補作成時に決めて candidate.json に保存します。</p>
+<pre><code>effective_params = source.training_eval_params（学習時の評価パラメータ。全項目）
+                   に、推論設定の params を上書きしたもの</code></pre>
+<ul>
+<li>Mask R-CNN の <code>mask_thresh</code>、Cellpose の <code>min_size</code>・<code>max_size_fraction</code>・<code>bsize</code> などは、学習時の値がそのまま入る（画面では変えられない）。</li>
+<li>固定値を、その時点のライブラリの既定値から補ってはいけない。学習時の評価パラメータが run_spec にない古い試行は、既知の旧形式として学習 10.2・10.3 の値を補い、補ったことを candidate.json に記録する。</li>
+</ul>
+
+<h3>5.3 候補の作成</h3>
+<pre><code>TrainingService.create_candidate_snapshot(experiment_id, *, attempt: int) -&gt; CandidateSnapshot
+ComparisonService.add_candidate(experiment_id, attempt, inference_config_id, comment="") -&gt; Candidate</code></pre>
+<ul>
+<li>試行番号を明示する（今は最新の完了試行を自動で選んでいる。画面では候補追加ダイアログで試行を選ぶ。GUI 設計 7.2）。</li>
+<li>対象は status が completed の試行で、result.json が妥当なものだけ。</li>
+<li>snapshot には final.pt の sha256 を含める（result.json の成果物一覧の値を使い、作成時に実ファイルのサイズと照合する）。</li>
+<li>候補 ID は <code>RC-NNN</code> の連番。フォルダは <code>.preparing_&lt;uuid&gt;</code> に candidate.json を書いてから改名して公開する。</li>
+</ul>
+
+<h3>5.4 同一性と fingerprint</h3>
+<ul>
+<li>候補の fingerprint = sha256（重みの sha256、model_type、model_config、preprocessing、effective_params を正規化した JSON）。<strong>fingerprint が同じ候補（非採用を除く）がすでにあれば、推論設定 ID が違っても重複としてエラー</strong>（「既に RC-00x として登録済みです」）。</li>
+<li>評価の input_fingerprint = sha256（候補の fingerprint、検証版の manifest・metadata の sha256、対象 ID の一覧、metric の ID）。</li>
+<li>JSON の正規化は <code>json.dumps(sort_keys=True, separators=(",", ":"), ensure_ascii=False)</code>。数値は float に揃えてから入れる（<code>0.5</code> と <code>1/2</code> を区別しない）。</li>
+</ul>
+
+<h3>5.5 状態</h3>
+<p>保存する状態は <code>candidate</code>・<code>rejected</code>・<code>released</code> の 3 つです。「評価中」は保存せず、評価ジョブが実行中または待機中かどうかから表示時に導出します。評価中・待機中の候補は、非採用・リリースできません。</p>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s6">
+<h2>6. OOF AP の扱い</h2>
+<p>学習で保存している OOF 予測は、学習時の評価パラメータで確定済みのラベル画像です。閾値を変えた場合の OOF AP を、これから再計算することはできません。そこで次のようにします（仕様 17 章をこれに合わせて書き換える）。</p>
+<pre><code>candidate.json の oof = {
+  "source_run_id": "exp_0001/attempt_001",
+  "selected_epoch": 10,
+  "evaluation": {overall: {ap, n_images}, per_class: {...}},   # 学習時の OOF（そのまま）
+  "source_effective_params": {...},                           # 学習時の評価パラメータ
+  "applicability": "matching" | "different" | "unknown",
+  "reason": null | "推論設定が学習時と異なります" | "学習時の評価条件を確認できません"
+}</code></pre>
+<ul>
+<li><code>matching</code>: 候補の effective_params・前処理・入力の変換が、学習時の評価条件と一致する。比較は設定 ID ではなく、型を揃えた実効値で行う。</li>
+<li><code>different</code>: 一致しない。</li>
+<li><code>unknown</code>: 学習時の評価パラメータの記録がなく、判定できない（5.2 の補完をした場合もこれにする）。</li>
+<li>候補一覧の OOF AP 列は <code>matching</code> のときだけ値を出す。それ以外は「対象外」と出し、ツールチップに reason を出す。</li>
+<li>詳細評価ダイアログとリリース記録には、applicability によらず「学習時 OOF AP（参考）」として値を残す。</li>
+<li>OOF AP は fold ごとのモデルの評価であり、final.pt 自身の評価ではないことを、詳細評価ダイアログの注記に書く。</li>
+<li>fold の selected.pt を使った再推論（推論設定を変えた OOF の再評価）は先送りする（20 章）。それまでは、推論設定を変えた候補の OOF AP は「対象外」のまま。</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s7">
+<h2>7. 評価の流れ</h2>
+
+<h3>7.1 評価の準備（唯一の作成口）</h3>
+<pre><code>ComparisonService.prepare_evaluation_run(candidate_id, validation_version) -&gt; PreparedRun
+  1. 候補が candidate 状態で、検証版が存在することを確かめる（なければ ValueError）。
+  2. 対象画像を決める（3.2）。チャンネル不一致はここで ValueError。
+  3. evaluations/&lt;版&gt;/.preparing_&lt;uuid&gt;/ に run_spec.json を書く。
+  4. 次の番号（eval_NNN）へ os.replace で改名する。ここで初めて評価として数える。
+  5. PreparedRun(run_id, run_dir, program, args, env) を返す。モックでは fake=True。</code></pre>
+<p>学習の prepare_training_run（学習 5.1）と同じ考え方です。<strong>再評価は常に新しい eval_NNN を作り、過去の評価は変更・削除しない。</strong>再評価が失敗しても、前回の成功した評価はそのまま使える。</p>
+
+<h3>7.2 起動とプロセス間の取り決め</h3>
+<p>学習 7.1〜7.3 と同じです（プログラムは <code>sys.executable</code>、引数は <code>["-m", "foam_cell_analysis.inference.run", "--run-dir", &lt;絶対パス&gt;]</code>、hello → Job Object への登録 → process.json → go、stdin の EOF で終了、num_workers=0、中断は kill）。TORCH_HOME・CELLPOSE_LOCAL_MODELS_PATH も学習と同じ場所に固定する（学習済みの重みだけで推論できるので、通常はダウンロードは起きない）。</p>
+<p>hello の pid は QProcess が返す pid と照合し、違えば起動失敗にする。process.json にはプロセスの作成時刻を記録する（復旧時の照合用）。</p>
+
+<h3>7.3 評価プロセスの流れ</h3>
+<ol>
+<li>run_spec を読む（不正なら終了コード 2）。hello → go を待つ → started。</li>
+<li>事前検査（3.3）。resolved_data.json を書いて preflight を出す。</li>
+<li>モデルを組み立てる（8.1）。</li>
+<li>対象画像を 1 枚ずつ: 読み込み → 前処理 → 推論 → 予測ラベルを保存 → AP のマッチング（<code>match_counts</code>）→ image_done。</li>
+<li>集計（9 章）。per_image.csv・eval_counts.npz・instances.csv を書き、最後に result.json を書いて completed を出す。</li>
+</ol>
+<p>どこで例外が起きても error.json を書いて error を出し、終了コード 1 で終わる。</p>
+
+<h3>7.4 イベント</h3>
+<p>外形（v, run_id, seq, time, type）と hello・started・warning・error・completed は学習 7.3 と同じ。評価固有のものは次のとおり。</p>
+<div class="table-wrap"><table class="keys">
+<tr><th>type</th><th>追加の必須項目</th><th>意味</th></tr>
+<tr><td>preflight</td><td>n_images, per_class_counts, contamination, required_bytes, free_bytes</td><td>事前検査に合格した</td></tr>
+<tr><td>image_done</td><td>item_id, completed, total</td><td>1 枚の推論と保存が終わった（進捗表示用）</td></tr>
+</table></div>
+<p>進捗イベントだけで成功を確定しない。成功は必ず result.json の検証（7.5）で決める。</p>
+<p>stdout の扱いを学習と揃えて明確にする: hello より前の行は厳格に解釈し、不正なら起動失敗。hello 以降、JSON でない行は stdout.log に残して無視する。JSON として読めるが必須項目が欠けたイベントはプロトコルエラーとして評価を failed にする（学習側も新しい共通基盤に移すときに同じ規則にする）。</p>
+
+<h3>7.5 終端状態の判定</h3>
+<p>学習 5.2 と同じ優先順位を、共通の純粋関数（15.3）で判定します。「result.json が妥当」の中身だけが評価用です。</p>
+<ul>
+<li>schema と run_id・evaluation_id・input_fingerprint が run_spec と一致する。</li>
+<li>run_spec の対象 ID すべてに予測があり、ファイルが存在し、バイト数が一致する。</li>
+<li>per_image.csv が存在し、行数が対象件数と一致する。eval_counts.npz と instances.csv が存在する。</li>
+</ul>
+<p>判定の終了時に status.json を書く。ここではファイル内容の sha256 は再計算しない（重いので、マスク比較・出力・リリースの時点で必要な分だけ照合する。7.7）。</p>
+
+<h3>7.6 起動時の復旧</h3>
+<p>学習 5.4 と同じ手順を、全候補の全評価に対して行います（プロセスの照合 → 終端判定 → status.json、その後に <code>*.tmp</code> と <code>.preparing_*</code> を削除）。評価にはキューがないので、キューの修復はありません。復旧中に実行中だった評価は <code>stopped</code>（理由 interrupted または app_exit）になり、自動では再開しない。</p>
+
+<h3>7.7 採用する評価と破損</h3>
+<ul>
+<li>候補一覧・詳細に出す評価 = その候補・その検証版で、status が completed かつ input_fingerprint が現在の条件と一致する評価のうち、番号が最も大きいもの。</li>
+<li>詳細評価・マスク比較・出力・リリースは、画面を開いた時点の evaluation_id を固定して使う（途中で再評価が終わっても、見ている結果が入れ替わらない）。</li>
+<li>completed の評価の予測ファイルが後から消えた・変わった場合、status.json は書き換えない。読んだ時点で sha256 またはサイズが合わなければ、その評価を「破損」として扱い、比較・出力・リリースに使わない（画面には「評価結果のファイルが壊れています。再評価してください」）。</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s8">
+<h2>8. 推論（評価プロセス内）</h2>
+
+<h3>8.1 推論用アダプタ</h3>
+<pre><code>build_inference_adapter(
+    *, model_type: str, model_config: dict, weights_path: Path,
+    effective_params: dict, device: torch.device,
+) -&gt; InferenceAdapter
+
+class InferenceAdapter(Protocol):
+    def predict(self, image: np.ndarray) -&gt; np.ndarray   # 前処理済み 2 次元画像 → ラベル画像</code></pre>
+<ul>
+<li>学習用の optimizer・学習率などは要求しない。事前学習済みの重みは読まない（学習 12.3）。</li>
+<li>Mask R-CNN: 既存の <code>build_for_inference</code> を使い、effective_params を <code>eval_params</code> として渡す（box_score_thresh・box_nms_thresh・box_detections_per_img はモデルの組み立て時、mask_thresh はラベル化で使う）。</li>
+<li>Cellpose: 今の <code>CellposeAdapter.predict</code> は flow_threshold=0.4、cellprob_threshold=0.0 などを定数で渡しているので、アダプタに評価パラメータを持たせ、学習時の検証でも推論でもそこから渡すように直す（学習時の値は学習 10.3 のまま変わらない）。<code>build_for_inference</code> も effective_params を受け取る。</li>
+<li>画像は 1 枚ずつ推論する（画像の大きさが揃っているとは限らないため）。</li>
+</ul>
+
+<h3>8.2 入力の変換</h3>
+<p>前処理（学習 9.1 の正規化。設定は候補の preprocessing）→ モデル固有の入力形式（Mask R-CNN の 3 チャンネル複製、Cellpose の <code>[画像, 0, 0]</code>）の順です。<strong>学習時の検証（学習 9.5）と同じ関数を使う</strong>ように、今の検証の処理から関数を切り出して共有する。データ拡張・拡大縮小・切り出し・学習用の除外規則は通さない。</p>
+
+<h3>8.3 デバイス</h3>
+<p>学習と同じく、CUDA が使えれば CUDA、使えなければ CPU（<code>device_request=auto</code>）。実際に使った device、torch・torchvision・cellpose の版を environment.json と result.json に記録する。</p>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s9">
+<h2>9. 評価結果と指標</h2>
+
+<h3>9.1 指標</h3>
+<p>学習 11 章の Cellpose 方式 AP をそのまま使います（<code>evaluation/ap.py</code> の match_counts と aggregate。同じ IoU 閾値・マッチング・空の規則。metric の ID も同じ）。<strong>AP は原ラベル（モデル出力）で計算し、粒子分離後の二値は使わない。</strong></p>
+
+<h3>9.2 集計と保存の形</h3>
+<pre><code>overall   = {"ap": float | null, "n_images": int}           # 対象全画像の画像平均
+per_class = {"分類A": {"ap": float | null, "n_images": int}, ...}
+            # 分類が未設定の画像は "未分類" として集計する。対象 0 件の分類は ap = null</code></pre>
+<p>GUI が使う <code>Evaluation</code>（overall_map, per_class の (値, 件数)）は変換層で作る。<code>Evaluation</code> には全体の件数 <code>n_images: int = 0</code> を追加する（仕様 9 章の「対象件数」の全体列を出すため）。OOF の per_class も同じ変換を通す。</p>
+
+<h3>9.3 表記</h3>
+<ul>
+<li>画面の「検証 mAP」「OOF mAP」は「検証 AP」「OOF AP」にする。</li>
+<li>詳細評価ダイアログの説明は「Cellpose 方式 AP（TP / (TP + FP + FN)、IoU 0.50–0.95 の平均、画像平均）」とする。一般的な適合率–再現率曲線の AP と区別するため、「平均適合率」という言い方は使わない。</li>
+<li>内部のフィールド名（<code>overall_map</code> など）は互換のため当面残す。</li>
+</ul>
+<p>アプリ全体で表記を揃えます（段階 D で一括して行う）。</p>
+<div class="table-wrap"><table class="keys">
+<tr><th>対象</th><th>変更</th></tr>
+<tr><td>比較・リリースの画面</td><td><code>gui/modes/comparison/candidates_page.py</code>・<code>dialogs.py</code>、<code>gui/modes/release/page.py</code> の「mAP」をすべて「AP」に。「OOF 平均適合率（mAP）・最大」は「OOF AP（Cellpose 方式）・最大」に。</td></tr>
+<tr><td>学習の画面</td><td><code>gui/modes/training/page.py</code>・<code>dialogs.py</code>・<code>experiment_list.py</code> の「OOF 平均適合率（AP）・最大」を「OOF AP（Cellpose 方式）・最大」に。</td></tr>
+<tr><td>モック</td><td><code>services/mock/backend.py</code> の説明文の「mAP」。</td></tr>
+<tr><td>テスト</td><td>「mAP」の文字列に依存しているテスト（<code>tests/gui/test_e2e_flow.py</code>、<code>test_training.py</code>、<code>test_widgets.py</code>）を新しい表記に合わせる（確認内容は弱めない）。</td></tr>
+<tr><td>ドキュメント</td><td>GUI 画面設計書、モデル学習モード仕様、全体概要、学習バックエンド設計書の「mAP」「平均適合率」を「AP（Cellpose 方式）」に。<code>docs/tasks/</code> の作業メモは対象外。</td></tr>
+</table></div>
+
+<h3>9.4 外部解析結果</h3>
+<p>external.json の records は、どの評価・どの出力に対する解析かを持たせます。古い評価や一部の分類だけの解析結果が、今の全体評価の結果に見えるのを防ぐためです。</p>
+<pre><code>{
+  "record_id": "ext_001",
+  "evaluation_id": "eval_002", "validation_version": "val_v000",
+  "export_id": "export_20260929_101530_ab12" | null,   # 12 章の出力と結び付ける（任意）
+  "scope": "全体" | "分類A" ...,
+  "software": "...", "software_version": "...", "analyzed_on": "2026-09-29",
+  "results": [{"name": "平均粒子径", "value": 12.3, "unit": "µm"}],
+  "comment": "...", "saved_at": "..."
+}</code></pre>
+<p>詳細評価ダイアログで保存するとき、表示中の evaluation_id を自動で入れる。リリース済みの候補は読み取り専用。</p>
+
+<h3>9.5 後から分析するための保存</h3>
+<p>予測のラベル画像は全件残り、検証版は確定後に変わらないので、どの指標も後から計算できます。そのうえで、よく使う分析をマッチングのやり直しなしでできるように、次の 2 つを保存します。</p>
+<div class="table-wrap"><table class="keys">
+<tr><th>ファイル</th><th>中身</th><th>できること</th></tr>
+<tr><td>eval_counts.npz</td><td>学習の <code>eval/fold_k/epoch_XXX.npz</code> と同じ形式。item_id（文字列の配列）、tp・fp・fn（画像数 × 10 閾値の int64）、thresholds。</td><td>IoU 0.5 / 0.75 などでの AP・適合率・再現率・F1 を、分類別や品質別に集計する。</td></tr>
+<tr><td>instances.csv</td><td>item_id, side（true / pred）, label, area（画素数）, best_iou（相手側で最も IoU が高いものとの IoU。相手がなければ 0）, best_label。</td><td>気泡の大きさ別の見逃し・過剰検出、IoU の分布。</td></tr>
+</table></div>
+<ul>
+<li>instances.csv の IoU は、正解・予測のラベルの重なりを <code>np.bincount</code> で数えて求める（cellpose を使わない。<code>evaluation/ap.py</code> に <code>instance_table(truth, prediction)</code> として追加し、ラベル番号は元の番号のまま記録する）。</li>
+<li>分類以外（品質、取り込み元フォルダなど）で分けた集計は、item_id で検証版の metadata.csv とつなげて行う。</li>
+<li>集計の画面は今回作らない（ファイルとして残すだけ）。</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s10">
+<h2>10. 粒子分離（後処理）</h2>
+<p>ID は <code>particle_split_symmetric8_v1</code>。今の GUI（<code>gui/widgets/image_convert.py</code> の <code>to_binary_separated</code>）と同じ定義で、Qt に依存しない <code>inference/particle_split.py</code> へ移し、表示と出力で同じ関数を使います。</p>
+<pre><code>L = 入力ラベル画像（0 = 背景）
+境界 D(p) = L(p) &gt; 0 かつ、8 近傍のどれかの q で L(q) &gt; 0 かつ L(q) ≠ L(p)
+分離後 S(p) = 0（D(p) のとき）/ L(p)（それ以外）
+二値   B(p) = 255（S(p) &gt; 0）/ 0</code></pre>
+<ul>
+<li>判定はすべて元の L で行い、一斉に背景化する（両側を削る）。反復しない。ラベル番号の大小に依存しない。</li>
+<li>これで、残った画素の間に異なるラベル同士の 8 近傍接触は残らない。</li>
+<li>一方で、細い粒子が消える・1 つの粒子が分断されることはあり得る。面積・粒径が保たれることは保証しない。</li>
+</ul>
+<h3>10.1 検査と記録</h3>
+<p>出力時に画像ごとに次を数え、出力の記録（12 章）に残します。全体の連結成分数だけで正しさを判定しない（モデル出力のラベル 1 つが、元から複数の領域に分かれていることもあるため）。</p>
+<ul>
+<li>残った異ラベル接触の数（0 でなければ実装の不具合なので出力を失敗にする）。</li>
+<li>消えたラベル（分離後に面積 0）の数。</li>
+<li>分断されたラベル（分離前は 8 連結で 1 つ、分離後は 2 つ以上）の数。</li>
+<li>背景化した画素数と、前景に対する割合。</li>
+</ul>
+<p>消失・分断があっても二値マスクは出力する（仕様どおり、後処理は固定アルゴリズム）。出力完了の案内に「消失 n 件・分断 m 件（詳細は export_report.csv）」を出す。</p>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s11">
+<h2>11. マスク比較</h2>
+<ul>
+<li>比較できる条件: 選んだ全候補が、選択中の検証版で採用する評価（7.7）を持ち、それらの input_fingerprint のうち検証版の部分（manifest・metadata の sha256、対象 ID、metric）が一致すること。条件を満たさない候補があれば、比較を開けない理由を出す（「RC-003 はこの検証用データセットで未評価です」）。</li>
+<li>画面を開いた時点で、候補ごとの evaluation_id を固定する（7.7）。</li>
+<li>原画像は確定済みの検証版から読む（今は作業中データの画像を読んでいるので直す）。予測は評価の predictions/ から読み、読んだ時点でサイズと sha256 を照合する。</li>
+<li>表示のキャッシュのキーに、検証版・evaluation_id・表示形式を含める。</li>
+<li>二値表示は 10 章の関数を使う。</li>
+<li>表示用の階調変換: 今の描画は画像を 0〜255 に切り詰めているので、uint16 の画像が正しく見えない。表示用に 0.5〜99.5 パーセンタイルで 0〜255 に伸ばす変換を加える（モデル入力の正規化とは別物で、画面表示だけに使う）。</li>
+</ul>
+<pre><code>get_dataset_item_image(validation_version, item_id, channel) -&gt; np.ndarray
+get_candidate_prediction(candidate_id, evaluation_id, item_id) -&gt; np.ndarray</code></pre>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s12">
+<h2>12. 粒子解析用マスク出力</h2>
+<p>評価済みの予測から作るので、ML プロセスは使いません。<code>inference/mask_export.py</code> をワーカースレッド（JobManager に登録する出力ジョブ）から呼びます。未評価の候補は出力できない。</p>
+<pre><code>選んだフォルダ/
+  export_20260929_101530_ab12/            … 完成後の名前
+    RC-001_eval_002/
+      &lt;item_id&gt;_label.png | .tif          … 原ラベル（変更しない）
+      &lt;item_id&gt;_binary.png | .tif         … 粒子分離後の二値（uint8、0/255）
+    RC-002_eval_001/
+      ...
+    export_report.csv                     … 候補・画像ごとの 10.1 の記録
+    export_info.json                      … 出力条件（下記）。最後に書く</code></pre>
+<ul>
+<li>作業中は <code>export_…​.partial</code> という名前のフォルダに書き、全部終わったら export_info.json を書いてから改名する。中断・失敗したら <code>.partial</code> のまま残し、完成品として扱わない（ユーザーのフォルダなので自動では消さず、失敗の案内でフォルダ名を示す）。</li>
+<li>新しいフォルダだけに書く。既存のファイルは上書きしない。</li>
+<li>ファイル名の item_id は、Windows で使えない文字を <code>_</code> に置き換える。置き換えで衝突したら出力前にエラー。</li>
+<li>形式: PNG を選んで、ラベル数が 65,535 を超える画像があれば、出力前に「TIFF を選んでください」とエラーにする（選んだ形式を黙って変えない）。二値は PNG / TIFF とも uint8。</li>
+<li>対象: 検証版全体、または画像分類で絞り込み。開始時に evaluation_id と対象 ID の一覧を固定し、出力中の画面操作の影響を受けない。</li>
+<li>開始前に必要容量（原ラベル・二値の非圧縮サイズの合計 + 100 MB）と空き容量を比べる。</li>
+<li>1 枚ごとにキャンセルを確認する。</li>
+<li>export_info.json: schema=1, export_id, created_at, app_version, particle_split_id, format, contents（label / binary）, 候補ごとの candidate_id・evaluation_id・validation_version・input_fingerprint・対象 ID 一覧。</li>
+<li>出力の履歴を ComparisonService は保存しない（外部解析結果と結び付けたいときは、9.4 の export_id に出力フォルダ名を入れる）。</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s13">
+<h2>13. リリース登録</h2>
+
+<h3>13.1 条件と記録</h3>
+<pre><code>ComparisonService.release_candidate(candidate_id, evaluation_id, comment="") -&gt; ReleasedModel</code></pre>
+<p>リリースできる条件: 候補が candidate 状態で評価中でない。指定した評価が completed で破損していない（予測の sha256 を照合）。学習混入が <code>found</code> でない（3.4）。</p>
+<p>release.json（schema=1）に固定する内容:</p>
+<ul>
+<li>model_id（<code>model_NNN</code> の連番）、released_at、comment、app_version。</li>
+<li>重み: <code>model.pt</code>（release フォルダからの相対パス）、バイト数、sha256。元の試行の run_id と重みの相対パス（出典として）。</li>
+<li>model_type、model_config、preprocessing、effective_params、inference_config_id。</li>
+<li>候補: candidate_id、candidate の fingerprint。</li>
+<li>検証評価: evaluation_id、validation_version、input_fingerprint、overall・per_class、metric、contamination（none / unknown と理由）。</li>
+<li>OOF: 6 章の oof（applicability を含む）。</li>
+<li>外部解析結果: その時点の external.json の records（コピー）。</li>
+<li>particle_split_id。</li>
+</ul>
+<p>リリース後に設定を変える場合は上書きせず、新しい候補・新しいリリースを作る（仕様 11 章）。</p>
+
+<h3>13.2 公開の手順</h3>
+<ol>
+<li><code>releases/.preparing_&lt;uuid&gt;/</code> を作る。</li>
+<li>候補の final.pt を <code>model.pt</code> へ<strong>コピー</strong>する（ハードリンクは使わない。元の実体への書き込みがリリースへ波及しないように）。コピー後に sha256 を計算し、候補の値と一致しなければ失敗。</li>
+<li>release.json を書く。</li>
+<li>次の番号（model_NNN）へ os.replace で改名する。ここでリリースが成立する。</li>
+<li>candidate.json の status を released、released_model_id を設定する。</li>
+</ol>
+<p>コピーの前に、コピーに必要な容量（重みのバイト数 + 100 MB）を確かめる。cpsam の重み（約 1.2 GB）は数十秒かかることがあるので、リリース登録はワーカースレッドで行い、進行中の表示を出す。</p>
+
+<h3>13.3 復旧</h3>
+<p>起動時に <code>releases/.preparing_*</code> を削除する。公開済みのリリース（model_NNN）について、参照する候補の status が released でなければ、release.json から修復する（4 と 5 の間で落ちた場合）。</p>
+
+<h3>13.4 リリースの表示</h3>
+<p>リリース済みモデルの一覧・詳細・<code>resolve_model</code> は release.json だけで動くようにする（今のリリース画面は <code>get_experiment</code> で実験を引いているのでやめる）。</p>
+
+<h3>13.5 実験の削除との関係</h3>
+<p>今の参照保護（比較候補（非採用を除く）・リリース済みモデルから参照されている実験は削除できない。学習 12.3）は、ComparisonService の候補・リリースを見るように変えて維持する。リリースは重みを独立に持つので実験が消えても動くが、削除の許可を緩めるのは別の仕様変更とする。</p>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s14">
+<h2>14. モデル振り分け</h2>
+<pre><code>routing.json = {
+  "schema": 1,
+  "revision": 12,
+  "assignments": {"分類A": "model_003", "分類B": null},
+  "history": [{"changed_at": "...", "revision": 12, "classification": "分類A",
+               "before": "model_001", "after": "model_003"}]
+}</code></pre>
+<ul>
+<li>現在値と履歴を 1 つのファイルに置き、1 回の原子的な置き換えで更新する（2 ファイルに分けると食い違いが起きうる）。</li>
+<li><code>apply_routing(changes, *, expected_revision: int) -&gt; RoutingState</code>。<strong>全変更を先に検証し</strong>（存在するリリースか、分類名が正しいか）、1 つでも不正なら何も変えずに ValueError。revision が現在値と違えば ValueError（「振り分けが別の操作で変更されました。画面を開き直してください」）。</li>
+<li>振り分けの対象となる分類 = 確定済みの全データセット版（学習・検証）に現れる分類 ∪ routing.json にすでにある分類。</li>
+<li><code>resolve_model(classification)</code>: 未割り当て・分類なしは None。割り当て先のリリースが読めない（release.json の破損・model.pt の欠落）ならエラーにし、他のモデルへ自動で切り替えない。</li>
+<li>新しいリリースを作っても振り分けは変えない（仕様 12 章）。</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s15">
+<h2>15. ジョブの排他と共通基盤</h2>
+
+<h3>15.1 ComputeCoordinator</h3>
+<pre><code>class ComputeCoordinator(QObject):
+    changed = Signal()
+    def request(self, owner: str, label: str, start: Callable[[], None]) -&gt; Ticket
+    def release(self, ticket: Ticket) -&gt; None
+    def cancel(self, ticket: Ticket) -&gt; None      # 待機中の要求を取り消す
+    is_busy: bool
+    active_label: str | None
+    waiting: list[Ticket]</code></pre>
+<ul>
+<li>学習（TrainingRunner）と評価（EvaluationRunner）は、開始前に request で占有を求める。空いていればすぐ start を呼び、使用中なら待ち行列（先着順）に入れる。実行中の処理に割り込まない。</li>
+<li>占有期間は準備 → 起動 → 実行 → 終端処理（status.json の保存）まで。終端処理が終わってから release する。<strong>終端処理の保存に失敗したら、次の待機要求を開始しない</strong>（学習 5.2 のキュー停止と同じ考え方。画面にエラーを出す）。</li>
+<li>学習キューの次の項目も、評価が実行中なら待つ（キュー表には「評価の終了を待っています」と表示する）。</li>
+<li>複数候補の評価は、候補 1 件ごとに占有を取り、1 件ごとに返す（その間に学習の要求が来れば、先着順で学習が入る）。</li>
+</ul>
+
+<h3>15.2 EvaluationRunner</h3>
+<pre><code>class EvaluationRunner(QObject):
+    progressed = Signal(str)           # candidate_id
+    ended = Signal(object)             # EvaluationOutcome(candidate_id, evaluation_id, status, message)
+    def start(self, candidate_ids: list[str], validation_version: str) -&gt; None
+    def request_stop(self) -&gt; None     # 実行中の 1 件を中断し、待機中の残りも取り消す
+    def shutdown(self) -&gt; None</code></pre>
+<p>終端処理は runner だけが 1 回だけ行う（学習 6.1 と同じ）。アプリ終了時は学習 6.3 と同じ手順（確認 → stop_request.json → kill → 最大 10 秒待つ）。</p>
+
+<h3>15.3 共通化する部分と分ける部分</h3>
+<div class="table-wrap"><table class="keys">
+<tr><th>項目</th><th>共通（jobs/、gui/process_job.py）</th><th>学習・評価で別</th></tr>
+<tr><td>プロトコル</td><td>イベント外形、seq の重複・欠落の扱い、JSON Lines、原子的な書き込み</td><td>各イベントの必須項目</td></tr>
+<tr><td>子プロセス</td><td>hello / go、stdin の EOF 監視、ログ保存、Job Object、kill</td><td>学習ループ / 評価ループ</td></tr>
+<tr><td>GUI のジョブ</td><td>QProcess の起動・停止・終了通知</td><td>TrainingRunner / EvaluationRunner</td></tr>
+<tr><td>終端判定</td><td>優先順位（下の関数）</td><td>result.json の妥当性の検証</td></tr>
+<tr><td>復旧</td><td>pid + 作成時刻の照合、終了確認、一時ファイルの削除</td><td>学習キューの修復、評価の一覧の再構築</td></tr>
+</table></div>
+<pre><code>decide_terminal_state(
+    *, existing_status, stop_request, result_valid: bool,
+    error_present: bool, start_failed: bool, process_alive: bool,
+) -&gt; TerminalDecision | None      # None = まだ確定しない（プロセスが生きている）</code></pre>
+<p>今の実装から一般化するときに直すこと:</p>
+<ul>
+<li><code>ProcessTrainingJob</code> は run_id の文字列から実験・試行を取り出している。共通ジョブでは、呼び出し側が渡すジョブ情報（run_dir と終端処理のコールバック）を使う。</li>
+<li><code>TrainingRunner</code> は終端処理の保存に失敗しても busy を解除する。共通化では「プロセスが終わった」と「次を開始してよい」を分ける（15.1）。</li>
+<li>学習の既存テストが、共通化の前後で同じ結果になること。</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s16">
+<h2>16. GUI との接続</h2>
+
+<h3>16.1 Backend API の変更</h3>
+<div class="table-wrap"><table class="keys">
+<tr><th>API</th><th>変更</th></tr>
+<tr><td><code>add_candidate(experiment_id, attempt, inference_config_id, comment)</code></td><td>checkpoint 引数をやめ、試行番号を受け取る（5.3）。</td></tr>
+<tr><td><code>create_inference_config(model_type, params)</code></td><td>範囲の検証、同一設定の再利用（5.1）。</td></tr>
+<tr><td><code>prepare_evaluation_run</code>、<code>record_evaluation_process</code>、<code>request_evaluation_stop</code>、<code>apply_evaluation_event</code>、<code>conclude_evaluation_run</code>（新規）</td><td>学習の同名メソッドと同じ役割。<code>start_evaluation</code> と <code>evaluate_candidate</code> は廃止する。</td></tr>
+<tr><td><code>get_candidate_evaluation(candidate_id, validation_version) -&gt; EvaluationRecord | None</code>（新規）</td><td>採用する評価（7.7）。EvaluationRecord は evaluation_id, status, evaluation（<code>Evaluation</code>）, contamination, completed_at, broken。</td></tr>
+<tr><td><code>get_candidate_prediction(candidate_id, evaluation_id, item_id)</code></td><td>evaluation_id を追加（11 章）。</td></tr>
+<tr><td><code>save_external_results(candidate_id, evaluation_id, ...)</code></td><td>evaluation_id を追加（9.4）。</td></tr>
+<tr><td><code>export_particle_masks(request, progress, is_cancelled) -&gt; ExportResult</code>（新規）</td><td>ワーカースレッドから呼ぶ（12 章）。</td></tr>
+<tr><td><code>release_candidate(candidate_id, evaluation_id, comment)</code></td><td>validation_version ではなく evaluation_id を受け取る（13.1）。</td></tr>
+<tr><td><code>get_routing_state() -&gt; RoutingState</code>（新規）、<code>apply_routing(changes, *, expected_revision)</code></td><td>14 章。<code>get_routing()</code> は本番推論画面のため残す。</td></tr>
+<tr><td><code>list_routing_classifications()</code>（新規）</td><td>14 章。</td></tr>
+<tr><td><code>artifact_cleanup_plan(experiment_ids)</code>、<code>prune_artifacts(experiment_ids, categories)</code>（新規）</td><td>19 章。</td></tr>
+</table></div>
+
+<h3>16.2 画面の変更</h3>
+<div class="table-wrap"><table class="keys">
+<tr><th>場所</th><th>変更</th></tr>
+<tr><td>候補一覧</td><td>列名を「検証 AP」「OOF AP」に。OOF AP は applicability が matching のときだけ値、それ以外は「対象外」（6 章）。状態列の「評価中」は runner から導出し、待機中は「評価待ち」。「評価を実行」は EvaluationRunner.start。「評価を中止」を候補メニューに追加する。</td></tr>
+<tr><td>候補追加ダイアログ</td><td>試行の選択を必須に（5.3）。推論設定の初期値・範囲を 5.1 に合わせる。重複はダイアログ内でエラー表示。</td></tr>
+<tr><td>詳細評価ダイアログ</td><td>表記（9.3）、全体の対象件数、学習時 OOF AP（参考）と注記（6 章）、学習混入の結果、外部解析結果の保存に evaluation_id。</td></tr>
+<tr><td>粒子解析用マスク出力ダイアログ</td><td>FakeJob をやめて実出力（12 章）。完了時に出力フォルダと消失・分断の件数を表示し、フォルダを開けるようにする。</td></tr>
+<tr><td>マスク比較</td><td>11 章。</td></tr>
+<tr><td>リリース登録ダイアログ</td><td>評価 ID の固定、学習混入が unknown のときの注意、コピー中の進行表示（13 章）。</td></tr>
+<tr><td>リリース済みモデル・振り分け</td><td>実験を引かない（13.4）、expected_revision の衝突時のメッセージ（14 章）。</td></tr>
+<tr><td>学習キュー</td><td>評価の実行中は「評価の終了を待っています」（15.1）。</td></tr>
+<tr><td>アプリ終了</td><td>評価中も学習と同じ確認を出す。</td></tr>
+<tr><td>実験一覧</td><td>「成果物を整理…」を追加（19.5）。実験詳細の途中保存モデルの一覧で、削除済みのものは「削除済み」と表示する。</td></tr>
+<tr><td>候補一覧・詳細・リリース登録</td><td>検証版の初期値と、基準検証版との違いの注記（3.5）。学習混入の表示は「同一画像の混入なし / あり / 確認できません」（3.4）。</td></tr>
+</table></div>
+<p>ID・enum 名・生のパス・例外メッセージをそのまま画面に出さない（GUI ガイドライン）。表示の変更が大きいもの（出力完了の案内、詳細評価ダイアログの追加項目、成果物の整理ダイアログ）は、実装前に ASCII のモックで承認をもらう。</p>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s17">
+<h2>17. テストと受け入れ条件</h2>
+
+<h3>17.1 通常のテスト（torch 不要）</h3>
+<ul>
+<li>DatasetStore: val 版の列挙、purpose の取り違え、重複 item_id の版を外す、評価対象の選び方（3.2）。</li>
+<li>ComparisonService: 推論設定の範囲と再利用、候補の重複（fingerprint）、試行の明示、OOF の applicability 3 値、評価の準備（再評価で新しい番号、旧結果が残る）、採用する評価の選び方、破損の検出、リリースの公開と復旧（改名の直後に落ちた場合）、リリース重みの独立（元の final.pt を書き換えてもリリースが変わらない）、振り分けの一括検証と revision の衝突、パスの逸脱の拒否。</li>
+<li>終端判定の共通関数（全行）と、評価の result.json の妥当性。</li>
+<li>粒子分離: 対角の接触、細い橋、1 画素の粒子、消失、分断、非連続のラベル番号、ラベル番号を入れ替えても結果が同じ。</li>
+<li>マスク出力: 衝突するファイル名、PNG の上限、キャンセル後に <code>.partial</code> が残り完成扱いにならない、既存フォルダに上書きしない。</li>
+<li>instance_table: 手計算した小さな例（重なり・非連続のラベル・空）。eval_counts.npz が学習の形式と同じ読み方で読める。</li>
+<li>成果物の整理: 種類ごとの対象、実行中・未確定の試行を消さない、候補状態の候補が参照する final.pt を消さない、リリース済みはリリース側のコピーが残る、pruned.json の deleting から再開して deleted になる、整理後も試行の状態（completed）が変わらない、整理した final.pt からは候補を作れない（理由付きのエラー）、run_dir の外を消さない。</li>
+</ul>
+
+<h3>17.2 評価プロセスと GUI のテスト</h3>
+<ul>
+<li>偽アダプタ（numpy で固定のラベルを返す。torch・cellpose を要求しない）で、準備 → 起動 → preflight → image_done → result.json → completed までを数秒で確認する。</li>
+<li>障害: 準備の直後、result.json を書いた直後、status.json を書く直前に落ちた場合。中断と完了の競合。イベントの欠落。</li>
+<li>排他: 評価中に学習キューが次へ進まない、評価の終了後に進む。終端処理の保存に失敗したら次を開始しない。</li>
+<li>GUI（ユーザーの操作経路。QTest のクリック・キー、実際のメニュー項目）: 候補追加 → 評価 → マスク比較 → 出力 → リリース → 振り分けの適用、の主要経路だけ。</li>
+<li>実モデルの保存 → 読込 → 推論（Mask R-CNN / Cellpose、推論設定の値が効くこと）は <code>@pytest.mark.ml</code>。</li>
+</ul>
+
+<h3>17.3 受け入れ条件（CPU の PC）</h3>
+<ol>
+<li>train_v000 で学習した Mask R-CNN の実験から候補を作り、val_v000 で評価でき、候補一覧に検証 AP・OOF AP が表示される。</li>
+<li>推論設定を変えた 2 つ目の候補を作ると、OOF AP が「対象外」になり、検証 AP が別の値として出る。</li>
+<li>2 候補のマスク比較で、原画像と両候補の予測が表示される。</li>
+<li>粒子解析用マスクを出力し、二値マスクで接触していた気泡が分かれている。</li>
+<li>リリース登録・振り分けの適用ができ、アプリを再起動しても同じ表示になる。<code>workspace/pretrained/</code> を空にしても評価・リリースが動く。</li>
+<li>評価中の中断・アプリ終了・評価プロセスの強制終了で、状態が正しく確定し、再起動後も同じ表示になる。</li>
+<li>Cellpose（cpsam）の実験でも 1 と 3 ができる（手動確認）。</li>
+<li>リリース済みの候補の元の実験で「成果物を整理」し、fold のモデルと final.pt を消しても、リリース・振り分け・過去の評価の表示が変わらない。空いた容量が表示どおりである。</li>
+</ol>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s18">
+<h2>18. 実装の順序</h2>
+<p>各段階でテストと ruff が通った状態でコミットします。</p>
+<div class="table-wrap"><table>
+<tr><th>段階</th><th>内容</th><th>確認</th></tr>
+<tr><td>A. 土台（torch 不要）</td><td>DatasetStore の val 対応とダミー val_v000、データ型（EvaluationRecord、RoutingState、Evaluation.n_images）、ComparisonService の保存と復元（推論設定・候補・外部解析・振り分け）、fingerprint と OOF の applicability、粒子分離の共通関数、instance_table、成果物の整理のサービス側（19 章）</td><td>17.1 の該当分</td></tr>
+<tr><td>B. 共通ジョブ基盤と評価プロセス</td><td>jobs/ と gui/process_job.py への共通化（学習の既存テストが通ること）、ComputeCoordinator、EvaluationRunner、inference/run（偽アダプタ）、評価の準備・終端判定・復旧</td><td>17.2 の偽アダプタ・障害・排他</td></tr>
+<tr><td>C. 実推論</td><td>推論用アダプタの生成口、Cellpose の評価パラメータの受け渡し、入力変換の共通化</td><td>ml テスト（実行前にユーザー確認）</td></tr>
+<tr><td>D. GUI 接続</td><td>HybridBackend の明示委譲、MockBackend の API 変更、16.2 の画面変更（大きい表示の変更は先に ASCII モックで承認）、マスク比較の修正、AP 表記の統一（9.3）、成果物の整理ダイアログ</td><td>GUI の主要経路のテスト、スクリーンショットでのレビュー</td></tr>
+<tr><td>E. 出力とリリース</td><td>マスク出力、リリースの公開と復旧、振り分けの一括適用、リリース画面の実験非依存化、本番推論画面の境界（2.4）</td><td>17.1 の該当分、受け入れ条件 1〜7</td></tr>
+</table></div>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s19">
+<h2>19. 成果物の整理</h2>
+<p>記録は残したまま、不要になった大きなファイル（主に重み）だけを消して容量を空ける操作です。学習側の試行が対象です。<strong>自動では消さず、ユーザーが実験一覧から明示的に行います。</strong>比較側の評価結果（予測画像など）とリリース（<code>releases/</code>）は対象外で、消しません。</p>
+
+<h3>19.1 種類と条件</h3>
+<div class="table-wrap"><table class="keys">
+<tr><th>種類（category）</th><th>ファイル（run_dir からの相対パス）</th><th>消せる条件</th></tr>
+<tr><td><code>fold_periodic</code>: fold の定期保存モデル</td><td><code>checkpoints/fold_*/epoch_*.pt</code></td><td>試行が確定している（status.json がある）</td></tr>
+<tr><td><code>fold_selected</code>: fold の選択エポックのモデル</td><td><code>checkpoints/fold_*/selected.pt</code></td><td>同上。消すと、将来の OOF 再評価（20 章）ができなくなることをダイアログに書く</td></tr>
+<tr><td><code>final</code>: 最終学習モデル</td><td><code>checkpoints/final.pt</code></td><td>同上。かつ、状態が「候補」（評価中・評価待ちを含む）の比較候補がこの試行を参照していない。非採用・リリース済みの候補だけが参照しているなら消せる（リリースは重みのコピーを持つ。13.2）</td></tr>
+<tr><td><code>temporary</code>: 中断・失敗した試行の一時ファイル</td><td><code>tmp_pred/</code>、<code>tmp_ckpt/</code> の中身</td><td>試行の状態が stopped / failed</td></tr>
+</table></div>
+<ul>
+<li>いつも残すもの: 設定・run_spec・result・events・ログ・<code>eval/</code>・<code>oof/</code>・チェックポイントのメタ情報（<code>*.pt.json</code>）。</li>
+<li>学習中・待機中の実験は、どの試行も対象外。</li>
+<li>対象はシンボリックリンクをたどらず、run_dir の中の実在するファイルだけ（パスの逸脱は 4.1 と同じ規則で拒否）。</li>
+</ul>
+
+<h3>19.2 記録と手順</h3>
+<pre><code>pruned.json = {
+  "schema": 1,
+  "entries": [
+    {"path": "checkpoints/final.pt", "category": "final", "size": 180000000,
+     "sha256": "…",                         # result.json の成果物一覧かメタ情報の値（なければ null）
+     "state": "deleting" | "deleted",
+     "requested_at": "…", "deleted_at": "…" | null}
+  ]
+}</code></pre>
+<ol>
+<li>消す対象を決め、pruned.json に <code>state=deleting</code> で追記して保存する（原子的な書き込み）。</li>
+<li>ファイルを消す（すでにない場合は消えたものとして扱う）。</li>
+<li>pruned.json の該当項目を <code>state=deleted</code>、<code>deleted_at</code> を入れて保存する。</li>
+</ol>
+<p>起動時の復旧で <code>deleting</code> の項目があれば、2〜3 をやり直す。書き手は TrainingService だけ。</p>
+
+<h3>19.3 他の処理への影響</h3>
+<ul>
+<li>試行の状態は変わらない（status.json は書き換えない。終端判定の result.json の検証は status.json がないときだけ行うので、整理の後に呼ばれることはない）。</li>
+<li>整理した final.pt からは候補を作れない（<code>create_candidate_snapshot</code> が「最終学習モデルは成果物の整理で削除されています」のエラーを返す）。</li>
+<li>実験の履歴を作り直すとき（学習 5.4）、pruned.json に載っているチェックポイントは「削除済み」として扱い、欠けていてもエラーにしない。実験詳細の途中保存モデル一覧に「削除済み」と出す。</li>
+<li>比較側は、候補の重みがないときの評価を事前検査で failed にする（19.1 の条件で通常は起きない）。</li>
+<li>実験の削除（学習 12.3）は今どおり。</li>
+</ul>
+
+<h3>19.4 API</h3>
+<pre><code>artifact_cleanup_plan(experiment_ids: list[str]) -&gt; list[ArtifactGroup]
+ArtifactGroup(experiment_id, attempt, category, n_files, size_bytes, deletable: bool, reason: str)
+
+prune_artifacts(experiment_ids: list[str], categories: list[str]) -&gt; PruneResult
+PruneResult(freed_bytes, n_files, skipped: list[ArtifactGroup])   # 条件を満たさないものは消さずに skipped へ</code></pre>
+<p>HybridBackend は TrainingService へ委譲し、final の参照確認に ComparisonService を使う。MockBackend は模擬の大きさを返し、状態だけを持つ。</p>
+
+<h3>19.5 画面</h3>
+<p>実験一覧の「実験」メニューと右クリックに「成果物を整理…」を置く（複数選択可）。ダイアログでは種類ごとにチェック欄・ファイル数・容量を出し、消せないものは理由を出して選べないようにする。実行前に消える容量の合計を出し、確認してから消す。画面の形は実装前に ASCII のモックで承認をもらう。</p>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s20">
+<h2>20. 先送りした拡張</h2>
+<p>開発者との相談（2026-09-29）で、次の方向を最終形とすることにしました。ただし<strong>今回のブランチでは実装せず、次以降に回します</strong>。それまでは 6 章のとおり、推論設定を変えた候補の OOF AP は「対象外」と表示します。</p>
+<ul>
+<li><strong>OOF による推論設定の調整</strong>: 選択エポックの fold ごとの selected.pt で、各画像をその画像を学習に使っていない fold のモデルで推論し直し、推論設定を変えた OOF AP（調整後 OOF AP）を求める。<code>save_fold_models=true</code> の試行に限る。表示は「学習時 OOF AP」「調整後 OOF AP」「検証 AP」の 3 つに分ける。</li>
+<li><strong>最終学習の分離</strong>: 学習の試行を CV までで完了できるようにし、比較モードで決めたエポック・推論設定から、学習側の独立したジョブとして最終学習を行う。推論設定だけを変えるなら最終学習はやり直さない。</li>
+<li><strong>エポックと推論設定の同時調整</strong>: 全 fold に重みが残っているエポックに限る。容量が大きい（cpsam・K=5 で 1 エポックあたり約 6 GB）ので、成果物の整理（19 章）と合わせて保持方針を決める。</li>
+<li><strong>生出力の保存</strong>（再推論せずに閾値だけを変える）: Mask R-CNN の NMS 閾値は後から正確に再現できないなど制約が多いので、必要になってから Cellpose に限って検討する。</li>
+</ul>
+<p>統計上の注意: OOF でエポックと推論設定を選ぶと、選んだ組み合わせの OOF AP は楽観的になる。検証 AP を見て選び直すと、検証データもモデル選択に使ったことになり、独立した評価とは呼べない。</p>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s21">
+<h2>21. 未決事項</h2>
+<ul>
+<li>リリース済みモデルが参照する実験の削除を許すか（13.5）: 今回は今の保護を維持する。</li>
+<li>検証用データセットの正式な作成口と、学習版との重複チェック: データ準備の実装で行う。</li>
+<li>CUDA 上の推論速度とメモリ: CUDA の PC に移った時点で測る。</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="s22">
+<h2>22. 改訂履歴</h2>
+<div class="table-wrap"><table class="rev">
+<tr><th>版</th><th>日付</th><th>内容</th></tr>
+<tr><td>v1.0</td><td>2026-09-29</td><td>初版。Claude がたたき台を作り、GPT-6 Astra のレビュー 1 回で詰めた（評価の実行単位の保存、リリース重みの独立コピー、OOF の適用可否の 3 値、粒子分離の両側除去と個別検査、共通の排他、振り分けの一括確定）。</td></tr>
+<tr><td>v1.1</td><td>2026-09-29</td><td>開発者の指示を反映。成果物の整理を追加（19 章）。OOF による推論設定の調整と最終学習の分離を先送りと明記（20 章）。検証版の選び方と学習混入の意味（3.4・3.5）、後から分析するための保存（9.5）、AP 表記の統一の対象（9.3）を追加。最終学習の段階について GPT-6 Astra と 2 回目の相談を行った。</td></tr>
+</table></div>
+</div>
+
+</div>
+</body>
+</html>
