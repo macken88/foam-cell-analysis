@@ -1,6 +1,7 @@
 import csv
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -932,6 +933,38 @@ def test_cleanup_refuses_running_queued_and_unconcluded_attempts(tmp_path):
     assert "待機中" in queued.skipped[0].reason
     assert (run_dir / "checkpoints/final.pt").exists()
     assert not (run_dir / "pruned.json").exists()
+
+
+def test_cleanup_counts_hard_linked_selected_checkpoint_once(tmp_path):
+    service, experiment = _completed_service(tmp_path)
+    expid = experiment.experiment_id
+    run_dir = tmp_path / "experiments" / expid / "runs" / "attempt_001"
+    periodic = run_dir / "checkpoints" / "fold_1" / "epoch_010.pt"
+    periodic.parent.mkdir(parents=True)
+    periodic.write_bytes(b"x" * 100)
+    selected = periodic.with_name("selected.pt")
+    try:
+        os.link(periodic, selected)
+    except OSError:
+        pytest.skip("この環境ではハードリンクを作れません")
+
+    groups = _groups(service.artifact_cleanup_plan([expid]))
+    assert groups[(1, "fold_selected")].size_bytes == 100
+    assert groups[(1, "fold_selected")].shared_bytes == 100
+    assert groups[(1, "fold_periodic")].shared_bytes == 100
+    assert groups[(1, "final")].shared_bytes == 0
+    assert service.estimate_freed_bytes([expid], ["fold_selected"]) == 0
+    assert service.estimate_freed_bytes([expid], ["fold_selected", "fold_periodic"]) == 100
+
+    only_selected = service.prune_artifacts([expid], ["fold_selected"])
+    assert (only_selected.n_files, only_selected.freed_bytes) == (1, 0)
+    assert periodic.read_bytes() == b"x" * 100
+
+    selected.unlink(missing_ok=True)
+    os.link(periodic, selected)
+    both = service.prune_artifacts([expid], ["fold_selected", "fold_periodic"])
+    assert (both.n_files, both.freed_bytes) == (2, 100)
+    assert not periodic.exists() and not selected.exists()
 
 
 def test_cleanup_keeps_final_protected_by_comparison(tmp_path):

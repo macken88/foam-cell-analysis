@@ -1629,13 +1629,55 @@ class TrainingService:
             return "学習キューで待機中の実験の成果物は整理できません"
         return ""
 
+    def _attempt_inventory(
+        self, run_dir: Path
+    ) -> tuple[
+        dict[str, dict[tuple[int, int], int]], dict[tuple[int, int], tuple[int, int, set[str]]]
+    ]:
+        """種類ごとの実体（st_dev, st_ino）と、実体ごとの大きさ・リンク数・種類を返す。
+
+        ハードリンクで同じ実体を指すファイルは 1 つの実体として扱う。
+        戻り値の 1 つ目は 種類 → {実体: その種類内のリンク数}、
+        2 つ目は 実体 → (大きさ, st_nlink, 実体を含む種類の集合)。
+        """
+        by_category: dict[str, dict[tuple[int, int], int]] = {}
+        identities: dict[tuple[int, int], tuple[int, int, set[str]]] = {}
+        for category in self.ARTIFACT_CATEGORIES:
+            for path in self._artifact_files(run_dir, category):
+                stat = path.stat()
+                key = (stat.st_dev, stat.st_ino)
+                links = by_category.setdefault(category, {})
+                links[key] = links.get(key, 0) + 1
+                entry = identities.setdefault(key, (stat.st_size, stat.st_nlink, set()))
+                entry[2].add(category)
+        return by_category, identities
+
+    @staticmethod
+    def _freed_by(
+        categories: set[str],
+        by_category: dict[str, dict[tuple[int, int], int]],
+        identities: dict[tuple[int, int], tuple[int, int, set[str]]],
+    ) -> int:
+        """選んだ種類をすべて消したときに実際に空く容量を返す。"""
+        freed = 0
+        for key, (size, nlink, owners) in identities.items():
+            links = sum(by_category.get(category, {}).get(key, 0) for category in owners)
+            # 実体の全リンクが選んだ種類に含まれるときだけ容量が空く
+            if owners <= categories and links >= nlink:
+                freed += size
+        return freed
+
     def artifact_cleanup_plan(
         self,
         experiment_ids: list[str],
         *,
         protected_final: Callable[[str, int], str] | None = None,
     ) -> list[ArtifactGroup]:
-        """試行・種類ごとに、消せるファイルの数・容量と可否を返す。"""
+        """試行・種類ごとに、消せるファイルの数・容量と可否を返す。
+
+        size_bytes は同じ実体（ハードリンク）を 1 回だけ数えた合計。
+        shared_bytes はそのうち他の種類や試行の外と実体を共有していて、単独では空かない分。
+        """
         groups = []
         for experiment_id in experiment_ids:
             if experiment_id not in self.experiments:
@@ -1644,9 +1686,10 @@ class TrainingService:
             for attempt, run_dir in self._attempt_dirs(experiment_id):
                 status_path = run_dir / "status.json"
                 status = read_json(status_path).get("status") if status_path.is_file() else None
+                by_category, identities = self._attempt_inventory(run_dir)
                 for category in self.ARTIFACT_CATEGORIES:
-                    files = self._artifact_files(run_dir, category)
-                    if not files:
+                    links = by_category.get(category)
+                    if not links:
                         continue
                     reason = busy
                     if not reason and status is None:
@@ -1659,18 +1702,47 @@ class TrainingService:
                         reason = "一時ファイルは中断・失敗した試行だけ整理できます"
                     if not reason and category == "final" and protected_final is not None:
                         reason = protected_final(experiment_id, attempt) or ""
+                    size = sum(identities[key][0] for key in links)
+                    freed = self._freed_by({category}, by_category, identities)
                     groups.append(
                         ArtifactGroup(
                             experiment_id,
                             attempt,
                             category,
-                            len(files),
-                            sum(path.stat().st_size for path in files),
+                            sum(links.values()),
+                            size,
                             not reason,
                             reason,
+                            size - freed,
                         )
                     )
         return groups
+
+    def estimate_freed_bytes(
+        self,
+        experiment_ids: list[str],
+        categories: list[str],
+        *,
+        protected_final: Callable[[str, int], str] | None = None,
+    ) -> int:
+        """選んだ種類の組み合わせを整理したときに実際に空く容量を見積もる。
+
+        消せないまとまりは除き、同じ実体の全リンクが選択に含まれるときだけ数える。
+        """
+        unknown = [item for item in categories if item not in self.ARTIFACT_CATEGORIES]
+        if unknown:
+            raise ValueError(f"成果物の種類が不正です: {', '.join(unknown)}")
+        plan = self.artifact_cleanup_plan(experiment_ids, protected_final=protected_final)
+        selected: dict[tuple[str, int], set[str]] = {}
+        for group in plan:
+            if group.deletable and group.category in categories:
+                selected.setdefault((group.experiment_id, group.attempt), set()).add(group.category)
+        total = 0
+        for (experiment_id, attempt), chosen in selected.items():
+            run_dir = self._experiment_dir(experiment_id) / "runs" / f"attempt_{attempt:03d}"
+            by_category, identities = self._attempt_inventory(run_dir)
+            total += self._freed_by(chosen, by_category, identities)
+        return total
 
     @staticmethod
     def _read_pruned(run_dir: Path) -> dict[str, Any]:
@@ -1717,12 +1789,15 @@ class TrainingService:
 
     @staticmethod
     def _unlink(path: Path) -> int | None:
-        """ファイルを消し、消した大きさを返す。すでにないときは None。"""
+        """ファイルを消し、空いた大きさを返す。すでにないときは None。
+
+        他のハードリンクが残る（削除前の st_nlink が 2 以上）ときは容量が空かないので 0。
+        """
         for trial in range(5):
             try:
-                size = path.stat().st_size
+                stat = path.stat()
                 path.unlink()
-                return size
+                return stat.st_size if stat.st_nlink <= 1 else 0
             except FileNotFoundError:
                 return None
             except PermissionError:

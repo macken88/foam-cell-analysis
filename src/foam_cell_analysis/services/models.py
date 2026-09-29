@@ -81,6 +81,8 @@ class ArtifactGroup:
     size_bytes: int
     deletable: bool
     reason: str = ""
+    # 他の種類（または試行の外）とハードリンクで実体を共有し、このまとまりだけ消しても空かない容量
+    shared_bytes: int = 0
 
 
 @dataclass
@@ -343,6 +345,8 @@ class Evaluation:
 
     overall_map: float
     per_class: dict[str, tuple[float, int]]
+    # 全体の対象画像数（比較・評価設計 9.2。旧データでは 0）
+    n_images: int = 0
 
 
 @dataclass
@@ -374,6 +378,10 @@ class Candidate:
     source_attempt_number: int = 1
     checkpoint_reference: str = ""
     snapshot: CandidateSnapshot | None = None
+    # 学習時 OOF AP をこの候補と比べられるか（matching / different / unknown。比較・評価設計 6 章）
+    oof_applicability: str = ""
+    oof_reason: str = ""
+    released_model_id: str | None = None
 
 
 @dataclass
@@ -392,6 +400,29 @@ class ReleasedModel:
     oof_evaluation: Evaluation | None = None
     comment: str = ""
     source_attempt_number: int = 1
+
+
+@dataclass
+class EvaluationRecord:
+    """比較候補の 1 回分の評価（eval_NNN）の読み取り結果。"""
+
+    evaluation_id: str
+    candidate_id: str
+    validation_version: str
+    status: str
+    evaluation: Evaluation | None = None
+    contamination: dict[str, Any] = field(default_factory=dict)
+    completed_at: str | None = None
+    broken: bool = False
+    input_fingerprint: str | None = None
+
+
+@dataclass
+class RoutingState:
+    """振り分けの現在値と、楽観的排他に使う revision。"""
+
+    revision: int
+    assignments: dict[str, str | None] = field(default_factory=dict)
 
 
 @dataclass
