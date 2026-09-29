@@ -2,239 +2,55 @@
 
 from __future__ import annotations
 
-import ctypes
-import json
 import os
 import time
-from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, Signal
+from PySide6.QtCore import QObject, QTimer, Signal
 
 from ..services.models import JobExit, PreparedRun
+from .process_job import HELLO_TIMEOUT_MS, ProcessJob, ProcessJobInfo
 
 
-def _valid_event_time(value) -> bool:
-    """イベント時刻として扱える Unix 時刻または ISO 文字列か確認する。"""
-    if isinstance(value, (int, float)):
-        return True
-    if not isinstance(value, str) or not value:
-        return False
-    try:
-        datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return False
-    return True
+class ProcessTrainingJob(ProcessJob):
+    """hello/go ハンドシェイク付きの学習子プロセス（共通 ProcessJob の学習用設定）。
 
+    experiment_id・attempt を省略したときだけ run_id（<実験>/attempt_<番号>）から求める。
+    """
 
-class ProcessTrainingJob(QObject):
-    """hello/go ハンドシェイク付きの学習子プロセス。"""
-
-    event_received = Signal(object)
-    finished = Signal(object)
-
-    def __init__(self, prepared: PreparedRun, backend, hello_timeout_ms: int = 30_000, parent=None):
-        super().__init__(parent)
+    def __init__(
+        self,
+        prepared: PreparedRun,
+        backend,
+        hello_timeout_ms: int = HELLO_TIMEOUT_MS,
+        parent=None,
+        *,
+        experiment_id: str | None = None,
+        attempt: int | None = None,
+    ):
+        if experiment_id is None or attempt is None:
+            parsed_id, parsed_attempt = prepared.run_id.rsplit("/attempt_", 1)
+            experiment_id = experiment_id or parsed_id
+            attempt = attempt if attempt is not None else int(parsed_attempt)
         self.prepared = prepared
         self.backend = backend
-        self.experiment_id = prepared.run_id.split("/attempt_", 1)[0]
-        self.key = f"training:{self.experiment_id}"
-        self.process = QProcess(self)
-        self.process.setProgram(prepared.program)
-        self.process.setArguments(prepared.args)
-        self.process.setWorkingDirectory(str(Path(prepared.run_dir).resolve().parents[1]))
-        environment = QProcessEnvironment.systemEnvironment()
-        for key, value in prepared.env.items():
-            environment.insert(key, value)
-        self.process.setProcessEnvironment(environment)
-        self.process.readyReadStandardOutput.connect(self._stdout_ready)
-        self.process.readyReadStandardError.connect(self._stderr_ready)
-        self.process.finished.connect(self._process_finished)
-        self.process.errorOccurred.connect(self._process_error)
-        self._hello_timer = QTimer(self)
-        self._hello_timer.setSingleShot(True)
-        self._hello_timer.setInterval(hello_timeout_ms)
-        self._hello_timer.timeout.connect(self._hello_timeout)
-        self._hello = False
-        self._hello_pid = None
-        self._buffer = bytearray()
-        self._job_handle = None
-        self._done = False
-        self._pending_failure = None
-        run_dir = Path(prepared.run_dir)
-        run_dir.mkdir(parents=True, exist_ok=True)
-        self._stdout_log = (run_dir / "stdout.log").open("ab")
-        self._stderr_log = (run_dir / "stderr.log").open("ab")
-
-    def start(self):
-        """プロセスを起動して hello を待つ。"""
-        self.process.start()
-        self._hello_timer.start()
-
-    def _stdout_ready(self):
-        data = bytes(self.process.readAllStandardOutput())
-        self._stdout_log.write(data)
-        self._stdout_log.flush()
-        self._buffer.extend(data)
-        while b"\n" in self._buffer:
-            line, _, rest = self._buffer.partition(b"\n")
-            self._buffer = bytearray(rest)
-            self._handle_line(line)
-
-    def _stderr_ready(self):
-        data = bytes(self.process.readAllStandardError())
-        self._stderr_log.write(data)
-        self._stderr_log.flush()
-
-    def _handle_line(self, line: bytes):
-        try:
-            event = json.loads(line)
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            return self._fail("学習プロセスから不正な JSON を受信しました")
-        if not self._hello:
-            required = {"v", "run_id", "time", "type", "pid"}
-            if (
-                not required.issubset(event)
-                or event.get("v") != 1
-                or event.get("type") != "hello"
-                or event.get("run_id") != self.prepared.run_id
-                or not _valid_event_time(event.get("time"))
-                or not isinstance(event.get("pid"), int)
-                or event.get("pid", 0) <= 0
-            ):
-                return self._fail(f"学習プロセスの hello が不正です (受信 PID: {event.get('pid')})")
-            self._hello = True
-            self._hello_pid = event["pid"]
-            self._hello_timer.stop()
-            try:
-                self._attach_job_object()
-                experiment_id, attempt = self.prepared.run_id.rsplit("/attempt_", 1)
-                self.backend.record_training_process(
-                    experiment_id, int(attempt), self._hello_pid, time.time()
-                )
-                self.process.write(b"go\n")
-            except Exception as error:
-                self._fail(f"学習プロセスを開始できません: {error}")
-            return
-        self.event_received.emit(event)
-
-    def _attach_job_object(self):
-        if os.name != "nt":
-            return
-        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
-        kernel.CreateJobObjectW.restype = ctypes.c_void_p
-        kernel.SetInformationJobObject.argtypes = [
-            ctypes.c_void_p,
-            ctypes.c_int,
-            ctypes.c_void_p,
-            ctypes.c_ulong,
-        ]
-        kernel.SetInformationJobObject.restype = ctypes.c_int
-        kernel.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
-        kernel.OpenProcess.restype = ctypes.c_void_p
-        kernel.AssignProcessToJobObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-        kernel.AssignProcessToJobObject.restype = ctypes.c_int
-        kernel.CloseHandle.argtypes = [ctypes.c_void_p]
-        kernel.CloseHandle.restype = ctypes.c_int
-        handle = kernel.CreateJobObjectW(None, None)
-        if not handle:
-            raise OSError("Windows Job Object を作成できません")
-
-        class BasicLimit(ctypes.Structure):
-            _fields_ = [
-                ("PerProcessUserTimeLimit", ctypes.c_longlong),
-                ("PerJobUserTimeLimit", ctypes.c_longlong),
-                ("LimitFlags", ctypes.c_ulong),
-                ("MinimumWorkingSetSize", ctypes.c_size_t),
-                ("MaximumWorkingSetSize", ctypes.c_size_t),
-                ("ActiveProcessLimit", ctypes.c_ulong),
-                ("Affinity", ctypes.c_size_t),
-                ("PriorityClass", ctypes.c_ulong),
-                ("SchedulingClass", ctypes.c_ulong),
-            ]
-
-        class IoCounters(ctypes.Structure):
-            _fields_ = [
-                (name, ctypes.c_ulonglong)
-                for name in (
-                    "ReadOperationCount",
-                    "WriteOperationCount",
-                    "OtherOperationCount",
-                    "ReadTransferCount",
-                    "WriteTransferCount",
-                    "OtherTransferCount",
-                )
-            ]
-
-        class ExtendedLimit(ctypes.Structure):
-            _fields_ = [
-                ("BasicLimitInformation", BasicLimit),
-                ("IoInfo", IoCounters),
-                ("ProcessMemoryLimit", ctypes.c_size_t),
-                ("JobMemoryLimit", ctypes.c_size_t),
-                ("PeakProcessMemoryUsed", ctypes.c_size_t),
-                ("PeakJobMemoryUsed", ctypes.c_size_t),
-            ]
-
-        info = ExtendedLimit()
-        info.BasicLimitInformation.LimitFlags = 0x2000
-        if not kernel.SetInformationJobObject(handle, 9, ctypes.byref(info), ctypes.sizeof(info)):
-            kernel.CloseHandle(handle)
-            raise OSError("Windows Job Object の終了規則を設定できません")
-        process_handle = kernel.OpenProcess(0x0001 | 0x0100, False, int(self.process.processId()))
-        if not process_handle or not kernel.AssignProcessToJobObject(handle, process_handle):
-            if process_handle:
-                kernel.CloseHandle(process_handle)
-            kernel.CloseHandle(handle)
-            raise OSError("学習プロセスを Windows Job Object に登録できません")
-        kernel.CloseHandle(process_handle)
-        self._job_handle = handle
-
-    def _hello_timeout(self):
-        if not self._hello:
-            self._fail("学習プロセスが制限時間内に応答しませんでした")
-
-    def _process_error(self, _error):
-        if self.process.state() == QProcess.ProcessState.NotRunning and not self._pending_failure:
-            message = self._pending_failure or self.process.errorString()
-            self._finish(JobExit(start_failed=True, message=message))
-
-    def _process_finished(self, code, _status):
-        if self._pending_failure:
-            self._finish(JobExit(start_failed=True, message=self._pending_failure))
-            return
-        if not self._hello:
-            self._finish(JobExit(start_failed=True, message="hello 前に学習プロセスが終了しました"))
-            return
-        self._finish(JobExit(returncode=int(code), message="学習プロセスが終了しました"))
-
-    def _fail(self, message):
-        if self._done or self._pending_failure:
-            return
-        self._pending_failure = message
-        if self.process.state() != QProcess.ProcessState.NotRunning:
-            self.process.kill()
-            return
-        self._finish(JobExit(start_failed=True, message=message))
-
-    def _finish(self, outcome):
-        if self._done:
-            return
-        self._done = True
-        self._hello_timer.stop()
-        for stream in (self._stdout_log, self._stderr_log):
-            if not stream.closed:
-                stream.close()
-        if self._job_handle:
-            ctypes.windll.kernel32.CloseHandle(self._job_handle)
-            self._job_handle = None
-        self.finished.emit(outcome)
-
-    def kill(self):
-        """学習プロセスを終了する。"""
-        if self.process.state() != QProcess.ProcessState.NotRunning:
-            self.process.kill()
+        self.experiment_id = experiment_id
+        self.attempt = attempt
+        self.key = f"training:{experiment_id}"
+        info = ProcessJobInfo(
+            run_id=prepared.run_id,
+            run_dir=prepared.run_dir,
+            program=prepared.program,
+            args=list(prepared.args),
+            env=dict(prepared.env),
+            cwd=Path(prepared.run_dir).resolve().parents[1],
+            label="学習プロセス",
+            record_process=lambda pid, created: backend.record_training_process(
+                experiment_id, attempt, pid, created
+            ),
+            hello_timeout_ms=hello_timeout_ms,
+        )
+        super().__init__(info, parent)
 
 
 class FakeTrainingJob(QObject):

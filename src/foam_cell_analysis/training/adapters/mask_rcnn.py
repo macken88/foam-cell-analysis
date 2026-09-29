@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 import numpy as np
 
 from foam_cell_analysis.training.adapters.base import Sample
+from foam_cell_analysis.training.preprocessing import to_model_channels
 
 DEFAULT_EVAL_PARAMS = {
     "box_score_thresh": 0.5,
@@ -353,7 +354,7 @@ class MaskRCNNAdapter:
         del training, rng
         image = np.asarray(sample.image, dtype=np.float32)
         if image.ndim == 2:
-            image = np.repeat(image[:, :, None], 3, axis=2)
+            image = to_model_channels(image, "mask_rcnn")
         elif image.ndim == 3 and image.shape[2] == 1:
             image = np.repeat(image, 3, axis=2)
         if image.ndim != 3 or image.shape[2] != 3:

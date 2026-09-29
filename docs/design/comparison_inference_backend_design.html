@@ -347,12 +347,13 @@ ComparisonService.add_candidate(experiment_id, attempt, inference_config_id, com
   2. 対象画像を決める（3.2）。チャンネル不一致はここで ValueError。
   3. evaluations/&lt;版&gt;/.preparing_&lt;uuid&gt;/ に run_spec.json を書く。
   4. 次の番号（eval_NNN）へ os.replace で改名する。ここで初めて評価として数える。
+     番号は候補ごとの通し番号にする（検証版が違っても同じ番号を使わない。evaluation_id だけで評価を特定できるように）。
   5. PreparedRun(run_id, run_dir, program, args, env) を返す。モックでは fake=True。</code></pre>
 <p>学習の prepare_training_run（学習 5.1）と同じ考え方です。<strong>再評価は常に新しい eval_NNN を作り、過去の評価は変更・削除しない。</strong>再評価が失敗しても、前回の成功した評価はそのまま使える。</p>
 
 <h3>7.2 起動とプロセス間の取り決め</h3>
 <p>学習 7.1〜7.3 と同じです（プログラムは <code>sys.executable</code>、引数は <code>["-m", "foam_cell_analysis.inference.run", "--run-dir", &lt;絶対パス&gt;]</code>、hello → Job Object への登録 → process.json → go、stdin の EOF で終了、num_workers=0、中断は kill）。TORCH_HOME・CELLPOSE_LOCAL_MODELS_PATH も学習と同じ場所に固定する（学習済みの重みだけで推論できるので、通常はダウンロードは起きない）。</p>
-<p>hello の pid は QProcess が返す pid と照合し、違えば起動失敗にする。process.json にはプロセスの作成時刻を記録する（復旧時の照合用）。</p>
+<p>hello の pid は QProcess が返す pid と照合し、<strong>一致するか、その直接の子である</strong>ときだけ合格にする（venv の <code>python.exe</code> はランチャーで、実際の Python はその子として動くため）。どちらでもなければ起動失敗。Job Object にはランチャーを登録し、kill は登録後なら <code>TerminateJobObject</code> で行う。process.json には OS から得た実際のプロセス作成時刻を記録する（復旧時の照合用）。学習の起動も同じ規則にする。</p>
 
 <h3>7.3 評価プロセスの流れ</h3>
 <ol>
@@ -569,7 +570,7 @@ get_candidate_prediction(candidate_id, evaluation_id, item_id) -&gt; np.ndarray<
 <li>次の番号（model_NNN）へ os.replace で改名する。ここでリリースが成立する。</li>
 <li>candidate.json の status を released、released_model_id を設定する。</li>
 </ol>
-<p>コピーの前に、コピーに必要な容量（重みのバイト数 + 100 MB）を確かめる。cpsam の重み（約 1.2 GB）は数十秒かかることがあるので、リリース登録はワーカースレッドで行い、進行中の表示を出す。</p>
+<p>コピーの前に、コピーに必要な容量（重みのバイト数 + 100 MB）を確かめる。cpsam の重み（約 1.2 GB）は数十秒かかることがあるので、リリース登録はワーカースレッドで行い、進行中の表示を出す。リリースが途中で失敗したときは、その処理が作った準備フォルダをその場で削除する（大きな重みを次回起動まで残さないため。他の処理が作った準備フォルダは起動時の復旧だけが消す）。</p>
 
 <h3>13.3 復旧</h3>
 <p>起動時に <code>releases/.preparing_*</code> を削除する。公開済みのリリース（model_NNN）について、参照する候補の status が released でなければ、release.json から修復する（4 と 5 の間で落ちた場合）。</p>
@@ -617,6 +618,7 @@ get_candidate_prediction(candidate_id, evaluation_id, item_id) -&gt; np.ndarray<
 <li>学習（TrainingRunner）と評価（EvaluationRunner）は、開始前に request で占有を求める。空いていればすぐ start を呼び、使用中なら待ち行列（先着順）に入れる。実行中の処理に割り込まない。</li>
 <li>占有期間は準備 → 起動 → 実行 → 終端処理（status.json の保存）まで。終端処理が終わってから release する。<strong>終端処理の保存に失敗したら、次の待機要求を開始しない</strong>（学習 5.2 のキュー停止と同じ考え方。画面にエラーを出す）。</li>
 <li>学習キューの次の項目も、評価が実行中なら待つ（キュー表には「評価の終了を待っています」と表示する）。</li>
+<li>終端処理の保存に失敗したときは <code>release(ticket, ok=False, error=…)</code> で止まった状態にし、<code>unblock()</code> まで次を開始しない（<code>is_blocked</code>・<code>blocked_error</code>・<code>wait_message(owner)</code> で画面に理由を出す）。学習キューでは「すべて実行」を押すと解除する。評価側の解除は評価の開始操作で行う。</li>
 <li>複数候補の評価は、候補 1 件ごとに占有を取り、1 件ごとに返す（その間に学習の要求が来れば、先着順で学習が入る）。</li>
 </ul>
 

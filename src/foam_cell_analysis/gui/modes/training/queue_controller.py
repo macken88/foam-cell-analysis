@@ -17,6 +17,8 @@ class TrainingQueueController(QObject):
         self.active_queue_id = None
         self.waiting_for_training = False
         self.waiting_for_id = None
+        # 評価など別の処理が計算を占有している間、次の行の開始を待つ占有要求
+        self._compute_ticket = None
         self._job = None
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setSingleShot(True)
@@ -26,6 +28,28 @@ class TrainingQueueController(QObject):
         ctx.training_runner.progressed.connect(
             lambda _experiment_id: self._queue_progress_refresh()
         )
+        ctx.compute.changed.connect(self._compute_changed)
+
+    @property
+    def waiting_for_compute(self) -> bool:
+        """評価など別の処理の終了を待っていて、次の行をまだ開始していないか。"""
+        return self._compute_ticket is not None
+
+    @property
+    def compute_wait_text(self) -> str | None:
+        """キュー表に出す待ち理由（「評価の終了を待っています」など）。"""
+        if not self.waiting_for_compute:
+            return None
+        return self.ctx.compute.wait_message("training") or "計算処理の終了を待っています"
+
+    def _compute_changed(self):
+        if self.waiting_for_compute:
+            self.changed.emit()
+
+    def _cancel_compute_wait(self):
+        ticket, self._compute_ticket = self._compute_ticket, None
+        if ticket is not None:
+            self.ctx.compute.cancel(ticket)
 
     def _jobs_changed(self, _count):
         self.changed.emit()
@@ -52,6 +76,9 @@ class TrainingQueueController(QObject):
     def start(self):
         if self.executing:
             return
+        if self.ctx.compute.is_blocked:
+            # 終端状態の保存失敗で止めていた計算処理を、利用者の再実行で再開する
+            self.ctx.compute.unblock()
         self.executing = True
         self.stop_requested = False
         if self.ctx.training_runner.is_busy:
@@ -71,6 +98,13 @@ class TrainingQueueController(QObject):
     def stop(self):
         if not self.executing:
             return
+        if self.waiting_for_compute and self.active_id is None:
+            # まだ次の行を始めていないので、待つのをやめてキューを止める
+            self._cancel_compute_wait()
+            self.executing = False
+            self.stop_requested = False
+            self.changed.emit()
+            return
         self.stop_requested = True
         self.ctx.status.show_message(
             "今の学習は最後まで続けます。終わったら次の行へ進まず、キューを止めます。"
@@ -85,6 +119,7 @@ class TrainingQueueController(QObject):
         self.executing = False
         self.waiting_for_training = False
         self.waiting_for_id = None
+        self._cancel_compute_wait()
         if self.ctx.training_runner.is_busy:
             if self.active_id is None:
                 self.active_id = self.ctx.training_runner.experiment_id
@@ -106,10 +141,13 @@ class TrainingQueueController(QObject):
             self.waiting_for_id = None
             self._next()
 
-    def _next(self):
+    def _next(self, ticket=None):
+        """次の待機行を開始する。ticket は占有済みの要求（占有を待った場合）。"""
         if not self.executing:
+            self._release_unused(ticket)
             return
         if self.stop_requested:
+            self._release_unused(ticket)
             self.executing = False
             self.stop_requested = False
             self.immediate_stop_requested = False
@@ -119,19 +157,30 @@ class TrainingQueueController(QObject):
             self.changed.emit()
             return
         if self.ctx.training_runner.is_busy:
+            self._release_unused(ticket)
             self.waiting_for_training = True
             self._connect_waiter()
+            self.changed.emit()
+            return
+        if ticket is None and self.ctx.compute.is_busy:
+            # 評価などが実行中。先着順で占有を待ち、空いたら次の行を始める
+            if self._compute_ticket is None:
+                self._compute_ticket = self.ctx.compute.request(
+                    "training", "学習キュー", self._compute_granted
+                )
             self.changed.emit()
             return
         try:
             item = self.ctx.backend.take_next_training_queue_item()
         except Exception as error:
+            self._release_unused(ticket)
             self.ctx.status.show_message(f"キュー項目の取得に失敗しました: {error}")
             self.executing = False
             self.active_id = None
             self.changed.emit()
             return
         if item is None:
+            self._release_unused(ticket)
             self.executing = False
             self.stop_requested = False
             self.waiting_for_training = False
@@ -146,8 +195,10 @@ class TrainingQueueController(QObject):
                 item.experiment_id,
                 self.active_queue_id,
                 bool(getattr(item, "queue_is_retry", False)),
+                ticket=ticket,
             )
         except Exception as error:
+            self._release_unused(ticket)
             self.ctx.backend.finish_training_queue_item(self.active_queue_id, "failed")
             self.active_id = None
             self.active_queue_id = None
@@ -157,6 +208,19 @@ class TrainingQueueController(QObject):
             QTimer.singleShot(0, self._next)
             return
         self.changed.emit()
+
+    def _compute_granted(self):
+        """待っていた占有が回ってきたら、その占有で次の行を始める。"""
+        ticket, self._compute_ticket = self._compute_ticket, None
+        if ticket is None:
+            ticket = self.ctx.compute.active
+        self.changed.emit()
+        self._next(ticket)
+
+    def _release_unused(self, ticket):
+        """学習に引き継がなかった占有を返す（返却済みなら何もしない）。"""
+        if ticket is not None:
+            self.ctx.compute.release(ticket)
 
     def suspend_for_shutdown(self):
         """終了確認の間、キュー進行状態を一時停止する。"""
@@ -170,7 +234,7 @@ class TrainingQueueController(QObject):
         """終了を取り消したときにキュー進行を戻す。"""
         self.executing, self.stop_requested = state
         self.changed.emit()
-        if self.executing and not self.ctx.training_runner.is_busy:
+        if self.executing and not self.ctx.training_runner.is_busy and not self.waiting_for_compute:
             self._next()
 
     def _training_ended(self, outcome):

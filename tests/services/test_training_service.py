@@ -735,6 +735,24 @@ def _completed_service(tmp_path, service_factory=None):
     return service, experiment
 
 
+def test_protocol_error_after_hello_concludes_as_failed_error(tmp_path):
+    _workspace(tmp_path)
+    service = TrainingService(tmp_path, process_alive=lambda _record: False)
+    config = service.default_experiment_config("mask_rcnn")
+    config["data"]["cv"]["n_folds"] = 2
+    experiment = service.add_training_queue_item(config)
+    prepared = service.prepare_training_run(experiment.experiment_id, experiment.experiment_id)
+    message = "学習プロセスのプロトコルエラー: イベントの共通項目がありません: seq"
+
+    outcome = service.conclude_training_run(
+        experiment.experiment_id, 1, JobExit(returncode=1, message=message, protocol_error=True)
+    )
+
+    assert (outcome.status, outcome.reason, outcome.message) == ("failed", "error", message)
+    status = json.loads((Path(prepared.run_dir) / "status.json").read_text(encoding="utf-8"))
+    assert status["status"] == "failed" and status["message"] == message
+
+
 def test_delete_experiment_removes_only_its_folder_and_refuses_running(tmp_path):
     service, experiment = _completed_service(tmp_path)
     expid = experiment.experiment_id

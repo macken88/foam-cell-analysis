@@ -251,7 +251,9 @@ class TrainingQueuePage(BasePage):
             running += f"（{training_progress_text(active)}）"
         elif not controller.active_id:
             running = (
-                f"{controller.waiting_for_id or '実行中の学習'}の学習終了後にキューを開始"
+                controller.compute_wait_text
+                if controller.waiting_for_compute
+                else f"{controller.waiting_for_id or '実行中の学習'}の学習終了後にキューを開始"
                 if controller.waiting_for_training
                 else "実行中・単発待ち"
                 if controller.executing

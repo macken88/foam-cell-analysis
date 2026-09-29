@@ -792,3 +792,33 @@ def test_queue_edit_survives_live_progress_and_is_saved(shell, qapp):
     assert saved["training"]["learning_rate"] == pytest.approx(3.7e-4)
     shell.ctx.queue_controller.stop()
     shell.ctx.training_runner.request_stop(timeout_ms=5000)
+
+
+def test_queue_waits_while_evaluation_holds_compute_and_starts_after_release(shell, qapp, qtbot):
+    backend = shell.ctx.backend
+    config = backend.default_experiment_config("mask_rcnn")
+    config["training"]["epochs"] = 1
+    config["data"]["cv"]["n_folds"] = 2
+    item = backend.add_training_queue_item(config)
+    compute = shell.ctx.compute
+    evaluation = compute.request("evaluation", "評価 cand_001", lambda: None)
+    shell.navigate(PageId.TRAINING_QUEUE)
+    queue = shell.page(PageId.TRAINING_QUEUE)
+    queue.refresh()
+
+    QTest.mouseClick(queue.run_button, Qt.MouseButton.LeftButton)
+    QTest.qWait(50)
+
+    controller = shell.ctx.queue_controller
+    assert controller.executing and controller.waiting_for_compute
+    assert not shell.ctx.training_runner.is_busy
+    assert backend.get_experiment(item.experiment_id).status == "queued"
+    assert "評価の終了を待っています" in queue.status_line.text()
+
+    with qtbot.waitSignal(shell.ctx.training_runner.ended, timeout=4_000) as signal:
+        compute.release(evaluation)
+    assert signal.args[0].experiment_id == item.experiment_id
+    assert signal.args[0].status == "completed"
+    qtbot.waitUntil(lambda: not controller.executing, timeout=2_000)
+    assert not compute.is_busy
+    assert "評価の終了を待っています" not in queue.status_line.text()

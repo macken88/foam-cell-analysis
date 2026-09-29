@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import ctypes
 import hashlib
 import importlib.util
 import json
@@ -23,6 +22,14 @@ from typing import Any
 import yaml
 
 from foam_cell_analysis.data.dataset_store import DatasetStore
+from foam_cell_analysis.jobs.lifecycle import (
+    decide_terminal_state,
+    process_alive,
+    process_created_at,
+    terminate_process,
+    windows_process_handle,
+)
+from foam_cell_analysis.jobs.protocol import classify_seq
 from foam_cell_analysis.services.models import (
     ArtifactGroup,
     AugmentationProfile,
@@ -52,101 +59,11 @@ from foam_cell_analysis.training.seeds import derive
 logger = logging.getLogger(__name__)
 
 
-def _process_created_at(process: dict[str, Any]) -> float | None:
-    """process.json の作成時刻を Unix 秒へ変換する。"""
-    for key in ("creation_time", "create_time", "created_at", "process_created_at"):
-        value = process.get(key)
-        if isinstance(value, (int, float)):
-            return float(value)
-        if isinstance(value, str):
-            try:
-                return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
-            except ValueError:
-                continue
-    return None
-
-
-def _windows_process_handle(pid: int) -> tuple[Any, float] | None:
-    """PID と作成時刻を照合し、生存中の Windows プロセスハンドルを返す。"""
-    if os.name != "nt":
-        return None
-
-    class FileTime(ctypes.Structure):
-        _fields_ = [("low", ctypes.c_uint32), ("high", ctypes.c_uint32)]
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.OpenProcess.restype = ctypes.c_void_p
-    kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
-    kernel32.GetProcessTimes.argtypes = [
-        ctypes.c_void_p,
-        ctypes.POINTER(FileTime),
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-    ]
-    kernel32.GetProcessTimes.restype = ctypes.c_int
-    kernel32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
-    kernel32.GetExitCodeProcess.restype = ctypes.c_int
-    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
-    kernel32.CloseHandle.restype = ctypes.c_int
-    handle = kernel32.OpenProcess(0x1000, False, pid)
-    if not handle:
-        return None
-    created = FileTime()
-    exit_code = ctypes.c_uint32()
-    if not kernel32.GetProcessTimes(handle, ctypes.byref(created), None, None, None):
-        kernel32.CloseHandle(handle)
-        return None
-    if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)) or exit_code.value != 259:
-        kernel32.CloseHandle(handle)
-        return None
-    windows_ticks = (created.high << 32) | created.low
-    created_at = windows_ticks / 10_000_000 - 11_644_473_600
-    return handle, created_at
-
-
-def _default_process_alive(process: dict[str, Any]) -> bool:
-    """保存 PID と作成時刻が一致する Windows プロセスだけを生存扱いする。"""
-    try:
-        pid = int(process["pid"])
-    except (KeyError, TypeError, ValueError):
-        return False
-    expected_created = _process_created_at(process)
-    if expected_created is None:
-        return False
-    identity = _windows_process_handle(pid)
-    if identity is None:
-        return False
-    handle, actual_created = identity
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
-    kernel32.CloseHandle.restype = ctypes.c_int
-    kernel32.CloseHandle(handle)
-    return abs(expected_created - actual_created) <= 2.0
-
-
-def _default_terminate_process(process: dict[str, Any]) -> None:
-    """PID と作成時刻が一致するプロセスを終了して待機する。"""
-    try:
-        pid = int(process["pid"])
-    except (KeyError, TypeError, ValueError):
-        return
-    expected_created = _process_created_at(process)
-    identity = _windows_process_handle(pid) if expected_created is not None else None
-    if identity is None:
-        return
-    handle, actual_created = identity
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.TerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
-    kernel32.TerminateProcess.restype = ctypes.c_int
-    kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
-    kernel32.WaitForSingleObject.restype = ctypes.c_uint32
-    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
-    kernel32.CloseHandle.restype = ctypes.c_int
-    if abs(expected_created - actual_created) <= 2.0:
-        kernel32.TerminateProcess(handle, 1)
-        kernel32.WaitForSingleObject(handle, 5000)
-    kernel32.CloseHandle(handle)
+# 旧名の互換（プロセス照合は jobs/lifecycle.py へ移した）
+_process_created_at = process_created_at
+_windows_process_handle = windows_process_handle
+_default_process_alive = process_alive
+_default_terminate_process = terminate_process
 
 
 class TrainingService:
@@ -1030,9 +947,10 @@ class TrainingService:
             return self.experiments[experiment_id]
         key = (experiment_id, attempt)
         last_seq = self._last_event_seq.get(key, 0)
-        if event["seq"] <= last_seq:
+        seq_state = classify_seq(last_seq, event["seq"])
+        if seq_state == "duplicate":
             return self.experiments[experiment_id]
-        if event["seq"] > last_seq + 1:
+        if seq_state == "gap":
             self._replay_attempt(experiment_id, attempt)
             last_seq = self._last_event_seq.get(key, 0)
             if event["seq"] <= last_seq:
@@ -1263,43 +1181,35 @@ class TrainingService:
         directory = self.root / experiment_id / "runs" / f"attempt_{attempt:03d}"
         spec = read_run_spec(directory)
         status_path = directory / "status.json"
-        had_status = status_path.exists()
-        if had_status:
-            state = read_json(status_path)
-            outcome = TrainingOutcome(
-                experiment_id,
-                attempt,
-                spec.get("queue_id"),
-                state["status"],
-                state.get("reason"),
-                state.get("message", ""),
-            )
-        elif (directory / "stop_request.json").exists():
-            request = read_json(directory / "stop_request.json")
-            outcome = TrainingOutcome(
-                experiment_id, attempt, spec.get("queue_id"), "stopped", request["reason"]
-            )
-        elif self._valid_result(directory):
-            outcome = TrainingOutcome(experiment_id, attempt, spec.get("queue_id"), "completed")
-        elif (directory / "error.json").exists() or (job_exit and job_exit.start_failed):
-            reason = "start_failed" if job_exit and job_exit.start_failed else "error"
-            message = (
-                job_exit.message
-                if reason == "start_failed"
-                else read_json(directory / "error.json").get("message", "")
-            )
-            outcome = TrainingOutcome(
-                experiment_id, attempt, spec.get("queue_id"), "failed", reason, message
-            )
-        elif not (job_exit and job_exit.process_alive) and not self.process_alive(
-            read_json(directory / "process.json") if (directory / "process.json").exists() else {}
+        stop_path = directory / "stop_request.json"
+        error_path = directory / "error.json"
+        process_path = directory / "process.json"
+        protocol_error = bool(job_exit and job_exit.protocol_error)
+        decision = decide_terminal_state(
+            existing_status=read_json(status_path) if status_path.exists() else None,
+            stop_request=read_json(stop_path) if stop_path.exists() else None,
+            result_valid=lambda: self._valid_result(directory),
+            error_present=lambda: error_path.exists() or protocol_error,
+            start_failed=bool(job_exit and job_exit.start_failed),
+            process_alive=lambda: (
+                bool(job_exit and job_exit.process_alive)
+                or self.process_alive(read_json(process_path) if process_path.exists() else {})
+            ),
+        )
+        queue_id = spec.get("queue_id")
+        if decision is None:
+            return TrainingOutcome(experiment_id, attempt, queue_id, "running")
+        had_status = decision.source == "existing"
+        message = decision.message
+        if decision.source == "start_failed" or (
+            decision.source == "error" and not error_path.exists()
         ):
-            outcome = TrainingOutcome(
-                experiment_id, attempt, spec.get("queue_id"), "stopped", "interrupted"
-            )
-        else:
-            outcome = TrainingOutcome(experiment_id, attempt, spec.get("queue_id"), "running")
-            return outcome
+            message = job_exit.message
+        elif decision.source == "error":
+            message = read_json(error_path).get("message", "")
+        outcome = TrainingOutcome(
+            experiment_id, attempt, queue_id, decision.status, decision.reason, message
+        )
         if not had_status:
             write_status(
                 directory,

@@ -21,12 +21,17 @@ class PreparedRun:
 
 @dataclass
 class JobExit:
-    """学習プロセス終了時の補助情報。"""
+    """学習・評価プロセス終了時の補助情報。
+
+    protocol_error は hello 以降に外形の欠けたイベントを受け取ったことを表す
+    （比較・推論設計 7.4。終端判定ではエラーとして扱う）。
+    """
 
     returncode: int | None = None
     start_failed: bool = False
     process_alive: bool = False
     message: str = ""
+    protocol_error: bool = False
 
 
 @dataclass
