@@ -174,6 +174,8 @@ class TrainingQueueController(QObject):
             self._next()
 
     def _training_ended(self, outcome):
+        # 終わった行はキューの表から外れているため、どの経路でも表示を更新する
+        self.changed.emit()
         if self.waiting_for_training and self.executing and self.active_id is None:
             self.waiting_for_training = False
             QTimer.singleShot(0, self._next)

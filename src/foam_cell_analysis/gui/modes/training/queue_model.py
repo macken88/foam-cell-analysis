@@ -5,7 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from PySide6.QtCore import QAbstractTableModel, QEvent, Qt, Signal
+from PySide6.QtCore import QAbstractTableModel, QEvent, QRect, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QComboBox,
@@ -19,9 +19,14 @@ from PySide6.QtWidgets import (
 from ...context import AppContext
 from ...labels import (
     experiment_status_label,
+    format_exponent,
     training_choice_label,
+    training_elapsed_text,
+    training_progress_fraction,
+    training_progress_text,
 )
 from ...theme import Color, numeric_font
+from ...widgets.form import ScientificDoubleSpinBox
 
 FIELDS = [
     ("experiment.description", "説明", "実験"),
@@ -47,6 +52,9 @@ FIELDS = [
 ]
 
 FIXED_HEADERS = ("順番", "状態", "実験識別子")
+# 状態セルの進捗バーに使う値（0〜1）。実行中の行だけ持つ
+PROGRESS_ROLE = int(Qt.ItemDataRole.UserRole) + 1
+EXPONENT_PATHS = {"training.learning_rate"}
 CHOICE_OPTIONS = {
     "data.dataset_version": "datasets",
     "data.classification": "classifications",
@@ -166,7 +174,13 @@ class TrainingQueueModel(QAbstractTableModel):
         entry_id = entry.queue_id or entry.experiment_id
         errors, warnings = self._issues.get(entry_id, ([], []))
         if role == Qt.ItemDataRole.ToolTipRole:
+            if index.column() == 1 and entry.status == "running":
+                return self.progress_tooltip(entry)
             return "\n".join(errors or warnings) or None
+        if role == PROGRESS_ROLE:
+            if index.column() == 1 and entry.status == "running":
+                return training_progress_fraction(entry)
+            return None
         if role == Qt.ItemDataRole.BackgroundRole:
             if errors and entry.status == "queued":
                 return QColor(Color.ERROR_BG)
@@ -202,10 +216,7 @@ class TrainingQueueModel(QAbstractTableModel):
                 return "設定エラー"
             if entry.status == "queued" and warnings:
                 return "△ 待機"
-            state = experiment_status_label(entry.status)
-            if entry.status == "running":
-                state += f"（{self._progress(entry)}）"
-            return state
+            return experiment_status_label(entry.status)
         if index.column() == 2:
             if role == Qt.ItemDataRole.DisplayRole:
                 return (
@@ -226,16 +237,17 @@ class TrainingQueueModel(QAbstractTableModel):
             return self._display_value(path, value)
         return None
 
-    def _progress(self, entry) -> str:
-        if entry.phase == "final_training":
-            total = entry.selected_epoch or entry.total_epochs
-            return f"最終学習・エポック {entry.current_epoch}/{total}"
-        folds = entry.config.values.get("data", {}).get("cv", {}).get("n_folds", 5)
-        fold = max(entry.fold_histories, default=1)
-        return f"分割 {fold}/{folds}・エポック {entry.current_epoch}/{entry.total_epochs}"
+    @staticmethod
+    def progress_tooltip(entry) -> str:
+        """実行中の行の状態セルに出す進捗（分割・エポック・経過時間）。"""
+        return "・".join(
+            part for part in (training_progress_text(entry), training_elapsed_text(entry)) if part
+        )
 
     @staticmethod
     def _display_value(path: str, value: Any) -> str:
+        if path in EXPONENT_PATHS and isinstance(value, int | float):
+            return format_exponent(float(value))
         return training_choice_label(path, str(value))
 
     def setData(self, index, value, role=Qt.ItemDataRole.EditRole):
@@ -306,6 +318,7 @@ class TrainingQueueModel(QAbstractTableModel):
                     Qt.ItemDataRole.DisplayRole,
                     Qt.ItemDataRole.ToolTipRole,
                     Qt.ItemDataRole.BackgroundRole,
+                    PROGRESS_ROLE,
                 ],
             )
             for row, entry in enumerate(entries):
@@ -336,6 +349,22 @@ class TrainingQueueDelegate(QStyledItemDelegate):
         if background is not None and not option.state & QStyle.StateFlag.State_Selected:
             painter.fillRect(option.rect, background)
         super().paint(painter, option, index)
+        progress = index.data(PROGRESS_ROLE)
+        if progress is not None:
+            # 実行中の状態セルは、文字の下に全体の進み具合を細いバーで示す
+            height = 3
+            track = QRect(
+                option.rect.left() + 6,
+                option.rect.bottom() - height - 2,
+                max(0, option.rect.width() - 12),
+                height,
+            )
+            painter.save()
+            painter.fillRect(track, QColor(Color.RULE))
+            filled = QRect(track)
+            filled.setWidth(round(track.width() * float(progress)))
+            painter.fillRect(filled, QColor(Color.GRAPHITE))
+            painter.restore()
 
     def editorEvent(self, event, model, option, index):
         if index.column() >= self.queue_model.fixed_column_count:
@@ -369,13 +398,15 @@ class TrainingQueueDelegate(QStyledItemDelegate):
             for choice in choices:
                 editor.addItem(self.queue_model._display_value(path, choice), choice)
             return editor
+        if path in EXPONENT_PATHS:
+            editor = ScientificDoubleSpinBox(parent)
+            editor.setKeyboardTracking(False)
+            return editor
         if path in NUMERIC_PATHS:
             if isinstance(value, float):
                 editor = QDoubleSpinBox(parent)
                 editor.setRange(-1e12, 1e12)
-                editor.setDecimals(
-                    12 if path in {"training.learning_rate", "training.weight_decay"} else 6
-                )
+                editor.setDecimals(12 if path == "training.weight_decay" else 6)
                 editor.setStepType(QDoubleSpinBox.StepType.AdaptiveDecimalStepType)
                 editor.setKeyboardTracking(False)
                 return editor

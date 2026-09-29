@@ -30,6 +30,7 @@ from ...labels import (
     classification_label,
     config_key_label,
     experiment_status_label,
+    format_bytes,
     format_datetime,
     format_score,
     model_type_label,
@@ -48,6 +49,17 @@ from ...widgets.table import (
     setup_table,
 )
 from .dialogs import ExperimentCompareDialog, SendToCandidatesDialog, flatten_config
+
+RETRY_LABEL = "同じ設定でやり直す"
+RETRY_TIP = (
+    "同じ実験の新しい試行として、同じ設定で最初から学習し直します。"
+    "学習中のときはキューの末尾に予約します。"
+)
+STOP_TIP = (
+    "今の学習をすぐに止め、キューも止めます。今の学習は「中断」になり、"
+    "途中までの結果だけが残ります。止める前に確認します。"
+)
+DELETABLE_STATUSES = {"draft", "stopped", "failed", "completed"}
 
 
 class ExperimentListPage(BasePage):
@@ -198,13 +210,20 @@ class ExperimentListPage(BasePage):
         self.run_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.run_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         setup_table(self.run_table, stretch_column=4)
+        self.run_page = QWidget()
+        run_layout = QVBoxLayout(self.run_page)
+        run_layout.setContentsMargins(0, 0, 0, 0)
+        run_layout.addWidget(self.run_table, 1)
+        self.retry_button = QPushButton(RETRY_LABEL)
+        self.retry_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        run_layout.addWidget(self.retry_button, 0, Qt.AlignmentFlag.AlignRight)
         self.used_data = QTextEdit()
         self.used_data.setReadOnly(True)
         self.details.addTab(overview_page, "概要")
         self.details.addTab(self.chart, "学習曲線")
         self.details.addTab(self.cv_page, "交差検証")
         self.details.addTab(self.checkpoint_table, "途中保存モデル")
-        self.details.addTab(self.run_table, "実行試行")
+        self.details.addTab(self.run_page, "実行試行")
         self.details.addTab(self.used_data, "実使用データ")
         splitter.addWidget(self.details)
         splitter.setSizes([400, 330])
@@ -230,7 +249,7 @@ class ExperimentListPage(BasePage):
             self.action_map[key].triggered.connect(callback)
         for key, label, callback in (
             ("stop", "■ 今すぐ停止", self.stop_selected),
-            ("retry", "再実行", self.retry_selected),
+            ("retry", RETRY_LABEL, self.retry_selected),
             ("edit", "下書きを編集", self.edit_selected),
             ("queue_copy", "複製してキューに追加", self.copy_to_queue),
             ("result", "結果を開く", self.open_result),
@@ -238,6 +257,9 @@ class ExperimentListPage(BasePage):
             action = self.more_menu.addAction(label)
             action.triggered.connect(callback)
             self.action_map[key] = action
+        self.action_map["delete"] = QAction("実験を削除…", self)
+        self.action_map["delete"].triggered.connect(self.delete_selected)
+        bind_button_action(self.retry_button, self.action_map["retry"])
         self.more_button.setMenu(self.more_menu)
         self.more_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         for key in ("compare", "copy"):
@@ -254,8 +276,9 @@ class ExperimentListPage(BasePage):
         self.table.itemChanged.connect(self._selection_changed)
         self.table.itemSelectionChanged.connect(self._current_changed)
         self.context_menu = QMenu(self)
-        for key in ("compare", "copy", "send", "stop", "retry", "edit", "queue_copy", "result"):
-            self.context_menu.addAction(self.action_map[key])
+        self.context_menu.setToolTipsVisible(True)
+        self.context_menu.aboutToShow.connect(self._build_context_menu)
+        self._build_context_menu()
 
         def select_experiment_for_context(row_index):
             item = self.table.item(row_index, 0)
@@ -277,6 +300,28 @@ class ExperimentListPage(BasePage):
         self.ctx.training_runner.progressed.connect(lambda _experiment_id: self.refresh())
         self.refresh()
 
+    def _build_context_menu(self) -> None:
+        """選んだ実験の状態に合わせて、よく使う操作を先頭に並べる。"""
+        self._update_buttons()
+        current = self._current_experiment()
+        status = current.status if current is not None else ""
+        menu = self.context_menu
+        # QMenu.clear() は共有している QAction まで破棄するため、1 件ずつ外す
+        for action in menu.actions():
+            menu.removeAction(action)
+            if action.isSeparator():
+                action.deleteLater()
+        if status in {"failed", "stopped"}:
+            menu.addAction(self.action_map["retry"])
+            menu.addSeparator()
+        elif status == "running":
+            menu.addAction(self.action_map["stop"])
+            menu.addSeparator()
+        for key in ("send", "compare", "copy", "queue_copy", "result", "edit"):
+            menu.addAction(self.action_map[key])
+        menu.addSeparator()
+        menu.addAction(self.action_map["delete"])
+
     def menu_actions(self):
         if not hasattr(self, "yaml_menu_action"):
             self.yaml_menu_action = QAction("設定 YAML を表示…", self)
@@ -294,6 +339,8 @@ class ExperimentListPage(BasePage):
                 self.action_map["compare"],
                 self.action_map["result"],
                 self.action_map["send"],
+                None,
+                self.action_map["delete"],
             ],
             "view": [self.column_menu.menuAction(), self.experiment_filter_menu.menuAction()],
         }
@@ -446,7 +493,9 @@ class ExperimentListPage(BasePage):
         for row in range(self.table.rowCount()):
             if self.table.item(row, 0).checkState() == Qt.CheckState.Checked:
                 ids.append(self.table.item(row, 1).text())
-        return [self.ctx.backend.get_experiment(experiment_id) for experiment_id in ids]
+        # 削除直後は表に残った行が実験を指さないことがあるため、存在するものだけ返す
+        known = {item.experiment_id: item for item in self.ctx.backend.list_experiments()}
+        return [known[experiment_id] for experiment_id in ids if experiment_id in known]
 
     def _current_experiment_id(self) -> str | None:
         row = self.table.currentRow()
@@ -454,7 +503,12 @@ class ExperimentListPage(BasePage):
 
     def _current_experiment(self) -> Experiment | None:
         experiment_id = self._current_experiment_id()
-        return self.ctx.backend.get_experiment(experiment_id) if experiment_id else None
+        if not experiment_id:
+            return None
+        try:
+            return self.ctx.backend.get_experiment(experiment_id)
+        except KeyError:
+            return None
 
     def _selection_changed(self, _item: QTableWidgetItem | None = None) -> None:
         self._update_buttons()
@@ -701,15 +755,15 @@ class ExperimentListPage(BasePage):
         stop_tip = (
             "実行中の実験を 1 つ選ぶと今すぐ停止できます。"
             if current is None or current.status != "running"
-            else "今の学習をすぐに止め、キューも止めます。今の学習は「中断」になり、"
-            "途中までの結果だけが残ります。止める前に確認します。"
+            else STOP_TIP
         )
         self.action_map["stop"].setToolTip(stop_tip)
         self.action_map["retry"].setToolTip(
-            "失敗または中断した実験を 1 つ選ぶと再実行できます"
+            "失敗または中断した実験を 1 つ選ぶと使えます"
             if current is None or current.status not in {"failed", "stopped"}
-            else ""
+            else RETRY_TIP
         )
+        self._update_delete_action(current)
         self.action_map["edit"].setToolTip(
             "下書きの実験を 1 つ選ぶと編集できます"
             if current is None or current.status != "draft"
@@ -735,6 +789,23 @@ class ExperimentListPage(BasePage):
         self.action_map["queue_copy"].setToolTip(
             "複製する実験をチェックしてください" if not selected else ""
         )
+
+    def _update_delete_action(self, current: Experiment | None) -> None:
+        action = self.action_map["delete"]
+        if current is None:
+            enabled, tip = False, "削除する実験を 1 つ選んでください"
+        else:
+            try:
+                info = self.ctx.backend.experiment_deletion_info(
+                    current.experiment_id, measure_size=False
+                )
+                enabled, tip = info.allowed, info.reason
+            except (KeyError, ValueError) as error:
+                enabled, tip = False, str(error)
+            if enabled:
+                tip = "実験の設定・全試行・途中保存モデル・ログを削除します。取り消せません。"
+        self.set_menu_action_enabled(action, enabled)
+        action.setToolTip(tip)
 
     @staticmethod
     def _display_value(key: str, value: object) -> str:
@@ -835,7 +906,10 @@ class ExperimentListPage(BasePage):
         if (
             confirm
             and QMessageBox.question(
-                self, "学習を今すぐ停止", f"{experiment.experiment_id} を今すぐ停止しますか？"
+                self,
+                "今すぐ停止",
+                "今の学習をすぐに止め、キューも止めますか？\n"
+                "今の学習は「中断」になり、途中までの結果だけが残ります。",
             )
             != QMessageBox.StandardButton.Yes
         ):
@@ -857,13 +931,13 @@ class ExperimentListPage(BasePage):
                 active_id = self.ctx.training_runner.experiment_id
                 prompt = f"学習を実行中です（{active_id}）。この学習をキューの末尾に追加しますか？"
             else:
-                prompt = "キューを実行中です。再実行をキューの末尾に追加しますか？"
+                prompt = "キューを実行中です。やり直しをキューの末尾に追加しますか？"
             if QMessageBox.question(self, "学習中", prompt) != QMessageBox.StandardButton.Yes:
                 return
             try:
                 queued = self.ctx.backend.add_training_retry_reservation(experiment.experiment_id)
             except ValueError as error:
-                QMessageBox.warning(self, "再実行できません", str(error))
+                QMessageBox.warning(self, "やり直せません", str(error))
                 return
             controller.sync_training_identifier()
             if not controller.executing:
@@ -878,9 +952,60 @@ class ExperimentListPage(BasePage):
             experiment = self.ctx.backend.retry_experiment(experiment.experiment_id)
             self.ctx.training_runner.start(experiment.experiment_id, retry=True)
         except ValueError as error:
-            QMessageBox.warning(self, "再実行できません", str(error))
+            QMessageBox.warning(self, "やり直せません", str(error))
             return
         self.refresh()
+
+    @staticmethod
+    def delete_prompt(info) -> str:
+        """削除確認ダイアログの本文を返す。"""
+        lines = [f"{info.experiment_id} を削除しますか？", ""]
+        if info.attempts:
+            lines.append(f"設定と実行試行 {info.attempts} 回分の記録を削除します。")
+            lines.append("（途中保存モデル・OOF 予測・ログを含む）")
+        else:
+            lines.append("実験の設定を削除します。")
+        if info.size_bytes is not None:
+            lines.append(f"{format_bytes(info.size_bytes)} を削除します。")
+        lines.append("学習キューに残っているこの実験の行も削除します。")
+        lines.extend(["", "この操作は取り消せません。"])
+        return "\n".join(lines)
+
+    def delete_selected(self) -> bool:
+        """選んだ実験を、確認のうえ記録ごと削除する。"""
+        experiment = self._current_experiment()
+        if experiment is None:
+            return False
+        try:
+            info = self.ctx.backend.experiment_deletion_info(experiment.experiment_id)
+        except (KeyError, ValueError) as error:
+            QMessageBox.warning(self, "実験を削除できません", str(error))
+            return False
+        if not info.allowed:
+            QMessageBox.warning(self, "実験を削除できません", info.reason)
+            return False
+        if (
+            QMessageBox.question(
+                self,
+                "実験を削除",
+                self.delete_prompt(info),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
+            return False
+        try:
+            self.ctx.backend.delete_experiment(experiment.experiment_id)
+        except (KeyError, ValueError, OSError) as error:
+            QMessageBox.warning(self, "実験を削除できません", str(error))
+            self.refresh()
+            return False
+        self.ctx.status.show_message(f"{experiment.experiment_id} を削除しました")
+        self.ctx.queue_controller.changed.emit()
+        self.ctx.queue_controller.sync_training_identifier()
+        self.refresh()
+        return True
 
     def send_selected(self) -> SendToCandidatesDialog | None:
         experiment = self._current_experiment()

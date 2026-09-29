@@ -719,3 +719,84 @@ def test_mock_backend_new_run_contract_is_idempotent_and_concludes_failures():
     backend.fail_training_ids.add(experiment.experiment_id)
     result = backend.conclude_training_run(experiment.experiment_id, 1, JobExit(returncode=1))
     assert result.status == "failed" and result.reason == "error"
+
+
+def _completed_service(tmp_path, service_factory=None):
+    _workspace(tmp_path)
+    service = (service_factory or TrainingService)(tmp_path, process_alive=lambda _record: False)
+    config = service.default_experiment_config("mask_rcnn")
+    config["data"]["cv"]["n_folds"] = 2
+    experiment = service.add_training_queue_item(config)
+    prepared = service.prepare_training_run(experiment.experiment_id, experiment.experiment_id)
+    _write_valid_result(Path(prepared.run_dir))
+    outcome = service.conclude_training_run(experiment.experiment_id, 1, JobExit(returncode=0))
+    assert outcome.status == "completed"
+    return service, experiment
+
+
+def test_delete_experiment_removes_only_its_folder_and_refuses_running(tmp_path):
+    service, experiment = _completed_service(tmp_path)
+    expid = experiment.experiment_id
+    kept = [tmp_path / "pretrained" / "keep.bin", tmp_path / "augmentation" / "keep.json"]
+    for path in kept:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"keep")
+    dataset_files = sorted((tmp_path / "datasets").rglob("*"))
+    service.add_training_retry_reservation(expid)
+    config = service.default_experiment_config("mask_rcnn")
+    config["data"]["cv"]["n_folds"] = 2
+    running = service.add_training_queue_item(config)
+    service.prepare_training_run(running.experiment_id, running.experiment_id)
+
+    info = service.experiment_deletion_info(expid)
+    assert info.allowed
+    assert info.attempts == 1
+    assert info.size_bytes > 0
+    blocked = service.experiment_deletion_info(running.experiment_id)
+    assert not blocked.allowed
+    assert "学習中" in blocked.reason
+    with pytest.raises(ValueError, match="学習中"):
+        service.delete_experiment(running.experiment_id)
+
+    service.delete_experiment(expid)
+
+    assert not (tmp_path / "experiments" / expid).exists()
+    assert (tmp_path / "experiments" / running.experiment_id).is_dir()
+    assert expid not in {item.experiment_id for item in service.list_experiments()}
+    assert all(row["experiment_id"] != expid for row in service.queue["rows"])
+    assert all(path.read_bytes() == b"keep" for path in kept)
+    assert sorted((tmp_path / "datasets").rglob("*")) == dataset_files
+    restored = TrainingService(tmp_path, process_alive=lambda _record: False)
+    assert expid not in restored.experiments
+    assert all(row["experiment_id"] != expid for row in restored.queue["rows"])
+
+
+def test_hybrid_refuses_to_delete_experiment_referenced_by_candidate(tmp_path):
+    from foam_cell_analysis.services.hybrid_backend import HybridBackend
+
+    backend, experiment = _completed_service(tmp_path, HybridBackend)
+    expid = experiment.experiment_id
+    candidate = backend.add_candidate(expid, "final.pt", "infer_v005")
+
+    info = backend.experiment_deletion_info(expid)
+    assert not info.allowed
+    assert f"比較候補 {candidate.candidate_id}" in info.reason
+    with pytest.raises(ValueError, match=candidate.candidate_id):
+        backend.delete_experiment(expid)
+    assert (tmp_path / "experiments" / expid).is_dir()
+
+    backend.reject_candidate(candidate.candidate_id)
+    backend.delete_experiment(expid)
+    assert not (tmp_path / "experiments" / expid).exists()
+
+
+def test_deleted_experiment_number_is_not_reused(tmp_path):
+    service, experiment = _queued_service(tmp_path)
+    service.delete_training_queue_items([experiment.experiment_id])
+    newest = service.save_experiment_draft(service.default_experiment_config("mask_rcnn"))
+    deleted_number = int(newest.experiment_id[-4:])
+    service.delete_experiment(newest.experiment_id)
+
+    reloaded = TrainingService(tmp_path, process_alive=lambda _record: False)
+    assert int(service.next_experiment_id()[-4:]) > deleted_number
+    assert int(reloaded.next_experiment_id()[-4:]) > deleted_number

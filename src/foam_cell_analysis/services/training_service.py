@@ -28,6 +28,7 @@ from foam_cell_analysis.services.models import (
     CandidateSnapshot,
     Experiment,
     ExperimentConfig,
+    ExperimentDeletionInfo,
     JobExit,
     PreparedRun,
     RunAttempt,
@@ -247,7 +248,9 @@ class TrainingService:
 
     def next_experiment_id(self) -> str:
         numbers = [int(key[-4:]) for key in self.experiments if key.startswith("exp_")]
-        return f"exp_{max(numbers, default=0) + 1:04d}"
+        # 削除した実験の番号は再利用しない（古い比較候補などが別の実験を指さないように）
+        numbers.append(int(self.queue.get("max_deleted_experiment_number", 0)))
+        return f"exp_{max(numbers) + 1:04d}"
 
     def default_experiment_config(self, model_type: str) -> dict[str, Any]:
         """13 章に沿う現行モデル設定を作る。"""
@@ -590,7 +593,12 @@ class TrainingService:
     def add_training_queue_item(self, config: dict[str, Any]) -> Experiment:
         migrated, _ = self.migrate_experiment_config(config)
         expid = migrated.get("experiment", {}).get("id") or self.next_experiment_id()
-        if expid in self.experiments:
+        existing = self.experiments.get(expid)
+        # 試行のない下書きは同じ識別子のままキューへ移す
+        reuse_draft = (
+            existing is not None and existing.status == "draft" and not self._has_attempts(expid)
+        )
+        if existing is not None and not reuse_draft:
             expid = self.next_experiment_id()
         migrated.setdefault("experiment", {})["id"] = expid
         experiment = self._experiment_from_config(migrated, expid, "queued")
@@ -1471,6 +1479,67 @@ class TrainingService:
             oof_evaluation=copy.deepcopy(oof),
             experiment_config=copy.deepcopy(experiment.config.values),
         )
+
+    def _experiment_dir(self, experiment_id: str) -> Path:
+        """実験フォルダを返す。experiments 配下の直下以外は扱わない。"""
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", experiment_id) or experiment_id in {".", ".."}:
+            raise ValueError(f"実験識別子が不正です: {experiment_id}")
+        directory = (self.root / experiment_id).resolve()
+        if directory.parent != self.root.resolve():
+            raise ValueError(f"実験識別子が不正です: {experiment_id}")
+        return directory
+
+    def experiment_deletion_info(
+        self, experiment_id: str, *, measure_size: bool = True
+    ) -> ExperimentDeletionInfo:
+        """削除の可否と、削除で消える試行数・容量を返す。"""
+        experiment = self.experiments[experiment_id]
+        attempts = len(experiment.runs)
+        reason = ""
+        running_row = any(
+            row["experiment_id"] == experiment_id and row["state"] == "running"
+            for row in self.queue["rows"]
+        )
+        if experiment.status == "running" or running_row:
+            reason = "学習中の実験は削除できません。学習を停止してから削除してください"
+        elif experiment.status == "queued":
+            reason = "キューで待機中の実験は、学習キューの表から削除してください"
+        elif experiment.status not in {"draft", "stopped", "failed", "completed"}:
+            reason = "この状態の実験は削除できません"
+        size = None
+        if measure_size:
+            directory = self._experiment_dir(experiment_id)
+            size = (
+                sum(path.stat().st_size for path in directory.rglob("*") if path.is_file())
+                if directory.is_dir()
+                else 0
+            )
+        return ExperimentDeletionInfo(experiment_id, not reason, reason, attempts, size)
+
+    def delete_experiment(self, experiment_id: str) -> None:
+        """実験フォルダ全体と、その実験のキュー行を削除する。"""
+        info = self.experiment_deletion_info(experiment_id, measure_size=False)
+        if not info.allowed:
+            raise ValueError(info.reason)
+        directory = self._experiment_dir(experiment_id)
+
+        def make_writable_and_retry(function, path, _error):
+            os.chmod(path, 0o700)
+            function(path)
+
+        if directory.exists():
+            shutil.rmtree(directory, onexc=make_writable_and_retry)
+        self.experiments.pop(experiment_id, None)
+        if experiment_id.startswith("exp_") and experiment_id[-4:].isdigit():
+            self.queue["max_deleted_experiment_number"] = max(
+                int(self.queue.get("max_deleted_experiment_number", 0)), int(experiment_id[-4:])
+            )
+        self.queue["rows"] = [
+            row for row in self.queue["rows"] if row["experiment_id"] != experiment_id
+        ]
+        self._save_queue()
+        for key in [key for key in self._last_event_seq if key[0] == experiment_id]:
+            del self._last_event_seq[key]
 
     def list_experiments(self) -> list[Experiment]:
         return [self.experiments[key] for key in sorted(self.experiments)]

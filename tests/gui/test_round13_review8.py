@@ -62,10 +62,12 @@ def test_second_single_training_is_queued_while_first_runs(shell, monkeypatch, q
     QTest.mouseClick(training.start_button, Qt.MouseButton.LeftButton)
     assert len(training_jobs(shell)) == 1
     assert shell.ctx.queue_controller.executing
-    assert len(shell.ctx.backend.list_training_queue()) == 1
+    # 学習開始はキュー経由になったため、1 件目も実行中の行としてキューに並ぶ
+    queue_rows = shell.ctx.backend.list_training_queue()
+    assert [row.status for row in queue_rows] == ["running", "queued"]
+    assert queue_rows[0].experiment_id == first_id
     queue = shell.page(PageId.TRAINING_QUEUE)
-    assert first_id in queue.status_line.text()
-    assert "学習終了後" in queue.status_line.text()
+    assert f"実行中 {first_id}" in queue.status_line.text()
     job = training_jobs(shell)[0]
     job.cancel()
     wait_for(qapp, lambda: not shell.ctx.queue_controller.executing)

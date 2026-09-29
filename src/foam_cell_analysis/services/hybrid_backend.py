@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -105,6 +106,22 @@ class HybridBackend:
             raise ValueError("比較候補には最終学習モデルのみ指定できます")
         snapshot = self.training.create_candidate_snapshot(experiment_id)
         return self.mock.add_candidate_from_snapshot(snapshot, inference_config_id, comment)
+
+    def experiment_deletion_info(self, experiment_id: str, *, measure_size: bool = True):
+        """学習記録の状態に加え、比較候補・リリース済みモデルからの参照を確認する。"""
+        info = self.training.experiment_deletion_info(experiment_id, measure_size=measure_size)
+        if info.allowed:
+            reason = self.mock._experiment_reference_reason(experiment_id)
+            if reason:
+                info = replace(info, allowed=False, reason=reason)
+        return info
+
+    def delete_experiment(self, experiment_id: str) -> None:
+        """参照がないことを確かめてから実験フォルダを削除する。"""
+        reason = self.mock._experiment_reference_reason(experiment_id)
+        if reason:
+            raise ValueError(reason)
+        self.training.delete_experiment(experiment_id)
 
     def __dir__(self):
         return sorted(set(super().__dir__()) | set(dir(self.mock)))

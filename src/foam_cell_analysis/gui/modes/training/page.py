@@ -33,13 +33,14 @@ from ....services.backend import normalization_for_weights
 from ...context import DEFAULT_CHANNEL, AppContext
 from ...labels import (
     config_key_label,
+    format_exponent,
     model_type_label,
     training_choice_label,
 )
 from ...navigation import PageId
 from ...settings import app_settings
 from ...theme import Color, body_font, mono_font, numeric_font, set_style
-from ...widgets.form import CollapsibleSection, FormSection
+from ...widgets.form import CollapsibleSection, FormSection, ScientificDoubleSpinBox
 from ...widgets.page_base import BasePage
 from ...widgets.table import bind_button_action, mark_primary
 from .augmentation_dialog import AugmentationDialog
@@ -493,8 +494,10 @@ class TrainingPage(BasePage):
         if widget is None:
             return ""
         while widget is not None and widget is not self.form_host:
-            if widget.toolTip():
-                return widget.toolTip()
+            # 入力が不正な間はツールチップが範囲の説明に替わるため、元の値を優先する
+            path = widget.property("baseToolTip") or widget.toolTip()
+            if path:
+                return str(path)
             widget = widget.parentWidget()
         return ""
 
@@ -560,7 +563,7 @@ class TrainingPage(BasePage):
                 "学習",
                 f"{config['training']['epochs']} エポック・"
                 f"バッチ {config['training']['batch_size']}・"
-                f"学習率 {config['training']['learning_rate']}",
+                f"学習率 {format_exponent(float(config['training']['learning_rate']))}",
             ),
         ]
         num_family = numeric_font().family()
@@ -709,6 +712,9 @@ class TrainingPage(BasePage):
         if isinstance(value, bool):
             control = QCheckBox()
             control.setChecked(value)
+        elif path == "training.learning_rate" and isinstance(value, int | float):
+            control = ScientificDoubleSpinBox()
+            control.setValue(float(value))
         elif isinstance(value, int):
             control = QSpinBox()
             control.setRange(0, 1000000)
@@ -1262,69 +1268,68 @@ class TrainingPage(BasePage):
         return False
 
     def start_training(self, confirm: bool = True) -> str | None:
-        """学習を登録してジョブを開始し、実験一覧へ移る。"""
+        """設定をキューの末尾に追加し、学習していなければキューの実行を始める。"""
         if self._queue_edit_id:
             return None
-        self.config = self._collect_config()
-        results = self.ctx.backend.validate_experiment_config(self.config)
+        config = self._collect_config()
+        results = self.ctx.backend.validate_experiment_config(config)
         errors = [item for item in results if item["level"] == "error"]
         if errors:
             QMessageBox.warning(self, "設定エラー", "\n".join(item["message"] for item in errors))
             return None
+        if self._has_non_draft_id(config["experiment"]["id"]):
+            QMessageBox.warning(self, "学習開始", "下書き以外の実験識別子は使用できません。")
+            return None
         controller = self.ctx.queue_controller
-        if self.ctx.training_runner.is_busy:
-            active_id = self.ctx.training_runner.experiment_id
-            answer = QMessageBox.question(
-                self,
-                "学習中",
-                f"学習を実行中です（{active_id}）。この学習をキューの末尾に追加しますか？",
+        busy = controller.executing or self.ctx.training_runner.is_busy
+        warnings = [item["message"] for item in results if item["level"] == "warning"]
+        if confirm and (warnings or not busy):
+            waiting = sum(
+                entry.status == "queued" for entry in self.ctx.backend.list_training_queue()
             )
-            if answer == QMessageBox.StandardButton.Yes:
-                queued_id = self.enqueue_config()
-                if queued_id and controller is not None and not controller.executing:
-                    controller.start()
-                return queued_id
-            return None
-        if controller is not None and controller.executing:
-            answer = QMessageBox.question(
-                self, "学習キュー", "キューを実行中です。この設定をキューの末尾に追加しますか？"
-            )
-            if answer == QMessageBox.StandardButton.Yes:
-                return self.enqueue_config()
-            return None
-        if confirm:
-            warnings = [item["message"] for item in results if item["level"] == "warning"]
-            prompt = "この設定で学習を開始しますか？"
+            if busy:
+                prompt = "学習中のため、この設定はキューの末尾に追加します。"
+            elif waiting:
+                prompt = (
+                    f"キューに待機中の学習が {waiting} 件あります。"
+                    "この設定をキューの末尾に追加し、キューを先頭から実行しますか？"
+                )
+            else:
+                prompt = "この設定で学習を開始しますか？"
             if warnings:
                 prompt += "\n\n警告:\n" + "\n".join(warnings)
             if QMessageBox.question(self, "学習開始", prompt) != QMessageBox.StandardButton.Yes:
                 return None
-        if self._has_non_draft_id(self.config["experiment"]["id"]):
-            QMessageBox.warning(self, "学習開始", "下書き以外の実験識別子は使用できません。")
-            return None
-        experiment = self.ctx.backend.start_training(self.config, self._edit_id)
-        experiment_id = experiment.experiment_id
-        try:
-            self.ctx.training_runner.start(experiment_id)
-        except RuntimeError as error:
-            QMessageBox.warning(self, "学習を開始できません", str(error))
-            return None
-        self.ctx.status.show_message(f"{experiment_id} の学習を開始しました")
+        experiment_id = self._add_to_queue(config)
+        if busy:
+            waiting = sum(
+                entry.status == "queued" for entry in self.ctx.backend.list_training_queue()
+            )
+            self.ctx.status.show_message(
+                f"学習中のため、{experiment_id} をキューの末尾に追加しました（待機 {waiting} 件）"
+            )
+            if not controller.executing:
+                controller.start()
+            return experiment_id
+        controller.start()
+        self.ctx.status.show_message(f"{experiment_id} をキューに追加し、キューの実行を始めました")
+        self.ctx.navigator.navigate(PageId.EXPERIMENTS, select=experiment_id)
+        return experiment_id
+
+    def _add_to_queue(self, config: dict[str, Any]) -> str:
+        """検証済みの設定をキュー末尾へ登録し、フォームを次の実験の識別子へ進める。"""
+        item = self.ctx.backend.add_training_queue_item(config)
         self._edit_id = None
+        self.config = config
         self.config["experiment"]["id"] = self.ctx.backend.next_experiment_id()
         self.experiment_id.setText(self.config["experiment"]["id"])
         self._refresh_yaml()
-        self.ctx.navigator.navigate(PageId.EXPERIMENTS, select=experiment_id)
-        return experiment_id
+        self.ctx.queue_controller.changed.emit()
+        return item.experiment_id
 
     def enqueue_config(self) -> str | None:
         """現在の設定を検証してキュー末尾へ登録する。"""
         if self._queue_edit_id:
-            return None
-        if self._edit_id:
-            QMessageBox.warning(
-                self, "キューに追加", "編集中のキュー項目は「キューに保存」で更新してください。"
-            )
             return None
         config = self._collect_config()
         issues = self.ctx.backend.validate_experiment_config(config)
@@ -1332,13 +1337,13 @@ class TrainingPage(BasePage):
         if errors:
             QMessageBox.warning(self, "設定エラー", "\n".join(issue["message"] for issue in errors))
             return None
-        item = self.ctx.backend.add_training_queue_item(config)
-        self.refresh_next_identifier()
+        if self._has_non_draft_id(config["experiment"]["id"]):
+            QMessageBox.warning(self, "キューに追加", "下書き以外の実験識別子は使用できません。")
+            return None
+        experiment_id = self._add_to_queue(config)
         waiting = sum(entry.status == "queued" for entry in self.ctx.backend.list_training_queue())
-        self.ctx.status.show_message(
-            f"{item.experiment_id} をキューに追加しました（待機 {waiting} 件）"
-        )
-        return item.experiment_id
+        self.ctx.status.show_message(f"{experiment_id} をキューに追加しました（待機 {waiting} 件）")
+        return experiment_id
 
     def on_enter(self, params: dict[str, Any]) -> None:
         """複製・下書き編集の設定を読み込む。"""

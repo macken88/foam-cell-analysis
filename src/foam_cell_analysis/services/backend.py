@@ -15,6 +15,7 @@ from .models import (
     DatasetVersion,
     Evaluation,
     Experiment,
+    ExperimentDeletionInfo,
     ExternalResult,
     ImportCandidate,
     InferenceConfig,
@@ -282,6 +283,14 @@ class Backend(Protocol):
 
     def retry_experiment(self, experiment_id: str) -> Experiment:
         """同一実験に実行試行を追加する。"""
+
+    def experiment_deletion_info(
+        self, experiment_id: str, *, measure_size: bool = True
+    ) -> ExperimentDeletionInfo:
+        """実験を削除できるか、理由、試行数、解放される容量を返す。"""
+
+    def delete_experiment(self, experiment_id: str) -> None:
+        """実験の記録（設定・全試行・途中保存モデル・ログ）とキュー行を削除する。"""
 
     def list_experiments(self) -> list[Experiment]:
         """実験一覧を返す。"""

@@ -42,6 +42,17 @@ class TrainingOutcome:
 
 
 @dataclass
+class ExperimentDeletionInfo:
+    """実験を削除できるかと、削除で消える記録の量。"""
+
+    experiment_id: str
+    allowed: bool
+    reason: str = ""
+    attempts: int = 0
+    size_bytes: int | None = None
+
+
+@dataclass
 class CandidateSnapshot:
     """比較候補へ送る時点の学習結果スナップショット。"""
 

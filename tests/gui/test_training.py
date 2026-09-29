@@ -699,3 +699,94 @@ def test_training_action_groups_have_only_start_as_primary(shell):
     assert page.start_button.parentWidget() is page.execution_actions
     assert page.start_button.property("primary") is True
     assert page.validate_button.property("primary") is not True
+
+
+def _wheel(widget, delta=-120):
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QWheelEvent
+    from PySide6.QtWidgets import QApplication
+
+    center = QPointF(widget.rect().center())
+    event = QWheelEvent(
+        center,
+        QPointF(widget.mapToGlobal(widget.rect().center())),
+        QPoint(0, 0),
+        QPoint(0, delta),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+    QApplication.sendEvent(widget, event)
+
+
+def test_wheel_never_changes_inputs_and_number_fields_have_no_arrows(shell, qapp):
+    from PySide6.QtWidgets import QAbstractSpinBox
+
+    from foam_cell_analysis.gui.navigation import ModeId
+
+    shell.navigate(PageId.TRAINING)
+    page = shell.page(PageId.TRAINING)
+    window = shell.manager.window(ModeId.TRAINING)
+    window.resize(1000, 600)
+    window.show()
+    qapp.processEvents()
+    folds = page.fields["data.cv.n_folds"]
+    epochs = page.fields["training.epochs"]
+    learning_rate = page.fields["training.learning_rate"]
+    before = page._collect_config()
+    model_index = page.model_type.currentIndex()
+    scroll = page.scroll.verticalScrollBar()
+    scroll.setValue(0)
+    for widget in (folds, epochs, learning_rate):
+        assert widget.buttonSymbols() == QAbstractSpinBox.ButtonSymbols.NoButtons
+        widget.setFocus()
+        qapp.processEvents()
+        _wheel(widget.lineEdit(), -120)
+        _wheel(widget, -120)
+    # 値は変わらず、ホイールは外側のフォームをスクロールする
+    assert scroll.maximum() == 0 or scroll.value() > 0
+    page.model_type.setFocus()
+    _wheel(page.model_type, -120)
+    qapp.processEvents()
+
+    after = page._collect_config()
+    assert after["data"]["cv"]["n_folds"] == before["data"]["cv"]["n_folds"]
+    assert after["training"]["epochs"] == before["training"]["epochs"]
+    assert after["training"]["learning_rate"] == before["training"]["learning_rate"]
+    assert page.model_type.currentIndex() == model_index
+    window.hide()
+
+
+def test_learning_rate_accepts_exponent_input_in_form_and_queue_table(shell, qapp):
+    from PySide6.QtCore import Qt
+
+    backend = shell.ctx.backend
+    page = shell.page(PageId.TRAINING)
+    field = page.fields["training.learning_rate"]
+    assert "e-" in field.text()
+    field.setFocus()
+    field.lineEdit().selectAll()
+    QTest.keyClicks(field.lineEdit(), "1.0e-5")
+    QTest.keyClick(field.lineEdit(), Qt.Key.Key_Return)
+    assert page._collect_config()["training"]["learning_rate"] == 1e-5
+    assert field.text() == "1e-05"
+
+    queued = backend.get_experiment(page.enqueue_config())
+    assert queued.config.values["training"]["learning_rate"] == 1e-5
+    shell.navigate(PageId.TRAINING_QUEUE)
+    queue = shell.page(PageId.TRAINING_QUEUE)
+    index = queue.model.index(0, queue.model.column_for_path("training.learning_rate"))
+    assert index.data() == "1e-05"
+    queue.table.setCurrentIndex(index)
+    queue.table.edit(index)
+    qapp.processEvents()
+    editor = queue.table.findChild(type(field))
+    editor.lineEdit().selectAll()
+    QTest.keyClicks(editor.lineEdit(), "2.5e-4")
+    QTest.keyClick(editor.lineEdit(), Qt.Key.Key_Return)
+    qapp.processEvents()
+    assert backend.get_experiment(queued.experiment_id).config.values["training"][
+        "learning_rate"
+    ] == pytest.approx(2.5e-4)
+    assert queue.model.index(0, index.column()).data() == "2.5e-04"

@@ -24,6 +24,7 @@ from ..models import (
     Evaluation,
     Experiment,
     ExperimentConfig,
+    ExperimentDeletionInfo,
     ExternalResult,
     ImportCandidate,
     InferenceConfig,
@@ -1399,12 +1400,16 @@ class MockBackend:
     def next_experiment_id(self) -> str:
         """次の実験識別子を返す。"""
         numbers = [int(key[-4:]) for key in self.experiments]
-        return f"exp_{max(numbers, default=0) + 1:04d}"
+        # 削除した実験の番号は再利用しない
+        numbers.append(getattr(self, "_max_deleted_experiment_number", 0))
+        return f"exp_{max(numbers) + 1:04d}"
 
     def add_training_queue_item(self, config: dict[str, Any]) -> Experiment:
         saved = copy.deepcopy(config)
         expid = saved.setdefault("experiment", {}).get("id") or self.next_experiment_id()
-        if expid in self.experiments:
+        existing = self.experiments.get(expid)
+        # 試行のない下書きは同じ識別子のままキューへ移す
+        if existing is not None and (existing.status != "draft" or existing.runs):
             saved["experiment"]["id"] = self.next_experiment_id()
         item = self._save_experiment(saved, None, "queued")
         if item.experiment_id not in self.training_queue_ids:
@@ -1984,6 +1989,65 @@ class MockBackend:
         experiment.oof_predictions.clear()
         self._retry_prepared.add(experiment_id)
         return experiment
+
+    def _experiment_reference_reason(self, experiment_id: str) -> str:
+        """実験を参照するリリース済みモデル・比較候補があれば、削除できない理由を返す。"""
+        for model in self.released.values():
+            if model.experiment_id == experiment_id:
+                return (
+                    f"リリース済みモデル {model.model_id} がこの実験を参照しているため、"
+                    "削除できません"
+                )
+        for candidate in self.candidates.values():
+            referenced = candidate.experiment_id == experiment_id or (
+                candidate.snapshot is not None and candidate.snapshot.experiment_id == experiment_id
+            )
+            if referenced and candidate.status != "rejected":
+                return (
+                    f"比較候補 {candidate.candidate_id} がこの実験を参照しています。"
+                    "先に候補を非採用・削除してください"
+                )
+        return ""
+
+    def experiment_deletion_info(
+        self, experiment_id: str, *, measure_size: bool = True
+    ) -> ExperimentDeletionInfo:
+        """削除の可否を返す。メモリ内モックは容量を持たない。"""
+        del measure_size
+        experiment = self.get_experiment(experiment_id)
+        running_reservation = any(
+            reservation["experiment_id"] == experiment_id and reservation["status"] == "running"
+            for reservation in self.training_retry_reservations.values()
+        )
+        if experiment.status == "running" or running_reservation:
+            reason = "学習中の実験は削除できません。学習を停止してから削除してください"
+        elif experiment.status == "queued":
+            reason = "キューで待機中の実験は、学習キューの表から削除してください"
+        elif experiment.status not in {"draft", "stopped", "failed", "completed"}:
+            reason = "この状態の実験は削除できません"
+        else:
+            reason = self._experiment_reference_reason(experiment_id)
+        return ExperimentDeletionInfo(experiment_id, not reason, reason, len(experiment.runs))
+
+    def delete_experiment(self, experiment_id: str) -> None:
+        """実験とそのキュー行をメモリから削除する。"""
+        info = self.experiment_deletion_info(experiment_id)
+        if not info.allowed:
+            raise ValueError(info.reason)
+        del self.experiments[experiment_id]
+        self._max_deleted_experiment_number = max(
+            getattr(self, "_max_deleted_experiment_number", 0), int(experiment_id[-4:])
+        )
+        for key, reservation in list(self.training_retry_reservations.items()):
+            if reservation["experiment_id"] == experiment_id:
+                del self.training_retry_reservations[key]
+        self.training_queue_ids = [
+            key
+            for key in self.training_queue_ids
+            if key in self.training_retry_reservations or key in self.experiments
+        ]
+        self._retry_prepared.discard(experiment_id)
+        self._sync_profile_usage()
 
     def list_experiments(self) -> list[Experiment]:
         """実験一覧を識別子順で返す。"""

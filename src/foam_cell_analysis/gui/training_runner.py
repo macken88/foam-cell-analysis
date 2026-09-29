@@ -91,6 +91,8 @@ class TrainingRunner(QObject):
                 )
                 if self.queue_id:
                     self.backend.finish_training_queue_item(self.queue_id, outcome.status)
+                    # 結果は実験一覧に残るため、終わった行はキューの表から外す
+                    self.backend.clear_finished_training_queue_items()
             else:
                 if hasattr(self.backend, "fail_training_preparation"):
                     self.backend.fail_training_preparation(self.experiment_id)
@@ -104,6 +106,7 @@ class TrainingRunner(QObject):
                 )
                 if self.queue_id:
                     self.backend.finish_training_queue_item(self.queue_id, "failed")
+                    self.backend.clear_finished_training_queue_items()
         except Exception as error:
             outcome = TrainingOutcome(
                 self.experiment_id or "",

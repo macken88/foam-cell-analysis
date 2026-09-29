@@ -153,8 +153,8 @@ def test_queue_failure_does_not_block_following_item(shell):
         QTest.qWait(10)
     assert not shell.ctx.queue_controller.executing
     failed_id = entries[0].experiment_id
-    queue.clear_finished()
     queue.refresh()
+    # 終わった行（失敗・完了）は自動でキューの表から外れ、実験の記録は残る
     assert queue.model.rowCount() == 0
     assert backend.get_experiment(failed_id).status == "failed"
 
@@ -281,3 +281,95 @@ def test_terminal_save_failure_stops_queue_and_reports_reason(shell, qapp, qtbot
     assert backend.get_experiment(second.experiment_id).status == "queued"
     assert "終端状態を保存できないため、キューを停止しました" in shell.status_text.text()
     assert "status.json の保存に失敗" in shell.status_text.text()
+
+
+def _open_context_menu(view, pos):
+    """右クリックで届くのと同じ QContextMenuEvent を表へ送る。"""
+    from PySide6.QtGui import QContextMenuEvent
+    from PySide6.QtWidgets import QApplication
+
+    viewport = view.viewport()
+    QTest.mouseClick(viewport, Qt.MouseButton.RightButton, pos=pos)
+    QApplication.sendEvent(
+        viewport,
+        QContextMenuEvent(QContextMenuEvent.Reason.Mouse, pos, viewport.mapToGlobal(pos)),
+    )
+
+
+def _menu_action(menu, text):
+    return next(action for action in menu.actions() if action.text().split("\t")[0] == text)
+
+
+def test_start_button_queues_config_runs_it_and_removes_finished_row(shell, qapp, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from foam_cell_analysis.gui.modes.training.queue_model import PROGRESS_ROLE
+    from foam_cell_analysis.gui.navigation import ModeId
+
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes
+    )
+    backend = shell.ctx.backend
+    training = shell.page(PageId.TRAINING)
+    training.fields["training.epochs"].setValue(40)
+    QTest.mouseClick(training.start_button, Qt.MouseButton.LeftButton)
+
+    rows = backend.list_training_queue()
+    assert len(rows) == 1
+    experiment_id = rows[0].experiment_id
+    assert rows[0].status == "running"
+    assert shell.ctx.queue_controller.executing
+    assert shell.ctx.training_runner.experiment_id == experiment_id
+
+    queue = shell.page(PageId.TRAINING_QUEUE)
+    window = shell.manager.window(ModeId.TRAINING)
+    QTest.qWait(20)
+    queue.refresh()
+    status = queue.model.index(0, 1)
+    assert status.data() == "実行中"
+    assert 0.0 <= status.data(PROGRESS_ROLE) <= 1.0
+    assert "エポック" in status.data(Qt.ItemDataRole.ToolTipRole)
+    assert not window.training_progress_bar.isHidden()
+    assert window.training_progress_label.text().startswith(f"{experiment_id} 学習中：")
+
+    for _ in range(2000):
+        qapp.processEvents()
+        if backend.get_experiment(experiment_id).status == "completed":
+            break
+        QTest.qWait(2)
+    assert backend.get_experiment(experiment_id).status == "completed"
+    qapp.processEvents()
+    assert backend.list_training_queue() == []
+    assert queue.model.rowCount() == 0
+    assert window.training_progress_bar.isHidden()
+
+
+def test_queue_context_menu_removes_finished_rows_and_keeps_experiments(shell, qapp, monkeypatch):
+    from foam_cell_analysis.gui.navigation import ModeId
+
+    backend = shell.ctx.backend
+    finished = backend.add_training_queue_item(backend.default_experiment_config("mask_rcnn"))
+    waiting = backend.add_training_queue_item(backend.default_experiment_config("mask_rcnn"))
+    finished.status = "stopped"
+    shell.navigate(PageId.TRAINING_QUEUE)
+    queue = shell.page(PageId.TRAINING_QUEUE)
+    queue.refresh()
+    window = shell.manager.window(ModeId.TRAINING)
+    window.show()
+    shown = []
+    monkeypatch.setattr(queue.context_menu, "exec", lambda *_args: shown.append(queue.context_menu))
+    _open_context_menu(queue.table, queue.table.visualRect(queue.model.index(0, 2)).center())
+    assert shown == [queue.context_menu]
+    menu = queue.context_menu
+    action = _menu_action(menu, "終了・中断した行を削除")
+    assert action.toolTip().startswith(
+        "キューの表から外すだけです。実験の記録（実験一覧）は残ります。"
+    )
+    menu.popup(queue.table.viewport().mapToGlobal(queue.table.viewport().rect().center()))
+    qapp.processEvents()
+    QTest.mouseClick(menu, Qt.MouseButton.LeftButton, pos=menu.actionGeometry(action).center())
+    qapp.processEvents()
+
+    assert [row.experiment_id for row in backend.list_training_queue()] == [waiting.experiment_id]
+    assert backend.get_experiment(finished.experiment_id).status == "stopped"
+    window.hide()

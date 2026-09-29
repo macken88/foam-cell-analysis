@@ -248,3 +248,128 @@ def test_comparison_series_colors_keep_theme_order_after_refresh(mock_backend):
     dialog.differences_only.setChecked(True)
 
     assert [series[1] for series in dialog.chart.series] == expected[:3]
+
+
+def _click_experiment(page, experiment_id):
+    row = next(
+        row
+        for row in range(page.table.rowCount())
+        if page.table.item(row, 1).text() == experiment_id
+    )
+    QTest.mouseClick(
+        page.table.viewport(),
+        Qt.MouseButton.LeftButton,
+        pos=page.table.visualItemRect(page.table.item(row, 1)).center(),
+    )
+    return row
+
+
+def _open_row_menu(page, row, monkeypatch):
+    """右クリックで届く QContextMenuEvent を送り、表示されたメニューを返す。"""
+    from PySide6.QtGui import QContextMenuEvent
+    from PySide6.QtWidgets import QApplication
+
+    shown = []
+    monkeypatch.setattr(page.context_menu, "exec", lambda *_args: shown.append(True))
+    viewport = page.table.viewport()
+    pos = page.table.visualItemRect(page.table.item(row, 1)).center()
+    QApplication.sendEvent(
+        viewport,
+        QContextMenuEvent(QContextMenuEvent.Reason.Mouse, pos, viewport.mapToGlobal(pos)),
+    )
+    assert shown
+    page.context_menu.aboutToShow.emit()
+    return page.context_menu
+
+
+def _action(menu, text):
+    return next(action for action in menu.actions() if action.text() == text)
+
+
+def test_stopped_experiment_menu_offers_retry_first_and_deletes_after_confirmation(
+    shell, qapp, monkeypatch
+):
+    from PySide6.QtWidgets import QMessageBox
+
+    from foam_cell_analysis.gui.navigation import ModeId
+    from foam_cell_analysis.services.models import Candidate
+
+    backend = shell.ctx.backend
+    backend.candidates["RC-009"] = Candidate("RC-009", "exp_0044", "final.pt", "infer_v005")
+    shell.navigate(PageId.EXPERIMENTS)
+    page = shell.page(PageId.EXPERIMENTS)
+    window = shell.manager.window(ModeId.TRAINING)
+    window.show()
+    row = _click_experiment(page, "exp_0044")
+
+    menu = _open_row_menu(page, row, monkeypatch)
+    items = [action for action in menu.actions() if not action.isSeparator()]
+    assert items[0].text() == "同じ設定でやり直す"
+    assert items[0].isEnabled()
+    delete = _action(menu, "実験を削除…")
+    assert not delete.isEnabled()
+    assert "比較候補 RC-009 がこの実験を参照しています" in delete.toolTip()
+
+    backend.reject_candidate("RC-009")
+    menu = _open_row_menu(page, row, monkeypatch)
+    delete = _action(menu, "実験を削除…")
+    assert delete.isEnabled()
+    prompts = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda _parent, _title, text, *_args: (
+            prompts.append(text) or QMessageBox.StandardButton.Yes
+        ),
+    )
+    menu.popup(page.table.viewport().mapToGlobal(QPoint(10, 10)))
+    qapp.processEvents()
+    QTest.mouseClick(menu, Qt.MouseButton.LeftButton, pos=menu.actionGeometry(delete).center())
+    qapp.processEvents()
+
+    assert "exp_0044 を削除しますか？" in prompts[0]
+    assert "取り消せません" in prompts[0]
+    assert "exp_0044" not in {item.experiment_id for item in backend.list_experiments()}
+    assert "exp_0044" not in {
+        page.table.item(index, 1).text() for index in range(page.table.rowCount())
+    }
+    window.hide()
+
+
+def test_released_or_running_experiment_cannot_be_deleted(shell, monkeypatch):
+    backend = shell.ctx.backend
+    shell.navigate(PageId.EXPERIMENTS)
+    page = shell.page(PageId.EXPERIMENTS)
+    _click_experiment(page, "exp_0042")
+    delete = page.action_map["delete"]
+    assert not delete.isEnabled()
+    assert "リリース済みモデル" in delete.toolTip()
+
+    backend.get_experiment("exp_0045").status = "running"
+    page.refresh()
+    _click_experiment(page, "exp_0045")
+    assert not page.action_map["delete"].isEnabled()
+    assert "学習中" in page.action_map["delete"].toolTip()
+    assert "exp_0045" in {item.experiment_id for item in backend.list_experiments()}
+
+
+def test_run_tab_button_retries_stopped_experiment_with_same_settings(shell, qapp):
+    from foam_cell_analysis.gui.navigation import ModeId
+
+    shell.navigate(PageId.EXPERIMENTS)
+    page = shell.page(PageId.EXPERIMENTS)
+    window = shell.manager.window(ModeId.TRAINING)
+    window.show()
+    _click_experiment(page, "exp_0044")
+    page.details.setCurrentWidget(page.run_page)
+    qapp.processEvents()
+    assert page.retry_button.text() == "同じ設定でやり直す"
+    assert page.retry_button.isEnabled()
+
+    QTest.mouseClick(page.retry_button, Qt.MouseButton.LeftButton)
+
+    runner = shell.ctx.training_runner
+    assert runner.is_busy
+    assert runner.experiment_id == "exp_0044"
+    runner.request_stop()
+    window.hide()

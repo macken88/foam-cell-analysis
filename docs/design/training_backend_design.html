@@ -673,7 +673,7 @@ selected     = save_fold_models ? K × W : 0          … コピーになった�
   <li>Cellpose: <code>CellposeModel(pretrained_model=&lt;チェックポイントのパス&gt;)</code> で直接読み込む（cellpose は存在するファイルのパスが渡されたら、それをそのまま読む）。</li>
   </ul></li>
 <li>設定検証の「重みが未取得」の警告は、<code>workspace/pretrained/</code> の中にファイルがあるかで判定する。</li>
-<li>実験や試行を削除・移動する機能は今回作らない。将来作る場合は、比較候補・リリースから参照されていないことを確かめてから行う。</li>
+<li>実験は実験単位でだけ削除できる（<code>Backend.experiment_deletion_info</code> / <code>delete_experiment</code>）。対象は下書き・中断・失敗・完了の実験で、学習中・待機中の実験と、比較候補（非採用を除く）・リリース済みモデルから参照されている実験は削除しない。削除は <code>experiments/&lt;id&gt;/</code> フォルダ全体（設定・全試行・途中保存モデル・OOF・ログ）と <code>queue.json</code> のその実験の行だけを消し、<code>datasets</code>・<code>pretrained</code>・<code>augmentation</code> には触れない。試行単位の削除や移動は作らない。</li>
 </ul>
 </div>
 

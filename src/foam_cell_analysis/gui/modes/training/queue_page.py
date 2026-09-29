@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...context import AppContext
+from ...labels import training_progress_text
 from ...navigation import PageId
 from ...settings import app_settings
 from ...theme import set_style
@@ -54,7 +55,6 @@ class TrainingQueuePage(BasePage):
             selection_mode=QAbstractItemView.SelectionMode.ExtendedSelection,
         )
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
-        self.table.setColumnWidth(1, max(self.table.columnWidth(1), 260))
         self.table.doubleClicked.connect(self._double_clicked)
         self.model.edit_failed.connect(self.ctx.status.show_message)
 
@@ -84,7 +84,7 @@ class TrainingQueuePage(BasePage):
         self.up_button = QPushButton("上へ")
         self.down_button = QPushButton("下へ")
         self.edit_button = QPushButton("設定を開いて編集…")
-        self.clear_button = QPushButton("終了した行を片付ける")
+        self.clear_button = QPushButton("終了・中断した行を削除")
         mark_primary(self.run_button)
         self.run_action = QAction("▶ キューをすべて実行", self)
         self.run_action.triggered.connect(self._toggle_run)
@@ -108,7 +108,7 @@ class TrainingQueuePage(BasePage):
             "up": QAction("上へ移動\tCtrl+↑", self),
             "down": QAction("下へ移動\tCtrl+↓", self),
             "edit": QAction("設定を開いて編集…", self),
-            "clear": QAction("終了した行を片付ける", self),
+            "clear": QAction("終了・中断した行を削除", self),
         }
         for key, callback in (
             ("duplicate", self.duplicate_selected),
@@ -137,6 +137,7 @@ class TrainingQueuePage(BasePage):
         )
         self.stop_now_action.setToolTip(self.stop_now_button.toolTip())
         self.context_menu = QMenu(self)
+        self.context_menu.setToolTipsVisible(True)
         for key in ("edit", "duplicate", "delete", "up", "down", "clear"):
             self.context_menu.addAction(self.queue_actions[key])
         add_row_context_menu(self.table, self.context_menu)
@@ -212,8 +213,8 @@ class TrainingQueuePage(BasePage):
         current_id = self._current_id()
         scroll = self.table.verticalScrollBar().value()
         structure_changed = self.model.refresh()
-        self.table.resizeColumnToContents(1)
-        self.table.setColumnWidth(1, max(self.table.columnWidth(1), 260))
+        if structure_changed or initial:
+            self.table.resizeColumnToContents(1)
         if structure_changed:
             row_by_id = {
                 entry.queue_id or entry.experiment_id: row
@@ -227,8 +228,6 @@ class TrainingQueuePage(BasePage):
             )
             if initial or structure_changed:
                 fit_table_columns(self.table)
-            if initial:
-                self.table.setColumnWidth(1, max(self.table.columnWidth(1), 260))
             self.table.verticalScrollBar().setValue(scroll)
         self._update_empty_state()
         self._update_status_line()
@@ -249,7 +248,7 @@ class TrainingQueuePage(BasePage):
                 active = None
         running = f"実行中 {controller.active_id}"
         if active:
-            running += f"（{self.model._progress(active)}）"
+            running += f"（{training_progress_text(active)}）"
         elif not controller.active_id:
             running = (
                 f"{controller.waiting_for_id or '実行中の学習'}の学習終了後にキューを開始"
@@ -258,17 +257,16 @@ class TrainingQueuePage(BasePage):
                 if controller.executing
                 else "停止中"
             )
-        counts = {
-            status: sum(entry.status == status for entry in entries)
-            for status in ("completed", "failed", "stopped")
-        }
+        # 終わった行は自動で表から外れるため、残っている場合（復旧後など）だけ件数を示す
+        leftovers = ""
+        for status, label in (("completed", "完了"), ("failed", "失敗"), ("stopped", "中断")):
+            count = sum(entry.status == status for entry in entries)
+            if count:
+                leftovers += f"・{label} {count} 件"
         note = ""
         if controller.stop_requested:
             note = "\n現在の学習が終わった後でキューを停止します。"
-        self.status_line.setText(
-            f"待機 {waiting} 件・{running}・完了 {counts['completed']} 件・"
-            f"失敗 {counts['failed']} 件・中断 {counts['stopped']} 件{note}"
-        )
+        self.status_line.setText(f"待機 {waiting} 件・{running}{leftovers}{note}")
 
     def _update_buttons(self, *_args) -> None:
         selected = self._selected_ids()
@@ -399,10 +397,11 @@ class TrainingQueuePage(BasePage):
         )
         self.clear_button.setEnabled(can_clear)
         self.set_menu_action_enabled(self.queue_actions["clear"], can_clear)
-        self.queue_actions["clear"].setToolTip(
-            "片付ける終了行がありません" if not can_clear else ""
-        )
-        self.clear_button.setToolTip("片付ける終了行がありません" if not can_clear else "")
+        clear_tip = "キューの表から外すだけです。実験の記録（実験一覧）は残ります。"
+        if not can_clear:
+            clear_tip += "（今は終了・中断した行がありません）"
+        self.queue_actions["clear"].setToolTip(clear_tip)
+        self.clear_button.setToolTip(clear_tip)
 
     def _double_clicked(self, index) -> None:
         if index.column() < self.model.fixed_column_count:

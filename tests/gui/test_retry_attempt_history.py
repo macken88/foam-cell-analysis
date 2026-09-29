@@ -174,8 +174,8 @@ def test_active_retry_runs_as_another_attempt_without_new_experiment(shell, monk
     assert {item.experiment_id for item in backend.list_experiments()} == ids_before | {
         active.experiment_id
     }
-    assert len(backend.list_training_queue()) == 2
-    assert backend.list_training_queue()[-1].experiment_id == original.experiment_id
+    # 終わった行（元の学習とやり直しの予約）は、結果が実験一覧に残るためキューから外れる
+    assert wait_for(qapp, lambda: backend.list_training_queue() == [])
     for job in shell.ctx.jobs.training_jobs:
         job.cancel()
 
