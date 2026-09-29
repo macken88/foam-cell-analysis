@@ -201,7 +201,7 @@ def test_training_menu_groups_column_names_and_dynamic_experiment_filter(shell):
     assert "複製" in edit_labels and "削除" in edit_labels
     assert "設定を開いて編集…" in edit_labels
     assert "複製" not in learning_labels
-    assert "キューを実行" in learning_labels
+    assert "▶ キューをすべて実行" in learning_labels
     assert "設定を検証" in learning_labels
 
     queue_columns = _find_action(_menu(window, "表示"), "表示する列（学習キュー）")

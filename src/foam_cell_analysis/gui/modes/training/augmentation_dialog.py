@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import numpy as np
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QImage, QPixmap
+from PySide6.QtCore import QEvent, Qt, QTimer
+from PySide6.QtGui import QAction, QColor, QImage, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -13,16 +13,20 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
     QGridLayout,
-    QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
+    QMenuBar,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSpinBox,
+    QSplitter,
     QStackedWidget,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -53,7 +57,8 @@ TRANSFORM_GROUPS = [
         "幾何変換",
         {"horizontal_flip", "vertical_flip", "rotation", "scale", "translation", "crop", "elastic"},
     ),
-    ("輝度・画質", {"brightness", "contrast", "gamma", "blur", "noise"}),
+    ("輝度", {"brightness", "contrast", "gamma"}),
+    ("画質", {"blur", "noise"}),
     ("チャンネル", {"channel_dropout", "channel_intensity"}),
 ]
 
@@ -102,104 +107,153 @@ class AugmentationDialog(QDialog):
         self.profiles = backend.list_augmentation_profiles()
         self.source = backend.get_augmentation_profile(profile_id or self.profiles[-1].profile_id)
         self.setWindowTitle("データ拡張プロファイル")
-        self.resize(1100, 750)
-        self.setMinimumSize(1000, 680)
+        self.resize(1360, 800)
+        self.setMinimumSize(1250, 720)
         root = QVBoxLayout(self)
+        menu_bar = QMenuBar(self)
+        edit_menu = menu_bar.addMenu("編集")
+        reset_action = QAction("既定値に戻す", self)
+        reset_action.setToolTip("拡張設定を aug_v001 の初期値に戻します。保存は行いません。")
+        reset_action.triggered.connect(self.reset_profile_defaults)
+        edit_menu.addAction(reset_action)
+        root.setMenuBar(menu_bar)
         root.addWidget(QLabel("簡易プレビュー（学習時の変換とは一致しません）"))
-        body = QHBoxLayout()
-        root.addLayout(body, 1)
+        body = QSplitter(Qt.Orientation.Horizontal)
+        self.preview_splitter = body
+        root.addWidget(body, 1)
         self.editor_scroll = QScrollArea()
         self.editor_scroll.setWidgetResizable(True)
         editor = QWidget()
         self.editor_layout = QVBoxLayout(editor)
         self.editor_scroll.setWidget(editor)
-        body.addWidget(self.editor_scroll, 3)
+        body.addWidget(self.editor_scroll)
         preview = QWidget()
         preview_layout = QVBoxLayout(preview)
-        body.addWidget(preview, 2)
+        body.addWidget(preview)
+        body.setStretchFactor(0, 3)
+        body.setStretchFactor(1, 2)
+        body.setCollapsible(0, False)
+        body.setCollapsible(1, False)
+        self.editor_scroll.setMinimumWidth(680)
+        preview.setMinimumWidth(380)
+        body.setSizes([680, 680])
 
         meta = QFormLayout()
         self.profile_combo = QComboBox()
         self.profile_combo.addItems([item.profile_id for item in self.profiles])
         self.profile_combo.setCurrentText(self.source.profile_id)
-        self.profile_combo.setToolTip("augmentation.profile")
         self.status_label = QLabel(
             "使用済み・元版は読み取り専用"
             if self.source.used_by_experiments
             else "未使用・保存時は新版を作成"
         )
         self.name = QLineEdit(self.source.name)
-        self.name.setToolTip("augmentation.name")
         self.base = QLabel(self.source.base_profile or "—")
         meta.addRow("プロファイル", self.profile_combo)
         meta.addRow("状態", self.status_label)
         meta.addRow("名前", self.name)
         meta.addRow("ベースプロファイル", self.base)
         self.editor_layout.addLayout(meta)
+        reset_row = QHBoxLayout()
+        reset_row.addStretch(1)
+        self.reset_button = QPushButton("既定値に戻す")
+        self.reset_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.reset_button.clicked.connect(self.reset_profile_defaults)
+        reset_row.addWidget(self.reset_button)
+        self.editor_layout.addLayout(reset_row)
         self.controls: dict[
             str, tuple[QCheckBox, QDoubleSpinBox, QDoubleSpinBox | None, QDoubleSpinBox | None]
         ] = {}
+        self._labels_to_keys = {label: key for key, label, *_ in TRANSFORMS}
+        self.order_controls: dict[str, QSpinBox] = {}
         transforms = {item.key: item for item in self.source.transforms}
+        all_keys = [key for key, *_ in TRANSFORMS]
+        known = [key for key in self.source.order if key in all_keys]
+        known.extend(key for key in all_keys if key not in known)
+        order_index = {key: index + 1 for index, key in enumerate(known)}
+        self.order_table = QTableWidget()
+        self.order_table.setColumnCount(5)
+        self.order_table.setHorizontalHeaderLabels(["適用", "順", "変換", "確率", "範囲"])
+        self.order_table.verticalHeader().hide()
+        self.order_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.order_table.setColumnWidth(0, 54)
+        self.order_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.order_table.setColumnWidth(2, 160)
+        self.order_table.setColumnWidth(3, 100)
+        self.order_table.setColumnWidth(4, 280)
+        self.order_table.setMinimumWidth(670)
+        self.order_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        table_row = 0
+        self._order_keys = []
         for title, group_keys in TRANSFORM_GROUPS:
-            group = QGroupBox(title)
-            grid = QGridLayout(group)
-            grid.addWidget(QLabel("有効な変換"), 0, 0)
-            grid.addWidget(QLabel("適用確率"), 0, 1)
-            grid.addWidget(QLabel("範囲（最小 ～ 最大）"), 0, 2, 1, 3)
-            row_index = 1
+            category_row = table_row
+            table_row += 1
+            self.order_table.insertRow(category_row)
+            category_item = QTableWidgetItem(title)
+            category_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            self.order_table.setItem(category_row, 0, category_item)
+            self.order_table.setSpan(category_row, 0, 1, 5)
             for key, label, probability, lower, upper in TRANSFORMS:
                 if key not in group_keys:
                     continue
                 setting = transforms.get(
                     key, TransformSetting(key, label, False, probability, lower, upper)
                 )
-                enabled = QCheckBox(label)
+                self.order_table.insertRow(table_row)
+                self._order_keys.append(key)
+                enabled = QCheckBox()
                 enabled.setChecked(setting.enabled)
-                enabled.setToolTip(f"{key}.enabled")
                 chance = QDoubleSpinBox()
                 chance.setRange(0.0, 1.0)
                 chance.setSingleStep(0.05)
                 chance.setDecimals(2)
                 chance.setValue(setting.probability)
-                chance.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-                chance.setToolTip(f"{key}.probability")
                 minimum = self._range_editor(setting.range_min)
                 maximum = self._range_editor(setting.range_max)
-                if minimum is not None:
-                    minimum.setToolTip(f"{key}.range_min")
-                if maximum is not None:
-                    maximum.setToolTip(f"{key}.range_max")
-                grid.addWidget(enabled, row_index, 0)
-                grid.addWidget(chance, row_index, 1)
+                range_widget = QWidget()
+                range_layout = QHBoxLayout(range_widget)
+                range_layout.setContentsMargins(0, 0, 0, 0)
                 if minimum is not None and maximum is not None:
-                    grid.addWidget(minimum, row_index, 2)
-                    grid.addWidget(QLabel("〜"), row_index, 3, Qt.AlignmentFlag.AlignCenter)
-                    grid.addWidget(maximum, row_index, 4)
+                    unit = {
+                        "rotation": "角度（度）",
+                        "scale": "倍率",
+                        "translation": "画像寸法に対する比率",
+                        "crop": "画像寸法に対する割合",
+                        "elastic": "変形強度係数",
+                        "brightness": "明るさ変化（%）",
+                        "contrast": "コントラスト倍率",
+                        "gamma": "ガンマ値",
+                        "blur": "ぼかし sigma（pixel）",
+                        "noise": "ノイズ標準偏差（8 bit 濃度値）",
+                        "channel_dropout": "欠落比率",
+                        "channel_intensity": "チャンネル強度倍率",
+                    }.get(key, "値")
+                    minimum.setToolTip(unit)
+                    maximum.setToolTip(unit)
+                    range_layout.addWidget(minimum)
+                    range_layout.addWidget(QLabel("〜"))
+                    range_layout.addWidget(maximum)
+                order = QSpinBox()
+                order.setRange(0, len(TRANSFORMS))
+                order.setSpecialValueText("\u00a0")
+                order.setValue(order_index[key] if setting.enabled else 0)
+                order.setEnabled(setting.enabled)
+                order.valueChanged.connect(
+                    lambda value, transform=key: self._set_order(transform, value)
+                )
+                self.order_controls[key] = order
                 self.controls[key] = (enabled, chance, minimum, maximum)
-                row_index += 1
-            self.editor_layout.addWidget(group)
-
-        self.order = QListWidget()
-        known = [key for key in self.source.order if key in self.controls]
-        known.extend(key for key, *_ in TRANSFORMS if key not in known)
-        labels = dict((key, label) for key, label, *_ in TRANSFORMS)
-        for key in known:
-            item = QListWidgetItem(labels[key])
-            item.setToolTip(key)
-            self.order.addItem(item)
-        self._order_keys = known
-        order_buttons = QHBoxLayout()
-        self.up_button = QPushButton("上へ")
-        self.down_button = QPushButton("下へ")
-        self.up_button.setToolTip("選択した変換を一つ上へ移動")
-        self.down_button.setToolTip("選択した変換を一つ下へ移動")
-        self.up_button.clicked.connect(lambda: self._move_order(-1))
-        self.down_button.clicked.connect(lambda: self._move_order(1))
-        order_buttons.addWidget(self.up_button)
-        order_buttons.addWidget(self.down_button)
-        self.editor_layout.addWidget(QLabel("適用順序"))
-        self.editor_layout.addWidget(self.order, 1)
-        self.editor_layout.addLayout(order_buttons)
+                enabled.toggled.connect(lambda _checked: self._normalize_order())
+                self.order_table.setCellWidget(table_row, 0, enabled)
+                self.order_table.setCellWidget(table_row, 1, order)
+                name_item = QTableWidgetItem(label)
+                self.order_table.setItem(table_row, 2, name_item)
+                self.order_table.setCellWidget(table_row, 3, chance)
+                self.order_table.setCellWidget(table_row, 4, range_widget)
+                table_row += 1
+        self.editor_layout.addWidget(self.order_table, 1)
 
         selectors = QFormLayout()
         self.dataset = QComboBox()
@@ -260,7 +314,17 @@ class AugmentationDialog(QDialog):
             self.eight_grid.addWidget(label, index // 4, index % 4)
         self.preview_stack.addWidget(self.single_preview)
         self.preview_stack.addWidget(self.eight_preview)
+        self._preview_resize_timer = QTimer(self)
+        self._preview_resize_timer.setSingleShot(True)
+        self._preview_resize_timer.setInterval(80)
+        self._preview_resize_timer.timeout.connect(self.refresh_preview)
+        self._normalize_order()
+        for label in (*self.preview_labels.values(), *self.pattern_labels):
+            # 表示中の画像の大きさで枠が広がると、再描画のたびに拡大が続いて切れてしまう
+            label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+            label.installEventFilter(self)
         preview_layout.addWidget(self.preview_stack, 1)
+        body.setSizes([700, 600])
         self.refresh_preview()
         self.profile_combo.currentTextChanged.connect(self._load_profile)
         self.sample.currentTextChanged.connect(self.refresh_preview)
@@ -271,7 +335,6 @@ class AugmentationDialog(QDialog):
                 minimum.valueChanged.connect(self.refresh_preview)
             if maximum is not None:
                 maximum.valueChanged.connect(self.refresh_preview)
-        self.order.model().rowsMoved.connect(self.refresh_preview)
         self.classification.currentTextChanged.connect(self._update_sample_options)
         self.dataset.currentTextChanged.connect(self._update_sample_options)
         self._update_sample_options()
@@ -296,16 +359,45 @@ class AugmentationDialog(QDialog):
         widget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         return widget
 
-    def _move_order(self, offset: int) -> None:
-        row = self.order.currentRow()
-        target = row + offset
-        if row < 0 or not 0 <= target < self.order.count():
+    def _set_order(self, key: str, value: int) -> None:
+        """順序の重複を後続番号へ押し出す。"""
+        ordered = [name for name in self._order_keys if self.controls[name][0].isChecked()]
+        ordered.sort(key=lambda name: self.order_controls[name].value())
+        if key not in ordered:
             return
-        item = self.order.takeItem(row)
-        self.order.insertItem(target, item)
-        self.order.setCurrentRow(target)
-        self._order_keys.insert(target, self._order_keys.pop(row))
+        ordered.remove(key)
+        ordered.insert(max(0, min(value - 1, len(ordered))), key)
+        for position, name in enumerate(ordered, start=1):
+            control = self.order_controls[name]
+            control.blockSignals(True)
+            control.setValue(position)
+            control.blockSignals(False)
+        self._order_keys = ordered + [name for name in self._order_keys if name not in ordered]
         self.refresh_preview()
+
+    def _normalize_order(self) -> None:
+        """有効・無効の区分を保ち、画面上の番号を 1..N に詰める。"""
+        ordered = [name for name in self._order_keys if self.controls[name][0].isChecked()]
+        ordered.sort(
+            key=lambda name: (
+                self.order_controls[name].value() or len(TRANSFORMS) + self._order_keys.index(name)
+            )
+        )
+        for name in self._order_keys:
+            control = self.order_controls[name]
+            control.setEnabled(name in ordered)
+            if name not in ordered:
+                control.blockSignals(True)
+                control.setValue(0)
+                control.blockSignals(False)
+        for position, name in enumerate(ordered, start=1):
+            control = self.order_controls[name]
+            control.blockSignals(True)
+            control.setValue(position)
+            control.blockSignals(False)
+        self._order_keys = ordered + [name for name in self._order_keys if name not in ordered]
+        self.order_table.resizeColumnToContents(1)
+        self._preview_resize_timer.start()
 
     def select_random_sample(self) -> None:
         """現在の分類からランダム画像を選ぶ。"""
@@ -359,10 +451,13 @@ class AugmentationDialog(QDialog):
                     maximum.value() if maximum else None,
                 )
             )
-        ordered = [
-            self._order_keys[self.order.row(self.order.item(row))]
-            for row in range(self.order.count())
-        ]
+        ordered = sorted(
+            self._order_keys,
+            key=lambda key: (
+                not self.controls[key][0].isChecked(),
+                self.order_controls[key].value(),
+            ),
+        )
         next_number = max(int(item.profile_id[-3:]) for item in self.profiles) + 1
         default_name = f"foam_cell_aug_v{next_number:03d}"
         return AugmentationProfile(
@@ -393,16 +488,29 @@ class AugmentationDialog(QDialog):
                 minimum.setValue(setting.range_min)
             if maximum is not None and setting.range_max is not None:
                 maximum.setValue(setting.range_max)
-        labels = {key: label for key, label, *_ in TRANSFORMS}
-        known = [key for key in self.source.order if key in self.controls]
-        known.extend(key for key, *_ in TRANSFORMS if key not in known)
+        all_keys = [key for key, *_ in TRANSFORMS]
+        known = [key for key in self.source.order if key in all_keys]
+        known.extend(key for key in all_keys if key not in known)
         self._order_keys = known
-        self.order.clear()
-        for key in known:
-            item = QListWidgetItem(labels[key])
-            item.setToolTip(key)
-            self.order.addItem(item)
+        order_values = {key: index + 1 for index, key in enumerate(known)}
+        for key, control in self.order_controls.items():
+            control.blockSignals(True)
+            control.setValue(order_values[key] if self.controls[key][0].isChecked() else 0)
+            control.setEnabled(self.controls[key][0].isChecked())
+            control.blockSignals(False)
+        self._normalize_order()
         self.refresh_preview()
+
+    def reset_profile_defaults(self) -> None:
+        """確認後、aug_v001 相当の値を編集画面に読み込む。"""
+        if self.profile_combo.findText("aug_v001") < 0:
+            return
+        if (
+            QMessageBox.question(self, "既定値に戻す", "拡張設定を aug_v001 の初期値に戻しますか？")
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        self.profile_combo.setCurrentText("aug_v001")
 
     def refresh_preview(self) -> None:
         """numpy で軽量変換を適用してプレビューを描き直す。"""
@@ -429,7 +537,13 @@ class AugmentationDialog(QDialog):
             rng = np.random.default_rng(selected.seed + index + self._preview_seed())
             transformed = source.copy()
             transformed_mask = source_mask.copy()
-            for key in self._order_keys:
+            for key in sorted(
+                self._order_keys,
+                key=lambda item: (
+                    not self.controls[item][0].isChecked(),
+                    self.order_controls[item].value(),
+                ),
+            ):
                 enabled, probability, minimum, maximum = self.controls[key]
                 if not enabled.isChecked() or rng.random() > probability.value():
                     continue
@@ -475,23 +589,37 @@ class AugmentationDialog(QDialog):
             transformed = self._preview_images[0]
             transformed_mask = self._preview_masks[0]
             overlay = self._overlay(transformed, transformed_mask)
-            self.preview_labels["元画像"].setPixmap(_gray_pixmap(source, 190))
-            self.preview_labels["拡張後画像"].setPixmap(_gray_pixmap(transformed, 190))
+            source_size = self._preview_size(self.preview_labels["元画像"])
+            transformed_size = self._preview_size(self.preview_labels["拡張後画像"])
+            mask_size = self._preview_size(self.preview_labels["拡張後マスク"])
+            overlay_size = self._preview_size(self.preview_labels["オーバーレイ"])
+            self.preview_labels["元画像"].setPixmap(_gray_pixmap(source, source_size))
+            self.preview_labels["拡張後画像"].setPixmap(_gray_pixmap(transformed, transformed_size))
             self.preview_labels["拡張後マスク"].setPixmap(
-                _rgb_pixmap(self._colorize(transformed_mask), 190)
+                _rgb_pixmap(self._colorize(transformed_mask), mask_size)
             )
-            self.preview_labels["オーバーレイ"].setPixmap(_rgb_pixmap(overlay, 190))
+            self.preview_labels["オーバーレイ"].setPixmap(_rgb_pixmap(overlay, overlay_size))
             self.preview_stack.setCurrentWidget(self.single_preview)
         else:
             for index, array in enumerate(self._preview_images):
-                self.pattern_labels[index].setPixmap(_gray_pixmap(array, 100))
+                self.pattern_labels[index].setPixmap(
+                    _gray_pixmap(array, self._preview_size(self.pattern_labels[index]))
+                )
             self.preview_stack.setCurrentWidget(self.eight_preview)
+
+    @staticmethod
+    def _preview_size(label: QLabel) -> int:
+        """ラベルの現在の表示領域内に収まる正方形サイズを返す。"""
+        return max(48, min(label.width(), label.height()) - 12)
 
     def _update_order_colors(self) -> None:
         """無効な変換を適用順序リストで灰色にする。"""
-        for row, key in enumerate(self._order_keys):
-            enabled = self.controls[key][0].isChecked()
-            self.order.item(row).setForeground(QColor(Color.GRAPHITE if enabled else Color.IDLE))
+        for row in range(self.order_table.rowCount()):
+            item = self.order_table.item(row, 2)
+            if item is not None:
+                key = self._labels_to_keys[item.text()]
+                enabled = self.controls[key][0].isChecked()
+                item.setForeground(QColor(Color.GRAPHITE if enabled else Color.IDLE))
 
     @staticmethod
     def _colorize(mask: np.ndarray) -> np.ndarray:
@@ -517,3 +645,16 @@ class AugmentationDialog(QDialog):
         """再生成ごとに変わる乱数種を返す。"""
         self._preview_counter = getattr(self, "_preview_counter", 0) + 1
         return self._preview_counter
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "_preview_images"):
+            self._preview_resize_timer.start()
+
+    def eventFilter(self, watched, event) -> bool:
+        if event.type() == QEvent.Type.Resize and watched in (
+            *self.preview_labels.values(),
+            *self.pattern_labels,
+        ):
+            self._preview_resize_timer.start()
+        return super().eventFilter(watched, event)

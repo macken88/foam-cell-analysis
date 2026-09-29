@@ -506,6 +506,40 @@ def test_used_augmentation_profile_is_saved_as_new_version(mock_backend, qapp):
     assert "exp_0042" in mock_backend.get_augmentation_profile("aug_v003").used_by_experiments
 
 
+def test_augmentation_manual_order_collision_keeps_dense_pipeline(shell, qapp):
+    dialog = AugmentationDialog(shell.ctx.backend, "aug_v001")
+    dialog.show()
+    qapp.processEvents()
+
+    enabled = dialog.controls["horizontal_flip"][0]
+    QTest.mouseClick(enabled, Qt.MouseButton.LeftButton)
+    checked = {key for key, (checkbox, *_rest) in dialog.controls.items() if checkbox.isChecked()}
+    assert sorted(dialog.order_controls[key].value() for key in checked) == list(
+        range(1, len(checked) + 1)
+    )
+    unchecked = set(dialog.order_controls) - checked
+    assert all(dialog.order_controls[key].value() == 0 for key in unchecked)
+    assert all(not dialog.order_controls[key].isEnabled() for key in unchecked)
+
+    moved = dialog.order_controls["rotation"]
+    moved.setFocus()
+    QTest.keyClick(moved, Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier)
+    QTest.keyClicks(moved, "1")
+    QTest.keyClick(moved, Qt.Key.Key_Return)
+    qapp.processEvents()
+    assert moved.value() == 1
+    assert sorted(dialog.order_controls[key].value() for key in checked) == list(
+        range(1, len(checked) + 1)
+    )
+
+    profile = dialog.build_profile()
+    enabled_keys = [item.key for item in profile.transforms if item.enabled]
+    assert profile.order[: len(enabled_keys)] == sorted(
+        enabled_keys, key=lambda key: dialog.order_controls[key].value()
+    )
+    dialog.close()
+
+
 def test_augmentation_preview_uses_selected_released_training_version(qapp, tmp_path):
     import shutil
 
@@ -643,7 +677,11 @@ def test_training_only_rpn_and_roi_details_are_collapsible(shell):
 
     page = shell.page(PageId.TRAINING)
     labels = [section.title for section in page.findChildren(CollapsibleSection)]
-    assert labels == ["RPN 詳細設定", "ROI 詳細設定"]
+    assert labels.count("前処理 詳細設定") == 2
+    assert {label for label in labels if label != "前処理 詳細設定"} == {
+        "RPN 詳細設定",
+        "ROI 詳細設定",
+    }
     assert not page.model_stack.isHidden()
     assert page.fields["augmentation.profile"] is not None
     assert page.fields["checkpoint.validation_interval"] is not None

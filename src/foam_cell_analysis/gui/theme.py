@@ -1,7 +1,8 @@
 """アプリ全体で共有する色、フォント、Qt スタイル。"""
 
+from PySide6.QtCore import QEvent, QObject
 from PySide6.QtGui import QFont, QFontDatabase
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QComboBox, QDoubleSpinBox, QSpinBox
 
 
 class Color:
@@ -39,6 +40,21 @@ class Color:
 
 
 SERIES = ("#4A3AA7", "#008300", "#E87BA4", "#EDA100")
+
+
+class _FocusedWheelFilter(QObject):
+    """数値欄と選択欄のホイール操作はフォーカス中だけ許可する。"""
+
+    def eventFilter(self, watched, event):
+        if isinstance(watched, (QSpinBox, QDoubleSpinBox, QComboBox)):
+            focus_widget = QApplication.focusWidget()
+            focused = watched.hasFocus() or (
+                focus_widget is not None and watched.isAncestorOf(focus_widget)
+            )
+            if event.type() == QEvent.Type.Wheel and not focused:
+                event.ignore()
+                return True
+        return False
 
 
 def _family(*candidates: str) -> str:
@@ -93,6 +109,7 @@ def build_stylesheet() -> str:
         f"QPushButton:hover {{ background: {c.IDLE_BG}; }}",
         f"QPushButton#trainingPreviewButton:checked {{ background: {c.IDLE_BG}; }}",
         f"QPushButton:disabled {{ color: {c.DISABLED}; border-color: {c.RULE_SOFT}; }}",
+        f"QMenu::item:disabled {{ color: {c.DISABLED}; }}",
         f"QPushButton[role='filterToggle']:checked[usage='error'] "
         f"{{ background: {c.ERROR_BG}; color: {c.ERROR}; border-color: {c.ERROR}; }}",
         f"QPushButton[role='filterToggle']:checked[usage='changed'] "
@@ -218,6 +235,9 @@ def apply_theme(app: QApplication) -> None:
     """アプリの既定フォントと共通スタイルを設定する。"""
     app.setFont(body_font())
     app.setStyleSheet(build_stylesheet())
+    if not hasattr(app, "_focused_wheel_filter"):
+        app._focused_wheel_filter = _FocusedWheelFilter(app)
+        app.installEventFilter(app._focused_wheel_filter)
 
 
 def set_style(widget, **props: str | bool) -> None:

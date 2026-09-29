@@ -293,6 +293,7 @@ table.rev{font-size:.92rem}
 <tr><td>v2.7</td><td>2026-09-27</td><td>設計書を現在の実装だけに整理（改良案はローカル資料 <code>docs/tasks/ui-improvement-plan.html</code> へ分離）。各節の見出しにリンク用の id を付与。末尾に重複して置かれていた交差検証・OOF の説明を 5〜8 章へ統合。モックで無効の主ボタンを灰色で描く</td><td>文書の整理</td></tr>
 <tr><td>v2.8</td><td>2026-09-27</td><td>メニューバーと主な操作の配置、データ準備の2行フィルター・複合条件・選択と現在行の保持・狭幅レイアウト、既定列と任意列の保存、状態印、件数表示、プレビュー情報と一括変更枠、学習設定のカード型要約・YAML 開閉・独立した2列・見出しとデータ拡張操作の改善</td><td>実装済み</td></tr>
 <tr><td>v2.9</td><td>2026-09-28</td><td>学習キュー編集終了時のフォーム・YAML・スクロール・操作状態の復元、編集中の操作抑止、列切替時のフォーカス保持、YAML 行の完全パス強調、交差検証の層別・フォルダ単位を要約に表示</td><td>実装済み</td></tr>
+<tr><td>v3.0</td><td>2026-09-29</td><td>前処理詳細の折りたたみ、キュー停止操作分離、拡張設定表・直接順序編集、既定値リセット、ホイール抑止、無効メニュー色</td><td>実装済み</td></tr>
 </tbody></table></div>
 <nav><strong>目次</strong><ol class="toc"><li><a href="#sec1">1. ソース構成</a></li><li><a href="#sec2">2. アプリ全体の画面構成</a> <br><a href="#sec2-6">2.6 見た目の設計（色・フォント・部品）</a> <span class="badge">v2.3</span></li><li><a href="#sec3">3. 共通部品</a></li><li><a href="#sec4">4. データ準備（PageId.DATA_PREPARATION）</a> </li><li><a href="#sec5">5. モデル学習（PageId.TRAINING）</a></li><li><a href="#sec6">6. 実験一覧（PageId.EXPERIMENTS）</a></li><li><a href="#sec7">7. モデル比較・リリース（PageId.CANDIDATES）</a></li><li><a href="#sec8">8. マスク比較（PageId.MASK_COMPARISON）</a></li><li><a href="#sec9">9. リリース済みモデル・モデル振り分け（PageId.RELEASED_MODELS）</a></li><li><a href="#sec10">10. 本番推論（PageId.INFERENCE）</a></li><li><a href="#sec11">11. MockBackend</a></li><li><a href="#sec12">12. テスト（tests/gui/）</a></li></ol></nav>
 </header>
@@ -413,9 +414,9 @@ table.rev{font-size:.92rem}
 <thead><tr><th>ウィンドウ／メニュー</th><th>項目</th></tr></thead>
 <tbody>
 <tr><td>ホーム／ファイル・ツール・ヘルプ</td><td>ファイル: 終了。ツール: キー割り当て…・原画像と切り替える表示。ヘルプ: キー割り当て一覧…。</td></tr>
-<tr><td>データ準備・モデル学習・比較／ファイル・ツール・ヘルプ</td><td>ファイル末尾: ホームに戻る・ウィンドウを閉じる。ツール: データ準備・比較はキー割り当て…・原画像と切り替える表示、モデル学習はデータ拡張プロファイルの編集…・キー割り当て…。ヘルプ: キー割り当て一覧…。</td></tr>
+<tr><td>データ準備・モデル学習・比較／ファイル・ツール・ヘルプ</td><td>ファイル末尾: ホームに戻る・ウィンドウを閉じる。ツール: データ準備・比較はキー割り当て…・原画像と切り替える表示、モデル学習はデータ拡張を設定…・キー割り当て…。ヘルプ: キー割り当て一覧…。</td></tr>
 <tr><td>データ準備／ファイル・編集・表示・データセット</td><td>ファイル: 画像を取り込む…・新しいマスク版を取り込む… ― Excel に出力…・Excel から取り込む… ― アーカイブを作成…。編集: 元に戻す・やり直す ― すべて選択・選択を解除・検索 ― 用途・画像分類・品質を変更。画像分類は存在する分類名と 1〜9 のキーを表示する。表示: タブ ― 絞り込み ― 原画像表示・前の画像・次の画像 ― 拡大・縮小・全体表示。データセット: 自動振り分け・連続振り分け ― エラー画像表示・確定 ― 版履歴のサムネイル確認。版履歴タブではサムネイル確認だけを有効にする。</td></tr>
-<tr><td>モデル学習／ファイル・編集・表示・学習</td><td>ファイル: 新しい実験・下書き保存 ― 実験一覧の設定 YAML。編集: 学習キューの複製・削除 ― 上へ移動・下へ移動 ― 設定を開いて編集…・実験一覧の下書きを編集。表示: タブ ― 設定プレビュー YAML ― 学習キュー用の列・実験一覧用の列・実験群／モデル／状態の絞り込み。学習: 設定を検証・キューに追加・学習開始 ― キューを実行／実行を停止・終了した行を片付ける ― 学習を中断・再実行 ― 設定を複製して新規実験・複製してキューに追加 ― 選択した実験を比較・結果を開く・モデル比較へ送る…。</td></tr>
+<tr><td>モデル学習／ファイル・編集・表示・学習</td><td>ファイル: 新しい実験・下書き保存 ― 実験一覧の設定 YAML。編集: 学習キューの複製・削除 ― 上へ移動・下へ移動 ― 設定を開いて編集…・実験一覧の下書きを編集。表示: タブ ― 設定プレビュー YAML ― 学習キュー用の列・実験一覧用の列・実験群／モデル／状態の絞り込み。学習: 設定を検証・キューに追加・学習開始 ― キューをすべて実行・この学習の後で停止・今すぐ停止・終了した行を片付ける ― 今すぐ停止・再実行 ― 設定を複製して新規実験・複製してキューに追加 ― 選択した実験を比較・結果を開く・モデル比較へ送る…。</td></tr>
 <tr><td>モデル比較・リリース／ファイル・表示・候補・リリース</td><td>ファイル: 粒子解析用マスクを出力…。表示: タブ ― 検証用データセット・候補の状態で絞り込み ― 原画像表示・前の画像・次の画像・全体表示。候補: 候補を追加・評価・詳細評価・マスク比較 ― 非採用・選択候補をリリース…。リリース: 詳細表示・設定を変えて新しいリリースを作る ― 変更を適用・振り分けの変更を破棄。</td></tr>
 <tr><td>本番推論／ヘルプ</td><td>キー割り当て一覧。</td></tr>
 </tbody></table></div>
@@ -1031,7 +1032,7 @@ table.rev{font-size:.92rem}
 <div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span class="on">学習設定</span><span>学習キュー</span><span>実験一覧</span></span></div>
 <div class="v27-summary"><span>データ <span class="num">train_v003</span>・全分類・すべて・学習 <b class="num">515</b> 件</span><span>交差検証 <span class="num">5</span> 分割・層別・フォルダ単位・各検証 約 <span class="num">103</span> 件</span><span>モデル Mask R-CNN（COCO）</span><span>学習 <span class="num">100</span> エポック・バッチ <span class="num">8</span>・学習率 <span class="num">0.0001</span></span><span class="spacer"></span><span class="btn">設定プレビュー（YAML）</span></div>
 <div class="v27-form2"><div><p class="v27-h">実験</p><div class="row"><span>実験群</span><span class="sel-combo">foam_study ▾</span></div><div class="row"><span>実験識別子</span><span class="input ro num">exp_0046</span></div><div class="row"><span>説明</span><span class="input"></span></div><p class="v27-h">データセット・交差検証</p><div class="row"><span>データセット版</span><span class="sel-combo num">train_v003 ▾</span></div><div class="row"><span>画像分類 / 品質条件</span><span class="sel-combo">全分類 ▾　すべて ▾</span></div><div class="row"><span>分割数・条件・乱数シード</span><span class="input num">5</span>　☑ 画像分類で層別　☑ 取り込み元フォルダ単位</div><p class="small">交差検証は学習用版だけを使い、検証用版は含めない</p><p class="v27-h">共通学習設定</p><div class="row"><span>エポック / バッチ</span><span class="input num">100</span>　<span class="input num">8</span></div><div class="row"><span>学習率</span><span class="input num">0.0001</span></div></div>
-<div><p class="v27-h">モデル種類・固有設定</p><div class="row"><span>モデル種類</span><span class="sel-combo">Mask R-CNN ▾</span></div><div class="row"><span>事前学習済み重み</span><span class="sel-combo">COCO ▾</span></div><div class="row"><span>画像平均・標準偏差</span><span class="small">重みから自動決定</span></div><div class="row"><span>アンカーサイズ</span><span class="input num">32, 64, 128, 256, 512</span></div><div class="row"><span>アンカー縦横比</span><span class="input num">0.5, 1.0, 2.0</span></div><p class="small">▶ RPN 詳細設定　▶ ROI 詳細設定</p><p class="v27-h">データ拡張</p><div class="row"><span>プロファイル</span><span class="sel-combo num">aug_v003 ▾</span> <span class="btn">プロファイルをプレビュー</span> <span class="btn">表示 / 編集…</span></div><p class="v27-h">途中保存モデル / 評価</p><div class="row"><span>保存間隔 / 検証間隔</span><span class="input num">10</span>　<span class="input num">5</span> エポック</div><div class="row"><span>エポックの選び方</span><span class="small">OOF mAP 最大</span></div></div></div>
+<div><p class="v27-h">モデル種類・固有設定</p><div class="row"><span>モデル種類</span><span class="sel-combo">Mask R-CNN ▾</span></div><div class="row"><span>事前学習済み重み</span><span class="sel-combo">COCO ▾</span></div><div class="row"><span>画像平均・標準偏差</span><span class="small">重みから自動決定</span></div><div class="row"><span>アンカーサイズ</span><span class="input num">32, 64, 128, 256, 512</span></div><div class="row"><span>アンカー縦横比</span><span class="input num">0.5, 1.0, 2.0</span></div><p class="small">▶ 前処理 詳細設定　▶ RPN 詳細設定　▶ ROI 詳細設定</p><p class="v27-h">データ拡張</p><div class="row"><span>プロファイル</span><span class="sel-combo num">aug_v003 ▾</span> <span class="btn">データ拡張を設定…</span></div><p class="v27-h">途中保存モデル / 評価</p><div class="row"><span>保存間隔 / 検証間隔</span><span class="input num">10</span>　<span class="input num">5</span> エポック</div><div class="row"><span>エポックの選び方</span><span class="small">OOF mAP 最大</span></div></div></div>
 <div class="v27-actions"><span class="btn">設定を検証</span><span class="btn">下書き保存</span><span class="v27-gap"></span><span class="btn">キューに追加</span><span class="btn primary">学習開始</span></div></div></div>
 <ul>
 <li>YAML プレビューは既定で閉じる。要約のボタンまたは「表示」メニューから開閉し、状態を <code>app_settings()</code> に保存する。開くと右側に表示し、フォーカス中の項目に対応する行を強調する。</li>
@@ -1047,10 +1048,10 @@ table.rev{font-size:.92rem}
 <li><strong>データセット</strong>: 確定済み学習版、交差検証（分割数 2〜10、画像分類による層別、取り込み元フォルダ単位の分割、乱数シード）、画像分類、品質条件。GUI の入力チャンネルは A に固定する。検証用データセットは学習・交差検証に使わない。要約には見込み件数と各分割の検証件数を表示する。</li>
 <li><strong>モデル</strong>: Mask R-CNN / Cellpose を切り替える。Mask R-CNN は事前学習済み重み、バックボーン、学習層数、入力画像サイズ、重みから自動決定する画像平均・標準偏差、編集可能なアンカーサイズ・縦横比、RPN / ROI 詳細設定を持つ。Cellpose は事前学習済みモデル、最適化手法、正規化、スケール変動幅、リスケール、パッチサイズ、1 エポック当たり画像数、最小マスク数、クラス重みを持つ。セル確率閾値・フロー閾値はモデル比較・リリースの推論設定で管理する。</li>
 <li><strong>共通学習設定</strong>: エポック数、バッチサイズ、学習率、重み減衰、早期終了（有効 / 無効・待機エポック数）。</li>
-<li><strong>データ拡張</strong>: プロファイルを選択し、プレビューまたは表示 / 編集からプロファイル編集ダイアログを開く。</li>
+<li><strong>データ拡張</strong>: プロファイルを選択し、「データ拡張を設定…」から表形式の編集・プレビューダイアログを開く。</li>
 <li><strong>途中保存モデル / 評価</strong>: 保存間隔、検証間隔、各フォールドのモデル保存。選択エポックの指標は OOF 平均適合率（mAP）最大で、読み取り専用表示する。</li>
 </ol>
-<p>入力のツールチップには設定キーを持たせる。YAML は入力に即時追従する。設定検証は OK / 警告 / エラーをダイアログに示し、エラーがある設定は学習開始・キュー登録を止める。下書き保存は実験一覧へ保存し、学習開始は確認後に学習を登録して実験一覧へ移る。複製・下書き編集・キュー編集では読み込んだ設定をフォームと要約に表示する。</p>
+<p>正規化方式と low/high percentile は Mask R-CNN・Cellpose とも「前処理 詳細設定」の折りたたみ内に置く。設定欄の数値・選択欄はフォーカス中のみホイールで値を変更する。編集メニューの「既定値に戻す」は確認後、現在モデルの既定値を読み込み、実験群・説明・データセット版を保持する。拡張編集画面では既定値を aug_v001 相当へ戻すが、保存操作まではプロファイルを作成しない。入力のツールチップには設定キーを持たせる。YAML は入力に即時追従する。設定検証は OK / 警告 / エラーをダイアログに示し、エラーがある設定は学習開始・キュー登録を止める。下書き保存は実験一覧へ保存し、学習開始は確認後に学習を登録して実験一覧へ移る。複製・下書き編集・キュー編集では読み込んだ設定をフォームと要約に表示する。</p>
 <h3 id="sec5-2">5.2 データ拡張プロファイル編集ダイアログ</h3>
 <p>仕様 6章・11章。サイズ 1100×750 程度。</p>
 <pre><code>┌ プロファイル ─────────────────────────────┐ ┌ プレビュー ───────────────────┐
@@ -1074,7 +1075,8 @@ table.rev{font-size:.92rem}
 </code></pre>
 <ul>
 <li>各変換は 有効チェック・適用確率・範囲（該当するもの）を持つ。</li>
-<li>適用順序は <code>QListWidget</code> とし、上下ボタンで並べ替える。</li>
+<li>QSplitter の左に設定表、右にプレビューを置く。列は適用チェック・順・変換・確率・範囲とし、カテゴリは結合行で示す。順は直接編集し、衝突時は他の順を自動でずらす。有効な変換を順番どおり適用し、無効な変換は末尾に保持して <code>pipeline_order</code> に保存する。範囲欄のツールチップには単位を含める。</li>
+<li>単一・8パターンの画像は、ウィンドウや splitter のリサイズ後に表示領域へ合わせて再スケールする。</li>
 <li>プレビュー: 合成画像に対して、有効な変換のうち軽いもの（反転・90度単位の回転・明るさ・コントラスト・ノイズ・ぼかし）を実際に numpy で適用して表示する。重い変換（弾性変形など）は適用しなくてよい。</li>
 <li>「再生成」で乱数を変えて再表示する。「8パターン表示」にチェックすると拡張後画像を 4×2 のサムネイルで表示する。</li>
 <li>実験で使用済みのプロファイルは変更できない。ただし値を編集すると「新しい版として保存」になり、保存時に <code>aug_v00N</code>（次番号）とベースプロファイルを自動設定する。上書き保存ボタンは置かない。</li>
@@ -1084,9 +1086,9 @@ table.rev{font-size:.92rem}
 </section>
 <section class="card" id="sec5-queue"><h3 id="sec5-3">5.3 学習キュー（<code>PageId.TRAINING_QUEUE</code>）</h3>
 <p>学習設定・学習キュー・実験一覧の順にタブを置く。学習設定の「キューに追加」は検証後に末尾へ登録し、画面遷移せず次の実験 ID を採番する。実験一覧の「複製してキューに追加」も選択した設定を新しい ID で登録する。実験一覧の「再実行」は同じ実験 ID の新しい実行試行であり、学習中は試行番号付きの読み取り専用予約行としてキューへ入る。予約の削除は試行の記録を変更しない。</p>
-<div class="mock"><div class="mock-title">モデル学習 — 学習キュー</div><div class="mock-body"><div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span>学習設定</span><span class="on">学習キュー</span><span>実験一覧</span></span></div><div class="panel"><p>待機 3 件・実行中 exp_0047（分割 2/5）・完了 1 件・失敗 0 件 <span class="spacer"></span><span class="btn">表示する列 ▾</span> <span class="btn primary">実行を停止</span></p><table><thead><tr><th>順番</th><th>状態</th><th>実験識別子</th><th>説明</th><th>実験群</th><th>データセット版</th><th>モデル種類</th><th>エポック数</th><th>学習率</th><th>プロファイル</th></tr></thead><tbody><tr><td>1</td><td>実行中</td><td>exp_0047</td><td>分類A / 基準設定</td><td>foam_study</td><td>train_v004</td><td>Mask R-CNN</td><td>100</td><td>0.0001</td><td>aug_v003</td></tr><tr><td>2</td><td>待機</td><td>exp_0048</td><td>サイズ比較</td><td>foam_study</td><td>train_v004</td><td>Cellpose</td><td>80</td><td>0.001</td><td>aug_v003</td></tr></tbody></table><p class="small">停止予約後は現在の学習を完了して停止。複製・削除・並べ替え・設定編集・終了行の片付けは「学習」メニューまたは右クリックから行う。即時中断は実験一覧から行う。失敗・中断後も次の待機行へ進む。</p></div></div></div>
+<div class="mock"><div class="mock-title">モデル学習 — 学習キュー</div><div class="mock-body"><div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span>学習設定</span><span class="on">学習キュー</span><span>実験一覧</span></span></div><div class="panel"><p>待機 3 件・実行中 exp_0047（分割 2/5）・完了 1 件・失敗 0 件 <span class="spacer"></span><span class="btn">表示する列 ▾</span> <span class="btn primary">▶ キューをすべて実行</span> <span class="btn">この学習の後で停止</span> <span class="btn">■ 今すぐ停止</span></p><table><thead><tr><th>順番</th><th>状態</th><th>実験識別子</th><th>説明</th><th>実験群</th><th>データセット版</th><th>モデル種類</th><th>エポック数</th><th>学習率</th><th>プロファイル</th></tr></thead><tbody><tr><td>1</td><td>実行中</td><td>exp_0047</td><td>分類A / 基準設定</td><td>foam_study</td><td>train_v004</td><td>Mask R-CNN</td><td>100</td><td>0.0001</td><td>aug_v003</td></tr><tr><td>2</td><td>待機</td><td>exp_0048</td><td>サイズ比較</td><td>foam_study</td><td>train_v004</td><td>Cellpose</td><td>80</td><td>0.001</td><td>aug_v003</td></tr></tbody></table><p class="small">停止予約後は現在の学習を完了して停止。複製・削除・並べ替え・設定編集・終了行の片付けは「学習」メニューまたは右クリックから行う。今すぐ停止は確認後、学習とキューを停止する。失敗・中断後も次の待機行へ進む。</p></div></div></div>
 <p>1行を1実験として保存し、状態は待機・実行中・完了・失敗・中断・設定エラーで示す。設定編集列は分類ごとに表示を切り替え、選択肢は学習設定と同じ Backend オプションを使う。モデルにない設定セルは無効にする。セル編集ごとに設定を検証し、エラーは行頭の注意印とツールチップで示す。未表示の詳細設定は行のダブルクリックまたは編集ボタンから学習設定へ渡し、「キューに保存」または「キャンセル」する。</p>
-<p>実行はGPU 1台を前提に一度に1件とし、失敗・中断後も次の待機行へ進む。設定エラー行は飛ばして待機リストに残す。停止は現在の学習完了後に有効となる。複製・削除・並べ替えと終了行の片付けを提供し、Ctrl+↑ / Ctrl+↓ でも順番を変更できる。状態、選択行、スクロール、列幅と列表示を保持する。</p></section>
+<p>実行はGPU 1台を前提に一度に1件とし、失敗・中断後も次の待機行へ進む。設定エラー行は飛ばして待機リストに残す。「▶ キューをすべて実行」「この学習の後で停止」「■ 今すぐ停止」を別操作としてボタンと学習メニューに置く。今すぐ停止は確認後に実行中学習へ停止を依頼し、キューの続行も止める。実験一覧の停止操作名も「■ 今すぐ停止」とする。複製・削除・並べ替えと終了行の片付けを提供し、Ctrl+↑ / Ctrl+↓ でも順番を変更できる。状態、選択行、スクロール、列幅と列表示を保持する。</p></section>
 <section class="card" id="sec6">
 <h2>6. 実験一覧（<code>PageId.EXPERIMENTS</code>）</h2>
 <p>仕様: モデル学習モード仕様 2章・7章・12〜13章。</p>
@@ -1122,7 +1124,7 @@ table.rev{font-size:.92rem}
 - [選択した実験を比較]（チェック2件以上）: 実験比較ダイアログ。
 - [結果を開く]（1件）: 下の詳細タブを「学習曲線」に切り替える。
 - [設定を複製して新規実験]（1件）: モデル学習へ遷移（<code>copy_from</code>）。
-- [学習を中断]（実行中1件）: 確認後、状態を「中断」にする。
+- [今すぐ停止]（実行中1件）: 確認後、状態を「中断」にする。
 - [再実行]（失敗・中断1件）: 同じ実験 ID の新しい実行試行として再開する。前の試行結果は保持し、学習中なら同じ実験の次の試行としてキューへ予約する。旧形式は再試行せず、設定の複製を案内する。
 - [モデル比較へ送る…]（完了1件）: 引き渡しダイアログ。
 - [下書きを編集]（下書き1件）: モデル学習へ遷移（<code>edit=exp_id</code>。採番しなおさない）。</p>

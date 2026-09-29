@@ -229,10 +229,10 @@ class TrainingQueueModel(QAbstractTableModel):
     def _progress(self, entry) -> str:
         if entry.phase == "final_training":
             total = entry.selected_epoch or entry.total_epochs
-            return f"最終学習・epoch {entry.current_epoch}/{total}"
+            return f"最終学習・エポック {entry.current_epoch}/{total}"
         folds = entry.config.values.get("data", {}).get("cv", {}).get("n_folds", 5)
         fold = max(entry.fold_histories, default=1)
-        return f"分割 {fold}/{folds}・epoch {entry.current_epoch}/{entry.total_epochs}"
+        return f"分割 {fold}/{folds}・エポック {entry.current_epoch}/{entry.total_epochs}"
 
     @staticmethod
     def _display_value(path: str, value: Any) -> str:

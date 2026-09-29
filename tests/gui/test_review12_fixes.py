@@ -301,14 +301,12 @@ def test_training_columns_stack_independently_and_dataset_note_stays_with_cv(she
     assert len(left_widgets) != len(right_widgets)
 
 
-def test_training_augmentation_buttons_are_compact_and_next_to_profile(shell, qapp):
+def test_training_augmentation_button_is_compact_and_next_to_profile(shell, qapp):
     shell.navigate(PageId.TRAINING)
     page = shell.page(PageId.TRAINING)
     profile = page.fields["augmentation.profile"]
     qapp.processEvents()
-    assert page.profile_preview_button.width() <= page.profile_preview_button.sizeHint().width() + 8
+    assert page.profile_edit_button.text() == "データ拡張を設定…"
     assert page.profile_edit_button.width() <= page.profile_edit_button.sizeHint().width() + 8
-    assert profile.geometry().center().y() == page.profile_preview_button.geometry().center().y()
-    assert (
-        page.profile_preview_button.geometry().right() < page.profile_edit_button.geometry().left()
-    )
+    assert profile.geometry().center().y() == page.profile_edit_button.geometry().center().y()
+    assert not hasattr(page, "profile_preview_button")

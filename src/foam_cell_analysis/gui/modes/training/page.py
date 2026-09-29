@@ -230,8 +230,13 @@ class TrainingPage(BasePage):
         self.preview_button.setChecked(self.preview_action.isChecked())
         self.preview_button.clicked.connect(self.preview_action.toggle)
         self.preview_panel.setVisible(self.preview_action.isChecked())
-        self.augmentation_action = QAction("データ拡張プロファイルの編集…", self)
+        self.augmentation_action = QAction("データ拡張を設定…", self)
         self.augmentation_action.triggered.connect(self.open_augmentation_dialog)
+        self.reset_defaults_action = QAction("既定値に戻す", self)
+        self.reset_defaults_action.setToolTip(
+            "現在のモデルの既定値に戻します。実験群・説明・データセット版は保持します。"
+        )
+        self.reset_defaults_action.triggered.connect(self.reset_defaults)
         bind_button_action(self.validate_button, self.training_actions["validate"])
         bind_button_action(self.save_button, self.training_actions["save"])
         bind_button_action(self.queue_button, self.training_actions["queue"])
@@ -265,6 +270,7 @@ class TrainingPage(BasePage):
 
     def menu_actions(self):
         return {
+            "edit": [self.reset_defaults_action],
             "file": [self.training_actions["new"], self.training_actions["save"]],
             "training": [
                 self.training_actions["validate"],
@@ -275,6 +281,25 @@ class TrainingPage(BasePage):
             "view": [self.preview_action],
             "tools": [self.augmentation_action],
         }
+
+    def reset_defaults(self) -> None:
+        """現在のモデルの既定値に戻し、実験の識別情報を保つ。"""
+        if (
+            QMessageBox.question(self, "既定値に戻す", "現在のモデルの既定値に戻しますか？")
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        current = self._collect_config()
+        defaults = self.ctx.backend.default_experiment_config(self.model_type.currentData())
+        defaults["experiment"]["study_id"] = current["experiment"].get("study_id", "foam_study")
+        defaults["experiment"]["description"] = current["experiment"].get("description", "")
+        defaults["data"]["dataset_version"] = current["data"].get("dataset_version")
+        defaults["experiment"]["id"] = current["experiment"].get("id")
+        self.config = defaults
+        self._configs_by_model[self.model_type.currentData()] = copy.deepcopy(defaults)
+        self._clear_validation_results()
+        self._build_form()
+        self._refresh_yaml()
 
     def _build_form(self) -> None:
         """共通フォームとモデル別スタックを組み立てる。"""
@@ -363,11 +388,10 @@ class TrainingPage(BasePage):
             self.fields.update(widgets)
             self._add_form_widget(section, 0 if key == "training" else 1)
             if key == "augmentation":
-                self.profile_preview_button = QPushButton("プロファイルをプレビュー")
-                self.profile_edit_button = QPushButton("表示 / 編集…")
-                for button in (self.profile_preview_button, self.profile_edit_button):
-                    button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-                self.profile_preview_button.clicked.connect(self.open_augmentation_dialog)
+                self.profile_edit_button = QPushButton("データ拡張を設定…")
+                self.profile_edit_button.setSizePolicy(
+                    QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+                )
                 self.profile_edit_button.clicked.connect(self.open_augmentation_dialog)
                 profile_label = QLabel("プロファイル")
                 profile = widgets["augmentation.profile"]
@@ -380,7 +404,6 @@ class TrainingPage(BasePage):
                     profile_label = old_label
                 profile_row = QHBoxLayout()
                 profile_row.addWidget(profile, 1)
-                profile_row.addWidget(self.profile_preview_button)
                 profile_row.addWidget(self.profile_edit_button)
                 profile_row.addStretch(1)
                 section.form.addRow(profile_label, profile_row)
@@ -624,7 +647,10 @@ class TrainingPage(BasePage):
                         self.model_normalization_note.setWordWrap(True)
                         set_style(self.model_normalization_note, role="note")
                         child.form.addRow("画像平均・標準偏差", self.model_normalization_note)
-                    section.form.addRow(child)
+                    if path == "model.input.normalization":
+                        section.form.addRow(CollapsibleSection("前処理 詳細設定", child))
+                    else:
+                        section.form.addRow(child)
                 continue
             if path == "model.type":
                 continue
@@ -1211,6 +1237,12 @@ class TrainingPage(BasePage):
             action.setEnabled(not editing)
             action.setToolTip(message if editing else "")
             action.setStatusTip(message if editing else "")
+        self.reset_defaults_action.setEnabled(not editing)
+        self.reset_defaults_action.setToolTip(
+            message
+            if editing
+            else "現在のモデルの既定値に戻します。実験群・説明・データセット版は保持します。"
+        )
 
     def refresh_next_identifier(self) -> None:
         """既存実験やキュー追加と衝突しない次の識別子を表示する。"""

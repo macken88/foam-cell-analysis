@@ -221,7 +221,7 @@ def test_stop_reservation_is_cleared_after_current_training(shell, qapp):
     shell.navigate(PageId.TRAINING_QUEUE)
     queue = shell.page(PageId.TRAINING_QUEUE)
     QTest.mouseClick(queue.run_button, Qt.MouseButton.LeftButton)
-    QTest.mouseClick(queue.run_button, Qt.MouseButton.LeftButton)
+    QTest.mouseClick(queue.stop_after_button, Qt.MouseButton.LeftButton)
     assert wait_for(qapp, lambda: not shell.ctx.queue_controller.executing)
     assert first.status != "queued"
     assert shell.ctx.backend.get_experiment(second.experiment_id).status == "queued"
@@ -255,7 +255,7 @@ def test_queue_status_line_reports_latest_active_progress(shell, qapp):
         qapp,
         lambda: (
             (
-                f"epoch {shell.ctx.backend.get_experiment(item.experiment_id).current_epoch}/"
+                f"エポック {shell.ctx.backend.get_experiment(item.experiment_id).current_epoch}/"
                 f"{shell.ctx.backend.get_experiment(item.experiment_id).total_epochs}"
             )
             in queue.status_line.text()

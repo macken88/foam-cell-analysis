@@ -33,7 +33,7 @@ def test_wrong_training_tab_keeps_queue_actions_disabled_after_refreshes(shell, 
         shell.ctx.backend.default_experiment_config("mask_rcnn")
     )
     queue.refresh()
-    run_action = _menu_action(window, "学習", "キューを実行")
+    run_action = _menu_action(window, "学習", "▶ キューをすべて実行")
     assert run_action.isEnabled()
 
     shell.navigate(PageId.EXPERIMENTS)

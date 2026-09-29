@@ -5,6 +5,7 @@ from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QMenu,
     QMessageBox,
@@ -52,6 +53,7 @@ class TrainingQueuePage(BasePage):
             self.table,
             selection_mode=QAbstractItemView.SelectionMode.ExtendedSelection,
         )
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
         self.table.setColumnWidth(1, max(self.table.columnWidth(1), 260))
         self.table.doubleClicked.connect(self._double_clicked)
         self.model.edit_failed.connect(self.ctx.status.show_message)
@@ -74,7 +76,9 @@ class TrainingQueuePage(BasePage):
         self.column_button.setMenu(self.column_menu)
         self._build_column_menu()
         buttons.addWidget(self.column_button)
-        self.run_button = QPushButton("キューを実行")
+        self.run_button = QPushButton("▶ キューをすべて実行")
+        self.stop_after_button = QPushButton("この学習の後で停止")
+        self.stop_now_button = QPushButton("■ 今すぐ停止")
         self.duplicate_button = QPushButton("複製")
         self.delete_button = QPushButton("削除")
         self.up_button = QPushButton("上へ")
@@ -82,9 +86,13 @@ class TrainingQueuePage(BasePage):
         self.edit_button = QPushButton("設定を開いて編集…")
         self.clear_button = QPushButton("終了した行を片付ける")
         mark_primary(self.run_button)
-        self.run_action = QAction("キューを実行", self)
+        self.run_action = QAction("▶ キューをすべて実行", self)
         self.run_action.triggered.connect(self._toggle_run)
         bind_button_action(self.run_button, self.run_action)
+        self.stop_after_action = QAction("この学習の後で停止", self)
+        self.stop_after_action.triggered.connect(self.stop_after_current)
+        self.stop_now_action = QAction("■ 今すぐ停止", self)
+        self.stop_now_action.triggered.connect(self.stop_immediately)
         for button in (
             self.duplicate_button,
             self.delete_button,
@@ -114,6 +122,20 @@ class TrainingQueuePage(BasePage):
         row_layout = status_row
         row_layout.addWidget(self.column_button)
         row_layout.addWidget(self.run_button)
+        row_layout.addWidget(self.stop_after_button)
+        row_layout.addWidget(self.stop_now_button)
+        self.stop_after_button.clicked.connect(self.stop_after_current)
+        self.stop_now_button.clicked.connect(self.stop_immediately)
+        self.stop_after_button.setToolTip(
+            "今の学習は最後まで続けます。終わったら次の行へ進まず、キューを止めます。"
+            "今の学習の結果は「完了」として残ります。"
+        )
+        self.stop_after_action.setToolTip(self.stop_after_button.toolTip())
+        self.stop_now_button.setToolTip(
+            "今の学習をすぐに止め、キューも止めます。今の学習は「中断」になり、"
+            "途中までの結果だけが残ります。止める前に確認します。"
+        )
+        self.stop_now_action.setToolTip(self.stop_now_button.toolTip())
         self.context_menu = QMenu(self)
         for key in ("edit", "duplicate", "delete", "up", "down", "clear"):
             self.context_menu.addAction(self.queue_actions[key])
@@ -139,7 +161,12 @@ class TrainingQueuePage(BasePage):
                 None,
                 self.queue_actions["edit"],
             ],
-            "training": [self.run_action, self.queue_actions["clear"], None],
+            "training": [
+                self.run_action,
+                self.stop_after_action,
+                self.queue_actions["clear"],
+                None,
+            ],
             "view": [None, self.column_menu.menuAction()],
         }
 
@@ -185,6 +212,8 @@ class TrainingQueuePage(BasePage):
         current_id = self._current_id()
         scroll = self.table.verticalScrollBar().value()
         structure_changed = self.model.refresh()
+        self.table.resizeColumnToContents(1)
+        self.table.setColumnWidth(1, max(self.table.columnWidth(1), 260))
         if structure_changed:
             row_by_id = {
                 entry.queue_id or entry.experiment_id: row
@@ -235,10 +264,7 @@ class TrainingQueuePage(BasePage):
         }
         note = ""
         if controller.stop_requested:
-            note = (
-                "\n今の学習が終わったら停止します。"
-                "すぐに止めるには実験一覧の「中断」を使ってください。"
-            )
+            note = "\n現在の学習が終わった後でキューを停止します。"
         self.status_line.setText(
             f"待機 {waiting} 件・{running}・完了 {counts['completed']} 件・"
             f"失敗 {counts['failed']} 件・中断 {counts['stopped']} 件{note}"
@@ -281,16 +307,47 @@ class TrainingQueuePage(BasePage):
         self.delete_button.setToolTip("待機中の項目だけ削除できます" if not queued else "")
         controller = self.ctx.queue_controller
         waiting = any(entry.status == "queued" for entry in self.model.entries)
-        self.run_button.setText("実行を停止" if controller.executing else "キューを実行")
-        self.run_button.setEnabled(controller.executing or waiting)
-        self.run_action.setText("実行を停止" if controller.executing else "キューを実行")
-        self.set_menu_action_enabled(self.run_action, controller.executing or waiting)
-        self.run_action.setToolTip(
-            "待機中の学習がありません" if not (controller.executing or waiting) else ""
+        can_run = not controller.executing and waiting
+        self.run_button.setText("▶ キューをすべて実行")
+        self.run_button.setEnabled(can_run)
+        self.run_action.setText("▶ キューをすべて実行")
+        self.set_menu_action_enabled(self.run_action, can_run)
+        run_tip = "待機中の行を上から順に、1 件ずつすべて学習します。"
+        run_reason = (
+            run_tip
+            if can_run
+            else ("待機中の行がありません" if not waiting else "キューはすでに実行中です")
         )
-        self.run_button.setToolTip(
-            "待機中の学習がありません" if not self.run_button.isEnabled() else ""
+        for control in (self.run_button, self.run_action):
+            control.setToolTip(run_reason)
+        can_stop_after = controller.executing and not controller.stop_requested
+        can_stop_now = (
+            controller.executing
+            or controller.waiting_for_training
+            or self.ctx.training_runner.is_busy
         )
+        self.stop_after_button.setEnabled(can_stop_after)
+        self.stop_after_action.setEnabled(can_stop_after)
+        self.stop_now_button.setEnabled(can_stop_now)
+        self.stop_now_action.setEnabled(can_stop_now)
+        after_reason = (
+            "停止予約中です"
+            if controller.stop_requested
+            else "キュー実行中に利用できます"
+            if not can_stop_after
+            else "今の学習は最後まで続けます。終わったら次の行へ進まず、キューを止めます。"
+            "今の学習の結果は「完了」として残ります。"
+        )
+        now_reason = (
+            "学習を実行していないときは使えません"
+            if not can_stop_now
+            else "今の学習をすぐに止め、キューも止めます。今の学習は「中断」になり、"
+            "途中までの結果だけが残ります。止める前に確認します。"
+        )
+        for control in (self.stop_after_button, self.stop_after_action):
+            control.setToolTip(after_reason)
+        for control in (self.stop_now_button, self.stop_now_action):
+            control.setToolTip(now_reason)
         ids = [entry.queue_id or entry.experiment_id for entry in self.model.entries]
         can_move_up = any(
             key in ids
@@ -366,8 +423,22 @@ class TrainingQueuePage(BasePage):
         return self.model.setData(self.model.index(row, column), value)
 
     def _toggle_run(self) -> None:
-        controller = self.ctx.queue_controller
-        controller.stop() if controller.executing else controller.start()
+        self.ctx.queue_controller.start()
+
+    def stop_after_current(self) -> None:
+        self.ctx.queue_controller.stop()
+
+    def stop_immediately(self) -> None:
+        if (
+            QMessageBox.question(
+                self,
+                "今すぐ停止",
+                "今の学習をすぐに止め、キューも止めますか？\n"
+                "今の学習は「中断」になり、途中までの結果だけが残ります。",
+            )
+            == QMessageBox.StandardButton.Yes
+        ):
+            self.ctx.queue_controller.stop_now()
 
     def duplicate_selected(self) -> None:
         self.ctx.backend.duplicate_training_queue_items(self._selected_ids())

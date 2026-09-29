@@ -12,6 +12,7 @@ class TrainingQueueController(QObject):
         self.ctx = ctx
         self.executing = False
         self.stop_requested = False
+        self.immediate_stop_requested = False
         self.active_id = None
         self.active_queue_id = None
         self.waiting_for_training = False
@@ -72,8 +73,27 @@ class TrainingQueueController(QObject):
             return
         self.stop_requested = True
         self.ctx.status.show_message(
-            "今の学習が終わったら停止します。すぐに止めるには実験一覧の「中断」を使ってください。"
+            "今の学習は最後まで続けます。終わったら次の行へ進まず、キューを止めます。"
+            "今の学習の結果は「完了」として残ります。"
         )
+        self.changed.emit()
+
+    def stop_now(self):
+        """キュー進行を止め、実行中の学習にも即時停止を依頼する。"""
+        self.stop_requested = True
+        self.immediate_stop_requested = True
+        self.executing = False
+        self.waiting_for_training = False
+        self.waiting_for_id = None
+        if self.ctx.training_runner.is_busy:
+            if self.active_id is None:
+                self.active_id = self.ctx.training_runner.experiment_id
+            self.ctx.training_runner.request_stop("user_stop")
+        else:
+            self.stop_requested = False
+            self.immediate_stop_requested = False
+            self.active_id = None
+            self.active_queue_id = None
         self.changed.emit()
 
     def _wait_for_single_job(self, _count=None):
@@ -92,6 +112,7 @@ class TrainingQueueController(QObject):
         if self.stop_requested:
             self.executing = False
             self.stop_requested = False
+            self.immediate_stop_requested = False
             self.waiting_for_training = False
             self.waiting_for_id = None
             self.active_id = None
@@ -158,6 +179,12 @@ class TrainingQueueController(QObject):
             QTimer.singleShot(0, self._next)
             return
         if not self.executing or outcome.experiment_id != self.active_id:
+            if self.immediate_stop_requested and outcome.experiment_id == self.active_id:
+                self.active_id = None
+                self.active_queue_id = None
+                self.stop_requested = False
+                self.immediate_stop_requested = False
+                self.changed.emit()
             return
         self.active_id = None
         self.active_queue_id = None

@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMessageBox,
     QSizePolicy,
     QStackedWidget,
     QTabBar,
@@ -164,6 +165,16 @@ class ModeWindow(QMainWindow):
             self._menus["dataset"] = self.menuBar().addMenu("データセット(&D)")
         elif self.mode == ModeId.TRAINING:
             self._menus["training"] = self.menuBar().addMenu("学習(&L)")
+            self.stop_training_action = self._add_action(
+                self._menus["training"], "■ 今すぐ停止", self._stop_training_now
+            )
+            self.stop_training_action.setToolTip(
+                "今の学習をすぐに止め、キューも止めます。今の学習は「中断」になり、"
+                "途中までの結果だけが残ります。止める前に確認します。"
+            )
+            self.ctx.queue_controller.changed.connect(self._update_stop_training_action)
+            self.ctx.training_runner.busy_changed.connect(self._update_stop_training_action)
+            self._update_stop_training_action()
         elif self.mode == ModeId.COMPARISON:
             self._menus["candidate"] = self.menuBar().addMenu("候補(&C)")
             self._menus["release"] = self.menuBar().addMenu("リリース(&R)")
@@ -214,7 +225,6 @@ class ModeWindow(QMainWindow):
         previous_item = False
         pending_separator = None
         for action in menu.actions():
-            action.setStatusTip("")
             if action.isSeparator():
                 if previous_item and pending_separator is None:
                     pending_separator = action
@@ -231,6 +241,42 @@ class ModeWindow(QMainWindow):
                 self._normalize_menu_tree(action.menu())
         if pending_separator is not None:
             menu.removeAction(pending_separator)
+
+    def _update_stop_training_action(self, *_args) -> None:
+        controller = self.ctx.queue_controller
+        can_stop = (
+            controller.executing
+            or controller.waiting_for_training
+            or self.ctx.training_runner.is_busy
+        )
+        self.stop_training_action.setEnabled(can_stop)
+        if not can_stop:
+            self.stop_training_action.setToolTip("学習を実行していないときは使えません")
+        else:
+            self.stop_training_action.setToolTip(
+                "今の学習をすぐに止め、キューも止めます。今の学習は「中断」になり、"
+                "途中までの結果だけが残ります。止める前に確認します。"
+            )
+
+    def _stop_training_now(self) -> None:
+        controller = self.ctx.queue_controller
+        runner = self.ctx.training_runner
+        if not (controller.executing or controller.waiting_for_training or runner.is_busy):
+            return
+        if (
+            QMessageBox.question(
+                self,
+                "今すぐ停止",
+                "今の学習をすぐに止め、キューも止めますか？\n"
+                "今の学習は「中断」になり、途中までの結果だけが残ります。",
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        if controller.executing or controller.waiting_for_training:
+            controller.stop_now()
+        elif runner.is_busy:
+            runner.request_stop("user_stop")
 
     def _display_changed(self, name: str) -> None:
         for value, action in self._display_actions.items():

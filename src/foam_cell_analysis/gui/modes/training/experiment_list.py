@@ -229,7 +229,7 @@ class ExperimentListPage(BasePage):
             self.action_map[key] = QAction(label, self)
             self.action_map[key].triggered.connect(callback)
         for key, label, callback in (
-            ("stop", "学習を中断", self.stop_selected),
+            ("stop", "■ 今すぐ停止", self.stop_selected),
             ("retry", "再実行", self.retry_selected),
             ("edit", "下書きを編集", self.edit_selected),
             ("queue_copy", "複製してキューに追加", self.copy_to_queue),
@@ -286,7 +286,6 @@ class ExperimentListPage(BasePage):
             "file": [None, self.yaml_menu_action],
             "edit": [self.action_map["edit"]],
             "training": [
-                self.action_map["stop"],
                 self.action_map["retry"],
                 None,
                 self.action_map["copy"],
@@ -699,11 +698,13 @@ class ExperimentListPage(BasePage):
             if current is None or current.status != "completed"
             else ""
         )
-        self.action_map["stop"].setToolTip(
-            "実行中の実験を 1 つ選ぶと中断できます"
+        stop_tip = (
+            "実行中の実験を 1 つ選ぶと今すぐ停止できます。"
             if current is None or current.status != "running"
-            else ""
+            else "今の学習をすぐに止め、キューも止めます。今の学習は「中断」になり、"
+            "途中までの結果だけが残ります。止める前に確認します。"
         )
+        self.action_map["stop"].setToolTip(stop_tip)
         self.action_map["retry"].setToolTip(
             "失敗または中断した実験を 1 つ選ぶと再実行できます"
             if current is None or current.status not in {"failed", "stopped"}
@@ -834,12 +835,15 @@ class ExperimentListPage(BasePage):
         if (
             confirm
             and QMessageBox.question(
-                self, "学習を中断", f"{experiment.experiment_id} を中断しますか？"
+                self, "学習を今すぐ停止", f"{experiment.experiment_id} を今すぐ停止しますか？"
             )
             != QMessageBox.StandardButton.Yes
         ):
             return
-        if self.ctx.training_runner.is_busy:
+        controller = self.ctx.queue_controller
+        if controller.executing or controller.waiting_for_training:
+            controller.stop_now()
+        elif self.ctx.training_runner.is_busy:
             self.ctx.training_runner.request_stop("user_stop")
         self.refresh()
 
