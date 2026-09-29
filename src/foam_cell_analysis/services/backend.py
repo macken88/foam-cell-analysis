@@ -268,16 +268,6 @@ class Backend(Protocol):
     ) -> TrainingOutcome:
         """終了成果物と要求を確認して試行状態を確定する。"""
 
-    def record_epoch(
-        self,
-        experiment_id: str,
-        epoch: int,
-        loss: float,
-        map_value: float | None = None,
-        fold: int | None = None,
-    ) -> Experiment:
-        """フォールドまたは最終学習のエポック値を記録する。"""
-
     def finish_training(self, experiment_id: str, status: str = "completed") -> Experiment:
         """実験を完了・失敗・中断状態にする。"""
 

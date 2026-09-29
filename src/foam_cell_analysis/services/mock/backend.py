@@ -1831,64 +1831,6 @@ class MockBackend:
             items = [item for item in items if item.quality in {"良", "可"}]
         return items
 
-    def record_epoch(
-        self,
-        experiment_id: str,
-        epoch: int,
-        loss: float,
-        map_value: float | None = None,
-        fold: int | None = None,
-    ) -> Experiment:
-        """指定 fold の CV 履歴または最終学習 loss を記録する。"""
-        experiment = self.get_experiment(experiment_id)
-        experiment.current_epoch = epoch
-        if fold is None:
-            experiment.phase = "final_training"
-            experiment.final_history.append(EpochMetrics(epoch, loss, None))
-            self._capture_current_attempt(experiment, detach=False)
-            return experiment
-        experiment.phase = "cross_validation"
-        points = experiment.fold_histories.setdefault(fold, [])
-        if map_value is not None:
-            seed = int(experiment.config.values["data"].get("seed", 42))
-            rng = np.random.default_rng(seed + fold * 104729 + epoch * 1009)
-            direction = -1.0 if fold % 2 else 1.0
-            map_value = max(0.0, min(1.0, map_value + direction * float(rng.uniform(0.01, 0.03))))
-        points.append(EpochMetrics(epoch, loss, map_value))
-        if map_value is not None:
-            n_folds = int(experiment.config.values["data"]["cv"]["n_folds"])
-            values = []
-            fold_losses = []
-            for fold_points in experiment.fold_histories.values():
-                match = next((p for p in reversed(fold_points) if p.epoch == epoch), None)
-                if match is not None:
-                    if match.map is not None:
-                        values.append(match.map)
-                    fold_losses.append(match.loss)
-            if len(values) == n_folds:
-                oof = EpochMetrics(
-                    epoch, sum(fold_losses) / len(fold_losses), sum(values) / n_folds
-                )
-                experiment.oof_history.append(oof)
-                experiment.history = experiment.oof_history
-                experiment.selected_epoch = max(
-                    experiment.oof_history, key=lambda p: p.map or 0
-                ).epoch
-        checkpoint_config = experiment.config.values["checkpoint"]
-        interval = max(1, int(checkpoint_config["save_every"]))
-        if (
-            fold is not None
-            and checkpoint_config.get("save_fold_models", True)
-            and epoch % interval == 0
-        ):
-            name = f"epoch_{epoch:03d}.pt"
-            if not any(item.name == name and item.fold == fold for item in experiment.checkpoints):
-                experiment.checkpoints.append(
-                    Checkpoint(name, epoch, map_value, self._now(), fold=fold)
-                )
-        self._capture_current_attempt(experiment, detach=False)
-        return experiment
-
     def finish_training(self, experiment_id: str, status: str = "completed") -> Experiment:
         """学習を完了・失敗・中断状態にする。"""
         experiment = self.get_experiment(experiment_id)
