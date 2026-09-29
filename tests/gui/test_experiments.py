@@ -31,6 +31,8 @@ def test_send_completed_experiment_transitions_with_candidate_parameters(shell, 
     assert received[-1][1]["action"] == "add_candidate"
     assert received[-1][1]["experiment_id"] == "exp_0042"
     assert received[-1][1]["checkpoint"] == "final.pt"
+    experiment = shell.ctx.backend.get_experiment("exp_0042")
+    assert received[-1][1]["attempt"] == len(experiment.runs)
 
 
 def test_compare_dialog_has_one_value_column_per_experiment(mock_backend):

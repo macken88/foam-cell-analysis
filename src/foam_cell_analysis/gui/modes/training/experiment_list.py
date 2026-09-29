@@ -48,9 +48,12 @@ from ...widgets.table import (
     mark_primary,
     setup_table,
 )
+from .cleanup_dialog import ArtifactCleanupDialog, cleanup_status_message
 from .dialogs import ExperimentCompareDialog, SendToCandidatesDialog, flatten_config
 
 RETRY_LABEL = "同じ設定でやり直す"
+CLEANUP_LABEL = "成果物を整理…"
+PRUNED_TEXT = "削除済み"
 RETRY_TIP = (
     "同じ実験の新しい試行として、同じ設定で最初から学習し直します。"
     "キューに追加して実行します（学習中のときはキューの末尾で順番を待ちます）。"
@@ -259,6 +262,8 @@ class ExperimentListPage(BasePage):
             self.action_map[key] = action
         self.action_map["delete"] = QAction("実験を削除…", self)
         self.action_map["delete"].triggered.connect(self.delete_selected)
+        self.action_map["cleanup"] = QAction(CLEANUP_LABEL, self)
+        self.action_map["cleanup"].triggered.connect(self.cleanup_selected)
         bind_button_action(self.retry_button, self.action_map["retry"])
         self.more_button.setMenu(self.more_menu)
         self.more_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
@@ -320,6 +325,7 @@ class ExperimentListPage(BasePage):
         for key in ("send", "compare", "copy", "queue_copy", "result", "edit"):
             menu.addAction(self.action_map[key])
         menu.addSeparator()
+        menu.addAction(self.action_map["cleanup"])
         menu.addAction(self.action_map["delete"])
 
     def menu_actions(self):
@@ -340,6 +346,7 @@ class ExperimentListPage(BasePage):
                 self.action_map["result"],
                 self.action_map["send"],
                 None,
+                self.action_map["cleanup"],
                 self.action_map["delete"],
             ],
             "view": [self.column_menu.menuAction(), self.experiment_filter_menu.menuAction()],
@@ -660,11 +667,13 @@ class ExperimentListPage(BasePage):
                 item.epoch,
             ),
         )
+        pruned = self._pruned_paths(experiment)
         for row, checkpoint in enumerate(checkpoints):
             fold_text = "最終" if checkpoint.name == "final.pt" else str(checkpoint.fold or "—")
+            is_pruned = self._checkpoint_path(checkpoint) in pruned
             values = [
                 fold_text,
-                checkpoint.name,
+                f"{checkpoint.name}（{PRUNED_TEXT}）" if is_pruned else checkpoint.name,
                 str(checkpoint.epoch),
                 format_score(checkpoint.map, 4),
                 format_datetime(checkpoint.saved_at),
@@ -676,6 +685,9 @@ class ExperimentListPage(BasePage):
                     item.setTextAlignment(
                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
                     )
+                if is_pruned:
+                    item.setForeground(QColor(Color.IDLE))
+                    item.setToolTip("成果物の整理で削除したファイルです。記録は残っています。")
                 self.checkpoint_table.setItem(row, col, item)
         self.run_table.setRowCount(len(experiment.runs))
         for row, run in enumerate(experiment.runs):
@@ -764,6 +776,13 @@ class ExperimentListPage(BasePage):
             else RETRY_TIP
         )
         self._update_delete_action(current)
+        targets = bool(selected) or current is not None
+        self.set_menu_action_enabled(self.action_map["cleanup"], targets)
+        self.action_map["cleanup"].setToolTip(
+            "記録は残したまま、選んだ実験の途中保存モデルなどの大きなファイルを削除します。"
+            if targets
+            else "整理する実験を選ぶかチェックしてください"
+        )
         self.action_map["edit"].setToolTip(
             "下書きの実験を 1 つ選ぶと編集できます"
             if current is None or current.status != "draft"
@@ -789,6 +808,54 @@ class ExperimentListPage(BasePage):
         self.action_map["queue_copy"].setToolTip(
             "複製する実験をチェックしてください" if not selected else ""
         )
+
+    def _pruned_paths(self, experiment: Experiment) -> set[str]:
+        """最新の試行で、成果物の整理により削除済みのファイル（run_dir 相対）を返す。"""
+        if not experiment.runs:
+            return set()
+        try:
+            return set(
+                self.ctx.backend.pruned_paths(experiment.experiment_id, experiment.runs[-1].attempt)
+            )
+        except (KeyError, ValueError, OSError):
+            return set()
+
+    @staticmethod
+    def _checkpoint_path(checkpoint) -> str:
+        """途中保存モデルの run_dir 相対パス（pruned.json の path と同じ形）。"""
+        if checkpoint.fold is None:
+            return f"checkpoints/{checkpoint.name}"
+        return f"checkpoints/fold_{checkpoint.fold}/{checkpoint.name}"
+
+    def _cleanup_targets(self) -> list[str]:
+        """整理の対象: チェックした実験。なければ選択中の実験。"""
+        checked = [item.experiment_id for item in self._checked_experiments()]
+        if checked:
+            return checked
+        current = self._current_experiment_id()
+        return [current] if current else []
+
+    def cleanup_selected(self) -> ArtifactCleanupDialog | None:
+        """選んだ実験の成果物を整理するダイアログを開く。"""
+        targets = self._cleanup_targets()
+        if not targets:
+            return None
+        try:
+            dialog = ArtifactCleanupDialog(self.ctx.backend, targets, self)
+        except (KeyError, ValueError, OSError):
+            QMessageBox.warning(
+                self,
+                "成果物を整理できません",
+                "対象の実験を読み込めませんでした。一覧を更新してから、もう一度選んでください。",
+            )
+            self.refresh()
+            return None
+        self._cleanup_dialog = dialog
+        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.result_value is not None:
+            self.ctx.status.show_message(cleanup_status_message(dialog.result_value))
+            self.refresh()
+            self._current_changed()
+        return dialog
 
     def _update_delete_action(self, current: Experiment | None) -> None:
         action = self.action_map["delete"]
@@ -821,7 +888,7 @@ class ExperimentListPage(BasePage):
         if key == "data.quality_filter":
             return quality_filter_label(str(value))
         if key == "checkpoint.best_metric" and value == "oof_instance_map":
-            return "OOF 平均適合率（AP）・最大"
+            return "OOF AP（Cellpose 方式）・最大"
         if key == "model.pretrained_weights":
             return {"coco": "COCO", "imagenet": "ImageNet"}.get(str(value), str(value))
         if key == "model.backbone":

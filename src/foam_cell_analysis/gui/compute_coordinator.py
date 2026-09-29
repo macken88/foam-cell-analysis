@@ -32,6 +32,8 @@ class ComputeCoordinator(QObject):
     - release: 終端処理（status.json の保存）が終わってから呼ぶ。
       ok=False は終端処理の保存に失敗したことを表し、次の待機要求を開始しない
       「停止中」になる。利用者が確認したら unblock() で再開する。
+    - block: 外部の理由（起動時の復旧で終了できなかったプロセスなど）で停止中にする。
+      unblock() では解除しない（アプリの再起動まで新しい処理を開始しない）。
     - 実行中の処理には割り込まない。
     """
 
@@ -42,6 +44,7 @@ class ComputeCoordinator(QObject):
         self._active: Ticket | None = None
         self._waiting: list[Ticket] = []
         self._blocked_error: str | None = None
+        self._external_block: str | None = None
         self._numbers = itertools.count(1)
         self._dispatching = False
 
@@ -49,8 +52,8 @@ class ComputeCoordinator(QObject):
 
     @property
     def is_busy(self) -> bool:
-        """占有中、または保存失敗で停止中なら True。"""
-        return self._active is not None or self._blocked_error is not None
+        """占有中、または停止中なら True。"""
+        return self._active is not None or self.is_blocked
 
     @property
     def active(self) -> Ticket | None:
@@ -72,15 +75,22 @@ class ComputeCoordinator(QObject):
 
     @property
     def is_blocked(self) -> bool:
-        """終端処理の保存に失敗し、次の要求を開始しない状態か。"""
-        return self._blocked_error is not None
+        """終端処理の保存失敗、または外部の理由で、次の要求を開始しない状態か。"""
+        return self._blocked_error is not None or self._external_block is not None
 
     @property
     def blocked_error(self) -> str | None:
-        return self._blocked_error
+        return self._external_block or self._blocked_error
+
+    @property
+    def external_block(self) -> str | None:
+        """block() で設定した停止の理由（画面向けの文）。なければ None。"""
+        return self._external_block
 
     def wait_message(self, owner: str | None = None) -> str | None:
         """owner の要求が待たされる理由を画面向けの文にする。待たないなら None。"""
+        if self._external_block is not None:
+            return self._external_block
         if self._blocked_error is not None:
             return (
                 "前の処理の終了状態を保存できなかったため、次の処理を開始していません: "
@@ -133,6 +143,14 @@ class ComputeCoordinator(QObject):
             self._waiting.remove(ticket)
         self.changed.emit()
 
+    def block(self, message: str) -> None:
+        """外部の理由で停止中にする。実行中の処理には割り込まない。
+
+        message は画面にそのまま出す文（利用者の言葉）。unblock() では解除しない。
+        """
+        self._external_block = message or "新しい処理を開始できない状態です"
+        self.changed.emit()
+
     def unblock(self) -> None:
         """保存失敗による停止を解除し、待機中の要求があれば開始する。"""
         if self._blocked_error is None:
@@ -154,7 +172,7 @@ class ComputeCoordinator(QObject):
         failure = None
         self._dispatching = True
         try:
-            while self._active is None and self._blocked_error is None and self._waiting:
+            while self._active is None and not self.is_blocked and self._waiting:
                 ticket = self._waiting.pop(0)
                 ticket.state = "active"
                 self._active = ticket

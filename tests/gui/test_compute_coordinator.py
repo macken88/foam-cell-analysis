@@ -85,3 +85,18 @@ def test_release_inside_start_moves_to_next_request(coordinator):
     coordinator.release(holder)
     assert started == ["x", "a", "b"]
     assert coordinator.active_label == "評価"
+
+
+def test_external_block_prevents_start_and_survives_unblock(coordinator):
+    """起動時の復旧で終了できないプロセスがあれば、新しい処理を開始しない。"""
+    started = []
+    coordinator.block("前回のプロセスが残っています")
+    coordinator.request("evaluation", "評価 RC-001", lambda: started.append("a"))
+    assert started == []
+    assert coordinator.is_blocked and coordinator.is_busy
+    assert coordinator.wait_message("evaluation") == "前回のプロセスが残っています"
+
+    # 評価・学習の開始操作で呼ばれる unblock() では解除しない
+    coordinator.unblock()
+    assert started == []
+    assert coordinator.external_block == "前回のプロセスが残っています"

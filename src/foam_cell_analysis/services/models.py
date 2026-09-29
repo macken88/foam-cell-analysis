@@ -405,6 +405,8 @@ class ReleasedModel:
     oof_evaluation: Evaluation | None = None
     comment: str = ""
     source_attempt_number: int = 1
+    model_type: str = ""
+    inference_config_id: str = ""
 
 
 @dataclass

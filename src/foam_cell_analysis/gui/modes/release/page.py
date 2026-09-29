@@ -1,5 +1,7 @@
 """リリース済みモデルと分類振り分けを管理する画面。"""
 
+import logging
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import (
@@ -11,6 +13,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QMenu,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -33,6 +36,13 @@ from ...widgets.table import (
     mark_primary,
     restore_row_selection,
     setup_table,
+)
+
+logger = logging.getLogger(__name__)
+
+ROUTING_CONFLICT_TEXT = "振り分けが別の操作で変更されました。画面を開き直してください"
+ROUTING_FAILED_TEXT = (
+    "振り分けを適用できませんでした。画面を開き直してから、もう一度適用してください。"
 )
 
 
@@ -69,8 +79,6 @@ class RoutingChangesDialog(QDialog):
 class ReleasedModelsPage(BasePage):
     """リリース済みモデルの参照と振り分けを行う。"""
 
-    classifications = ("分類A", "分類B", "分類C")
-
     def __init__(self, ctx, parent=None, *, show_heading: bool = True) -> None:
         super().__init__(
             ctx,
@@ -80,7 +88,6 @@ class ReleasedModelsPage(BasePage):
             show_heading=show_heading,
         )
         splitter = QSplitter(Qt.Orientation.Vertical)
-        upper = QSplitter(Qt.Orientation.Horizontal)
         self.model_table = QTableWidget(0, 12)
         self.model_table.setHorizontalHeaderLabels(
             [
@@ -89,10 +96,10 @@ class ReleasedModelsPage(BasePage):
                 "候補",
                 "実験",
                 "途中保存モデル",
-                "推論設定",
                 "検証用データセット",
-                "検証用 mAP",
-                "OOF mAP",
+                "検証 AP",
+                "OOF AP",
+                "推論設定",
                 "リリース日時",
                 "割り当て中の分類",
                 "コメント",
@@ -105,7 +112,6 @@ class ReleasedModelsPage(BasePage):
             selection_mode=QTableWidget.SelectionMode.ExtendedSelection,
         )
         self.model_table.itemSelectionChanged.connect(self._show_model_detail)
-        upper.addWidget(self.model_table)
 
         lower = QWidget()
         lower_layout = QVBoxLayout(lower)
@@ -125,8 +131,8 @@ class ReleasedModelsPage(BasePage):
         self.detail_values: dict[str, QLabel] = {}
         for label in (
             "実験・途中保存モデル",
-            "評価 mAP",
-            "OOF mAP",
+            "検証 AP",
+            "OOF AP",
             "推論設定",
             "検証用データセット",
             "リリース日時",
@@ -142,9 +148,13 @@ class ReleasedModelsPage(BasePage):
         bind_button_action(self.detail_button, self.release_actions["detail"])
         self.detail_button.hide()
         self.new_release_button.hide()
-        upper.addWidget(self.detail)
-        upper.setSizes([680, 330])
-        splitter.addWidget(upper)
+        # 複数行の値（分類別 AP・推論設定）が詰まって重ならないよう、詳細はスクロールで見せる
+        self.detail_scroll = QScrollArea()
+        self.detail_scroll.setWidgetResizable(True)
+        self.detail_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.detail_scroll.setWidget(self.detail)
+        self.detail_scroll.setMinimumHeight(230)
+        splitter.addWidget(self.model_table)
 
         routing_section = FormSection("モデル振り分け")
         routing_section.form.setFieldGrowthPolicy(
@@ -162,7 +172,11 @@ class ReleasedModelsPage(BasePage):
         self.routing_table.setColumnWidth(0, 110)
         self.routing_table.setColumnWidth(1, 190)
         routing_section.form.addRow(self.routing_table)
-        lower_layout.addWidget(routing_section)
+        # 振り分けと選択モデルの詳細を横に並べ、一覧の表は横幅いっぱいに使う
+        middle = QHBoxLayout()
+        middle.addWidget(routing_section, 0, Qt.AlignmentFlag.AlignTop)
+        middle.addWidget(self.detail_scroll, 1)
+        lower_layout.addLayout(middle)
         note = QLabel("新しいリリース済みモデルを登録しても、自動では切り替わりません")
         set_style(note, role="note")
         actions = QHBoxLayout()
@@ -206,6 +220,10 @@ class ReleasedModelsPage(BasePage):
         self.content_layout.addWidget(self.scroll_area)
         self._models = {}
         self._baseline: dict[str, str | None] = {}
+        self._classifications: list[str] = []
+        self._assignments: dict[str, str | None] = {}
+        # 画面に読み込んだ振り分けの revision。適用時に expected_revision として渡す（14 章）
+        self._revision: int | None = None
         self._routing_controls: dict[str, QComboBox] = {}
         self._rendering = False
         self.routing_table.setColumnCount(3)
@@ -226,9 +244,7 @@ class ReleasedModelsPage(BasePage):
 
     def on_enter(self, params: dict) -> None:
         """最新モデル・振り分け・履歴を読み直す。"""
-        self._load_models()
-        self._load_routing()
-        self._load_history()
+        self._reload()
         selected = params.get("select")
         if selected in self._models:
             self.select_model(str(selected))
@@ -236,18 +252,29 @@ class ReleasedModelsPage(BasePage):
             self.select_model(next(iter(self._models)))
 
     def refresh_on_activate(self) -> None:
-        """一覧を読み直し、選択中のリリースモデルを保つ。"""
-        pending_changes = self._pending_changes()
+        """一覧を読み直し、選択中のリリースモデルを保つ。
+
+        未適用の変更があるときは、読み込み時の振り分けと revision を保つ。別の操作で
+        振り分けが変わっていれば、適用時に衝突として知らせる。
+        """
+        if self._pending_changes():
+            self._load_models()
+            self._load_history()
+            return
+        self._reload()
+
+    def _reload(self) -> None:
+        """振り分けの現在値・revision・分類を読み直し、全体を描き直す。"""
+        self._read_routing_state()
         self._load_models()
         self._load_routing()
         self._load_history()
-        for classification, model_id in pending_changes.items():
-            control = self._routing_controls.get(classification)
-            if control:
-                index = control.findData(model_id)
-                if index >= 0:
-                    control.setCurrentIndex(index)
-        self._update_routing_rows()
+
+    def _read_routing_state(self) -> None:
+        state = self.ctx.backend.get_routing_state()
+        self._revision = state.revision
+        self._assignments = dict(state.assignments)
+        self._classifications = list(self.ctx.backend.list_routing_classifications())
 
     def _load_models(self) -> None:
         current_row = self.model_table.currentRow()
@@ -264,7 +291,7 @@ class ReleasedModelsPage(BasePage):
         scroll_value = self.model_table.verticalScrollBar().value()
         self._models = {model.model_id: model for model in self.ctx.backend.list_released_models()}
         assignments: dict[str, list[str]] = {model_id: [] for model_id in self._models}
-        for classification, model_id in self.ctx.backend.get_routing().items():
+        for classification, model_id in self._assignments.items():
             if model_id in assignments:
                 assignments[model_id].append(classification)
         self.model_table.setRowCount(len(self._models))
@@ -274,18 +301,16 @@ class ReleasedModelsPage(BasePage):
         self.model_table.setMinimumHeight(table_height)
         self.model_table.setMaximumHeight(min(table_height, 190))
         for row, model in enumerate(self._models.values()):
-            candidate = self.ctx.backend.get_candidate(model.candidate_id)
-            experiment = self.ctx.backend.get_experiment(model.experiment_id)
             values = (
                 model.model_id,
-                model_type_label(experiment.model_type),
+                model_type_label(model.model_type) if model.model_type else "—",
                 model.candidate_id,
                 model.experiment_id,
                 model.checkpoint,
-                candidate.inference_config_id,
                 model.validation_dataset,
                 format_score(model.evaluation_result.overall_map),
                 format_score(model.oof_evaluation.overall_map) if model.oof_evaluation else "—",
+                model.inference_config_id or "—",
                 format_datetime(model.released_at),
                 ", ".join(assignments[model.model_id]) or "なし",
                 model.comment,
@@ -324,7 +349,6 @@ class ReleasedModelsPage(BasePage):
         model = self._models.get(model_id)
         if model is None:
             return
-        candidate = self.ctx.backend.get_candidate(model.candidate_id)
         evaluation = model.evaluation_result
         per_class = "、".join(
             f"{classification} {format_score(score)}"
@@ -334,12 +358,12 @@ class ReleasedModelsPage(BasePage):
             "実験・途中保存モデル": (
                 f"{model.experiment_id} ・ 試行 {model.source_attempt_number}/{model.checkpoint}"
             ),
-            "評価 mAP": f"全体 {format_score(evaluation.overall_map)}"
+            "検証 AP": f"全体 {format_score(evaluation.overall_map)}"
             + (f"\n{per_class}" if per_class else ""),
-            "OOF mAP": format_score(model.oof_evaluation.overall_map)
+            "OOF AP": format_score(model.oof_evaluation.overall_map)
             if model.oof_evaluation
             else "—",
-            "推論設定": candidate.inference_config_id,
+            "推論設定": self._inference_summary(model.inference_config),
             "検証用データセット": model.validation_dataset,
             "リリース日時": format_datetime(model.released_at),
             "コメント": model.comment or "なし",
@@ -347,7 +371,6 @@ class ReleasedModelsPage(BasePage):
         for label, text in summary.items():
             widget = self.detail_values[label]
             widget.setText(text)
-            widget.setFont(numeric_font())
         self._selected_model = model
         self.new_release_button.setEnabled(True)
         self.detail_button.setEnabled(True)
@@ -361,22 +384,16 @@ class ReleasedModelsPage(BasePage):
         if not hasattr(self, "_selected_model"):
             return
         model = self._selected_model
-        candidate = self.ctx.backend.get_candidate(model.candidate_id)
         rows = [
             ("モデルID", model.model_id),
-            ("候補ID", candidate.candidate_id),
+            ("モデル", model_type_label(model.model_type) if model.model_type else "—"),
+            ("候補ID", model.candidate_id),
             ("実験識別子", model.experiment_id),
             ("途中保存モデル", f"試行 {model.source_attempt_number}/{model.checkpoint}"),
-            ("推論設定ID", candidate.inference_config_id),
             ("検証用データセット", model.validation_dataset),
             (
-                "OOF mAP",
+                "OOF AP",
                 format_score(model.oof_evaluation.overall_map) if model.oof_evaluation else "—",
-            ),
-            (
-                "OOF 実験・試行・選択エポック",
-                f"{candidate.oof_experiment_id} ・ 試行 {model.source_attempt_number} ・ "
-                f"{candidate.oof_epoch}",
             ),
             ("リリース日時", format_datetime(model.released_at)),
             ("コメント", model.comment or "なし"),
@@ -384,9 +401,9 @@ class ReleasedModelsPage(BasePage):
         rows.extend(self._flatten_detail("前処理設定", model.preprocessing_config))
         rows.extend(self._flatten_detail("推論設定", model.inference_config))
         evaluation = model.evaluation_result
-        rows.append(("評価結果 / 全体 mAP", format_score(evaluation.overall_map)))
+        rows.append(("評価結果 / 全体 AP", format_score(evaluation.overall_map)))
         rows.extend(
-            (f"評価結果 / {classification} mAP", format_score(score))
+            (f"評価結果 / {classification} AP", format_score(score))
             for classification, (score, _count) in evaluation.per_class.items()
         )
         rows.extend(
@@ -394,9 +411,9 @@ class ReleasedModelsPage(BasePage):
             for classification, (_score, count) in evaluation.per_class.items()
         )
         if model.oof_evaluation:
-            rows.append(("OOF / 全体 mAP", format_score(model.oof_evaluation.overall_map)))
+            rows.append(("OOF / 全体 AP", format_score(model.oof_evaluation.overall_map)))
             rows.extend(
-                (f"OOF / {classification} mAP", format_score(score))
+                (f"OOF / {classification} AP", format_score(score))
                 for classification, (score, _count) in model.oof_evaluation.per_class.items()
             )
             rows.extend(
@@ -466,12 +483,18 @@ class ReleasedModelsPage(BasePage):
                 str(value), str(value)
             )
         if key.endswith(".best_metric") and value == "oof_instance_map":
-            return "OOF 平均適合率（mAP）・最大"
+            return "OOF AP（Cellpose 方式）・最大"
         if value in {"good_only", "good_and_acceptable", "all"}:
             return {"good_only": "良のみ", "good_and_acceptable": "良・可", "all": "すべて"}[
                 str(value)
             ]
         return str(value)
+
+    @classmethod
+    def _inference_summary(cls, params: dict) -> str:
+        """推論設定を「検出スコア閾値 0.5」の形で 1 行ずつ並べる。"""
+        rows = cls._flatten_detail("", params or {})
+        return "\n".join(f"{label.removeprefix(' / ')} {value}" for label, value in rows) or "—"
 
     def select_model(self, model_id: str) -> bool:
         """モデルIDの行を選択する。"""
@@ -494,13 +517,12 @@ class ReleasedModelsPage(BasePage):
         )
 
     def _load_routing(self) -> None:
-        routing = self.ctx.backend.get_routing()
-        self._baseline = {key: routing.get(key) for key in self.classifications}
+        self._baseline = {key: self._assignments.get(key) for key in self._classifications}
         self._routing_controls.clear()
-        self.routing_table.setRowCount(len(self.classifications))
+        self.routing_table.setRowCount(len(self._classifications))
         self._rendering = True
         try:
-            for row, classification in enumerate(self.classifications):
+            for row, classification in enumerate(self._classifications):
                 self.routing_table.setItem(row, 0, QTableWidgetItem(classification))
                 current = self._baseline[classification]
                 current_item = QTableWidgetItem(current or "未割り当て")
@@ -513,6 +535,9 @@ class ReleasedModelsPage(BasePage):
                 combo.addItem("未割り当て", None)
                 for model_id in self._models:
                     combo.addItem(model_id, model_id)
+                if current is not None and combo.findData(current) < 0:
+                    # 読めないリリースに割り当てられている分類も、今の値を残して表示する
+                    combo.addItem(f"{current}（読み込めません）", current)
                 combo.setCurrentIndex(combo.findData(current))
                 combo.currentIndexChanged.connect(lambda _index: self._update_routing_rows())
                 self._routing_controls[classification] = combo
@@ -536,7 +561,7 @@ class ReleasedModelsPage(BasePage):
 
     def _update_routing_rows(self) -> None:
         changes = self._pending_changes()
-        for row, classification in enumerate(self.classifications):
+        for row, classification in enumerate(self._classifications):
             changed = classification in changes
             color = Color.CHANGED if changed else Color.SLIDE
             for column in (0, 1):
@@ -562,21 +587,36 @@ class ReleasedModelsPage(BasePage):
         pending = self._pending_changes()
         return [
             (classification, self._baseline[classification], pending[classification])
-            for classification in self.classifications
+            for classification in self._classifications
             if classification in pending
         ]
 
-    def apply_pending_changes(self) -> list:
-        """現在の振り分け変更をBackendへ適用して画面を更新する。"""
+    def apply_pending_changes(self) -> int:
+        """読み込み時の revision を付けて振り分け変更を適用し、適用した件数を返す。
+
+        別の操作で振り分けが変わっていたときは何も変えずに知らせ、画面を読み直す。
+        """
         changes = self._pending_changes()
         if not changes:
-            return []
-        records = self.ctx.backend.apply_routing(changes)
-        self._baseline.update(changes)
-        self._load_models()
-        self._load_routing()
-        self._load_history()
-        return records
+            return 0
+        try:
+            self.ctx.backend.apply_routing(changes, expected_revision=self._revision)
+        except (ValueError, KeyError, OSError):
+            logger.exception("振り分けを適用できません")
+            try:
+                current = self.ctx.backend.get_routing_state().revision
+            except (ValueError, KeyError, OSError):
+                current = None
+            conflict = current is not None and current != self._revision
+            QMessageBox.warning(
+                self,
+                "振り分けを適用できません",
+                ROUTING_CONFLICT_TEXT if conflict else ROUTING_FAILED_TEXT,
+            )
+            self._reload()
+            return 0
+        self._reload()
+        return len(changes)
 
     def _confirm_apply(self) -> None:
         changes = self.build_change_rows()
@@ -584,13 +624,13 @@ class ReleasedModelsPage(BasePage):
             return
         dialog = RoutingChangesDialog(changes, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            records = self.apply_pending_changes()
-            if records:
-                self.ctx.status.show_message(f"振り分けを{len(records)}件適用しました。")
+            count = self.apply_pending_changes()
+            if count:
+                self.ctx.status.show_message(f"振り分けを{count}件適用しました。")
 
     def discard_changes(self) -> None:
-        """未適用の変更を読み込み時の状態に戻す。"""
-        self._load_routing()
+        """未適用の変更を捨て、振り分けを読み直す。"""
+        self._reload()
 
     def _load_history(self) -> None:
         history = self.ctx.backend.list_routing_history()

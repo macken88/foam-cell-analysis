@@ -17,6 +17,11 @@ from .gui.window_manager import WindowManager
 from .services.hybrid_backend import HybridBackend
 from .services.mock.backend import MockBackend
 
+RECOVERY_BLOCK_MESSAGE = (
+    "前回の学習・評価のプロセスが残っているため、新しい学習・評価を開始できません。"
+    "タスクマネージャーで終了してから、アプリを再起動してください。"
+)
+
 
 def install_translations(app: QApplication) -> None:
     """Qt 標準の日本語翻訳があればアプリへ登録する。"""
@@ -42,6 +47,7 @@ def main() -> int:
     app = QApplication.instance() or QApplication([sys.argv[0], *qt_args])
     workspace = Path(__file__).resolve().parents[2] / "workspace"
     lock = None
+    blockers: list[str] = []
     if backend_name == "hybrid":
         workspace.mkdir(parents=True, exist_ok=True)
         lock = QLockFile(str(workspace / ".app.lock"))
@@ -70,6 +76,9 @@ def main() -> int:
     navigator = Navigator()
     context = AppContext(backend=backend, navigator=navigator, jobs=jobs, status=StatusBus())
     context.workspace_lock = lock
+    if blockers:
+        # 前回のプロセスが残っている間は、新しい学習・評価を開始しない（比較・推論設計 15.1）
+        context.compute.block(RECOVERY_BLOCK_MESSAGE)
     install_translations(app)
     apply_style(app)
     manager = WindowManager(context)

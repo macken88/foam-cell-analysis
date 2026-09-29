@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import math
-import re
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Any, ClassVar
@@ -18,7 +17,6 @@ from ..models import (
     ArtifactGroup,
     AugmentationProfile,
     Candidate,
-    CandidateSnapshot,
     Checkpoint,
     CheckResult,
     DataItem,
@@ -49,7 +47,6 @@ from ..models import (
 )
 from .synthetic import make_sample, make_thumbnail, predict_like
 
-_EVALUATION_ID = re.compile(r"eval_\d{3,}")
 _MIB = 1024 * 1024
 # 成果物の整理（比較・評価設計 19 章）の模擬: 種類 → (ファイル数, 1 ファイルの大きさ, 相対パスの例)
 _MOCK_ARTIFACTS: dict[str, tuple[int, int, str]] = {
@@ -395,7 +392,7 @@ class MockBackend:
 
     @staticmethod
     def _make_history(expid: str, epochs: int, status: str) -> list[EpochMetrics]:
-        """減少損失と飽和傾向 mAP を持つ学習曲線を生成する。"""
+        """減少損失と飽和傾向の AP を持つ学習曲線を生成する。"""
         if status == "draft":
             return []
         count = 100 if status == "completed" else epochs
@@ -414,7 +411,7 @@ class MockBackend:
 
     @staticmethod
     def _map_at(history: list[EpochMetrics], epoch: int) -> float | None:
-        """指定エポックの直近 mAP を返す。"""
+        """指定エポックの直近 AP を返す。"""
         return next((metric.map for metric in reversed(history) if metric.epoch == epoch), None)
 
     def _seed_inference_configs(self) -> None:
@@ -488,6 +485,15 @@ class MockBackend:
             oof_epoch=exp42.selected_epoch,
         )
         for candidate in self.candidates.values():
+            # 学習時の評価条件（既定の推論設定）と同じなら OOF AP を比べられる
+            model_type = self.inference_configs[candidate.inference_config_id].model_type
+            params = self.inference_configs[candidate.inference_config_id].params
+            defaults = self.default_inference_params(model_type)
+            if all(params.get(key) == value for key, value in defaults.items()):
+                candidate.oof_applicability = "matching"
+            else:
+                candidate.oof_applicability = "different"
+                candidate.oof_reason = "推論設定が学習時と異なります"
             source = self.experiments[candidate.experiment_id]
             candidate.source_attempt_number = len(source.runs)
             candidate.checkpoint_reference = (
@@ -513,7 +519,11 @@ class MockBackend:
                 oof_evaluation=copy.deepcopy(candidate.oof_evaluation),
                 released_at=now - timedelta(days=30 if model_id == "model_007" else 8),
                 source_attempt_number=candidate.source_attempt_number,
+                model_type=inference.model_type,
+                inference_config_id=inference.config_id,
             )
+            candidate.status = "released"
+            candidate.released_model_id = model_id
         self.routing.update({"分類A": "model_007", "分類B": "model_012", "分類C": "model_007"})
 
     def _sync_profile_usage(self) -> None:
@@ -1139,22 +1149,15 @@ class MockBackend:
         )
         return self.get_item_mask(purpose, item_id, revision)
 
-    def get_candidate_prediction(self, candidate_id: str, *args: str) -> np.ndarray:
-        """候補別に決定的な予測ラベルを返す。(candidate_id, evaluation_id, item_id)。
-
-        旧形式 (candidate_id, item_id) も受け付ける。段階 D2 で旧形式を削除。
-        """
+    def get_candidate_prediction(
+        self, candidate_id: str, evaluation_id: str, item_id: str
+    ) -> np.ndarray:
+        """候補別に決定的な予測ラベルを返す。"""
         if candidate_id not in self.candidates:
             raise KeyError(candidate_id)
-        if len(args) == 2:
-            evaluation_id, item_id = args
-            record = self._find_evaluation(candidate_id, evaluation_id)
-            if record.status != "completed":
-                raise ValueError("完了した評価の予測だけ表示できます")
-        elif len(args) == 1:
-            item_id = args[0]
-        else:
-            raise TypeError("get_candidate_prediction の引数が不正です")
+        record = self._find_evaluation(candidate_id, evaluation_id)
+        if record.status != "completed":
+            raise ValueError("完了した評価の予測だけ表示できます")
         _, labels = make_sample(self._get_item("val", item_id).seed, channels=("A",))
         return predict_like(
             labels, self._seed_number(candidate_id) + self._get_item("val", item_id).seed
@@ -2101,21 +2104,14 @@ class MockBackend:
     def add_candidate(
         self,
         experiment_id: str,
-        attempt: int | str,
+        attempt: int,
         inference_config_id: str,
         comment: str = "",
     ) -> Candidate:
-        """試行を明示して比較候補を追加する（5.3）。
-
-        旧形式（attempt の位置に "final.pt"）は最新の試行を使う。段階 D2 で旧形式を削除。
-        """
+        """試行を明示して比較候補を追加する（5.3）。"""
         experiment = self.get_experiment(experiment_id)
         if experiment.status != "completed":
             raise ValueError("完了した実験のみ候補に追加できます")
-        if isinstance(attempt, str):
-            if attempt != "final.pt":
-                raise ValueError("比較候補には最終学習モデルのみ指定できます")
-            attempt = len(experiment.runs)
         if not 1 <= attempt <= len(experiment.runs):
             raise ValueError(f"試行 {attempt} がありません")
         if not any(item.name == "final.pt" for item in experiment.checkpoints):
@@ -2146,50 +2142,6 @@ class MockBackend:
             source_attempt_number=attempt,
             checkpoint_reference=f"試行 {attempt}/final.pt",
             oof_applicability="matching",
-        )
-        self.candidates[candidate.candidate_id] = candidate
-        return candidate
-
-    def add_candidate_from_snapshot(
-        self, snapshot: CandidateSnapshot, inference_config_id: str, comment: str = ""
-    ) -> Candidate:
-        """実測 OOF と実験設定を保持したスナップショットを比較候補へ加える。
-
-        旧 API（Backend 契約からは外した）。段階 D2 で削除する。
-        """
-        inference = self.inference_configs.get(inference_config_id)
-        model_config = snapshot.experiment_config.get("model", {})
-        model_type = model_config.get("type")
-        if inference is None or inference.model_type != model_type:
-            raise ValueError("実験のモデル種類に合う推論設定を選択してください")
-        if not snapshot.checkpoint_path or snapshot.checkpoint_path.startswith(("/", "\\")):
-            raise ValueError("候補のチェックポイント参照が不正です")
-        if any(
-            candidate.experiment_id == snapshot.experiment_id
-            and candidate.source_attempt_number == snapshot.attempt
-            and candidate.inference_config_id == inference_config_id
-            for candidate in self.candidates.values()
-        ):
-            raise ValueError("この試行と推論設定の候補は登録済みです")
-        raw_oof = copy.deepcopy(snapshot.oof_evaluation)
-        per_class = {
-            str(name): (float(values[0]), int(values[1]))
-            for name, values in raw_oof.get("per_class", {}).items()
-        }
-        evaluation = Evaluation(float(raw_oof["ap"]), per_class)
-        number = max((int(key[-3:]) for key in self.candidates), default=0) + 1
-        candidate = Candidate(
-            candidate_id=f"RC-{number:03d}",
-            experiment_id=snapshot.experiment_id,
-            checkpoint="final.pt",
-            inference_config_id=inference_config_id,
-            oof_evaluation=evaluation,
-            oof_experiment_id=snapshot.experiment_id,
-            oof_epoch=snapshot.selected_epoch,
-            comment=comment,
-            source_attempt_number=snapshot.attempt,
-            checkpoint_reference=f"試行 {snapshot.attempt}/final.pt",
-            snapshot=copy.deepcopy(snapshot),
         )
         self.candidates[candidate.candidate_id] = candidate
         return candidate
@@ -2419,35 +2371,6 @@ class MockBackend:
                 return base
         return versions[-1]
 
-    def start_evaluation(
-        self, candidate_ids: list[str], validation_version: str
-    ) -> list[Candidate]:
-        """評価対象候補を評価中状態にする。
-
-        旧 API（Backend 契約からは外した）。段階 D2 で EvaluationRunner に置き換えて削除する。
-        """
-        candidates = [self.candidates[candidate_id] for candidate_id in candidate_ids]
-        for candidate in candidates:
-            if candidate.status not in {"candidate", "evaluating"}:
-                raise ValueError("候補状態のモデルのみ評価できます")
-            candidate.status = "evaluating"
-        return candidates
-
-    def evaluate_candidate(
-        self, candidate_id: str, validation_version: str = "val_v003"
-    ) -> Evaluation:
-        """全体・分類別評価値を記録して候補状態へ戻す。
-
-        旧 API（Backend 契約からは外した）。段階 D2 で EvaluationRunner に置き換えて削除する。
-        """
-        candidate = self.candidates[candidate_id]
-        items = self._items_for_version(validation_version)
-        evaluation = self._evaluation_for_items(self._mock_score(candidate_id), items)
-        candidate.evaluations[validation_version] = evaluation
-        candidate.status = "candidate"
-        self._add_completed_evaluation(candidate_id, validation_version, evaluation)
-        return evaluation
-
     # ---- 外部解析（9.4） ----
 
     def list_external_results(self, candidate_id: str) -> list[dict[str, Any]]:
@@ -2459,38 +2382,24 @@ class MockBackend:
     def save_external_results(
         self,
         candidate_id: str,
-        evaluation_id: Any,
-        results: Any = None,
-        *args: Any,
+        evaluation_id: str,
+        results: list[ExternalResult | dict[str, Any]],
+        *,
         software: str = "",
         software_version: str = "",
         analyzed_on: str = "",
         scope: str = "全体",
         export_id: str | None = None,
         comment: str | None = None,
-        date: str = "",
     ) -> Candidate:
-        """外部解析値を評価 ID 付きで保存する。
-
-        旧形式 (candidate_id, results, software, date, comment) も受け付ける。
-        段階 D2 で旧形式を削除。
-        """
+        """外部解析値を評価 ID 付きで保存する。"""
         candidate = self.candidates[candidate_id]
-        if isinstance(evaluation_id, list):
-            old = [results, *args]
-            software = old[0] if len(old) > 0 and old[0] is not None else software
-            analyzed_on = old[1] if len(old) > 1 else date
-            comment = old[2] if len(old) > 2 else comment
-            results, evaluation_id = evaluation_id, None
-        else:
-            if args:
-                raise TypeError("save_external_results の追加項目はキーワードで指定してください")
-            if candidate.status == "released":
-                raise ValueError("リリース済みの候補の外部解析結果は変更できません")
-            self._find_evaluation(candidate_id, evaluation_id)
+        if candidate.status == "released":
+            raise ValueError("リリース済みの候補の外部解析結果は変更できません")
+        self._find_evaluation(candidate_id, evaluation_id)
         values = [
             result if isinstance(result, ExternalResult) else ExternalResult(**result)
-            for result in results or []
+            for result in results
         ]
         records = self.external_records.setdefault(candidate_id, [])
         records.append(
@@ -2567,29 +2476,17 @@ class MockBackend:
     def release_candidate(
         self,
         candidate_id: str,
-        evaluation_id: str = "",
+        evaluation_id: str,
         comment: str = "",
-        validation_version: str | None = None,
     ) -> ReleasedModel:
-        """指定した評価で候補を変更不可のリリースとして登録する（13.1）。
-
-        旧形式 (candidate_id, comment, validation_version) も受け付ける。段階 D2 で旧形式を削除。
-        """
+        """指定した評価で候補を変更不可のリリースとして登録する（13.1）。"""
         candidate = self.candidates[candidate_id]
-        if _EVALUATION_ID.fullmatch(str(evaluation_id or "")):
-            record = self._find_evaluation(candidate_id, evaluation_id)
-            if record.status != "completed" or record.evaluation is None:
-                raise ValueError("完了した評価でだけリリースできます")
-            if record.contamination.get("status") == "found":
-                raise ValueError(
-                    "学習データと同じ画像が検証用データセットにあるためリリースできません"
-                )
-            version, evaluation = record.validation_version, record.evaluation
-        else:
-            comment, version = evaluation_id, comment or validation_version or "val_v003"
-            if version not in candidate.evaluations:
-                raise ValueError("評価済み候補のみリリースできます")
-            evaluation = candidate.evaluations[version]
+        record = self._find_evaluation(candidate_id, evaluation_id)
+        if record.status != "completed" or record.evaluation is None:
+            raise ValueError("完了した評価でだけリリースできます")
+        if record.contamination.get("status") == "found":
+            raise ValueError("学習データと同じ画像が検証用データセットにあるためリリースできません")
+        version, evaluation = record.validation_version, record.evaluation
         if candidate.status != "candidate":
             raise ValueError("候補状態のモデルだけリリースできます")
         if self._is_evaluation_active(candidate_id):
@@ -2617,6 +2514,8 @@ class MockBackend:
             released_at=self._now(),
             comment=comment or candidate.comment,
             source_attempt_number=candidate.source_attempt_number,
+            model_type=inference.model_type,
+            inference_config_id=inference.config_id,
         )
         self.released[model.model_id] = model
         candidate.status = "released"
@@ -2664,13 +2563,10 @@ class MockBackend:
         return sorted(names)
 
     def apply_routing(
-        self, changes: dict[str, str | None], *, expected_revision: int | None = None
-    ) -> RoutingState | list[RoutingHistory]:
-        """全変更を検証してから一括で適用する（14 章）。
-
-        expected_revision を省いた旧形式は変更履歴の一覧を返す。段階 D2 で旧形式を削除。
-        """
-        if expected_revision is not None and expected_revision != self.routing_revision:
+        self, changes: dict[str, str | None], *, expected_revision: int
+    ) -> RoutingState:
+        """全変更を検証してから一括で適用する（14 章）。"""
+        if expected_revision != self.routing_revision:
             raise ValueError("振り分けが別の操作で変更されました。画面を開き直してください")
         classifications = set(self.list_routing_classifications())
         errors = []
@@ -2690,8 +2586,6 @@ class MockBackend:
         if records:
             self.routing_revision += 1
         self.routing_history.extend(records)
-        if expected_revision is None:
-            return records
         return self.get_routing_state()
 
     def list_routing_history(self) -> list[RoutingHistory]:

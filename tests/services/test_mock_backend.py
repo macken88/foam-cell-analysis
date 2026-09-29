@@ -85,19 +85,47 @@ def test_validation_then_finalize_creates_version():
     assert ds.state == "WORKING"
 
 
+def _evaluate(backend: MockBackend, candidate_id: str, version: str) -> str:
+    """評価を 1 回分、模擬の評価イベントで完了させて評価 ID を返す。"""
+    prepared = backend.prepare_evaluation_run(candidate_id, version)
+    evaluation_id = prepared.run_id.rsplit("/", 1)[1]
+    event = {"v": 1, "run_id": prepared.run_id, "seq": 1, "time": 0, "type": "completed"}
+    backend.apply_evaluation_event(candidate_id, evaluation_id, event)
+    outcome = backend.conclude_evaluation_run(candidate_id, evaluation_id)
+    assert outcome.status == "completed"
+    return evaluation_id
+
+
 def test_candidate_duplicate_and_release():
     backend = MockBackend()
-    with pytest.raises(ValueError):
-        backend.add_candidate("exp_0042", "final.pt", "infer_v005")
-    backend.evaluate_candidate("RC-003")
-    model = backend.release_candidate("RC-003")
+    with pytest.raises(ValueError, match="登録済み"):
+        backend.add_candidate("exp_0042", 1, "infer_v005")
+    evaluation_id = _evaluate(backend, "RC-003", "val_v003")
+    model = backend.release_candidate("RC-003", evaluation_id)
     assert model.model_id.startswith("model_")
+    assert (model.model_type, model.inference_config_id) == ("mask_rcnn", "infer_v007")
     assert backend.resolve_model("分類A").model_id == "model_007"
+
+
+def test_seeded_candidates_match_releases_and_oof_applicability():
+    backend = MockBackend()
+    released = {model.candidate_id: model for model in backend.list_released_models()}
+    for candidate_id, model in released.items():
+        candidate = backend.get_candidate(candidate_id)
+        assert candidate.status == "released"
+        assert candidate.released_model_id == model.model_id
+        assert model.inference_config_id == candidate.inference_config_id
+    assert backend.get_candidate("RC-003").status == "candidate"
+    matching = backend.get_candidate("RC-002")
+    assert matching.oof_applicability == "matching"
+    different = backend.get_candidate("RC-001")
+    assert different.oof_applicability == "different"
+    assert different.oof_reason == "推論設定が学習時と異なります"
 
 
 def test_routing_updates_and_history():
     backend = MockBackend()
-    backend.apply_routing({"分類A": "model_012"})
+    backend.apply_routing({"分類A": "model_012"}, expected_revision=backend.routing_revision)
     assert backend.resolve_model("分類A").model_id == "model_012"
     assert backend.list_routing_history()[-1].before_model_id == "model_007"
 
@@ -111,10 +139,7 @@ def test_protocol_and_mock_backend_methods_match():
     backend_methods = {
         name for name, method in getmembers(MockBackend, isfunction) if not name.startswith("_")
     }
-    # 旧 GUI のために MockBackend にだけ残す旧 API（段階 D2 で削除する）
-    deprecated_until_d2 = {"start_evaluation", "evaluate_candidate", "add_candidate_from_snapshot"}
-    assert protocol_methods == backend_methods - deprecated_until_d2
-    assert deprecated_until_d2 <= backend_methods
+    assert protocol_methods == backend_methods
 
 
 def test_seed_experiments_checkpoints_and_references_are_consistent():
@@ -198,10 +223,9 @@ def test_inclusion_change_state_restores_added_and_original_changes():
 
 def test_evaluation_can_be_started_and_completed():
     backend = MockBackend()
-    backend.start_evaluation(["RC-003"], "val_v002")
-    assert backend.get_candidate("RC-003").status == "evaluating"
-    evaluation = backend.evaluate_candidate("RC-003", "val_v002")
+    _evaluate(backend, "RC-003", "val_v002")
     assert backend.get_candidate("RC-003").status == "candidate"
+    evaluation = backend.get_candidate_evaluation("RC-003", "val_v002").evaluation
     assert evaluation.overall_map > 0
     assert len(backend.list_validation_items("val_v002", "分類A")) == 10
 
@@ -261,12 +285,10 @@ def test_mock_release_prediction_and_external_results_by_evaluation_id():
     record = backend.get_candidate_evaluation("RC-001", "val_v003")
     assert record is not None and record.status == "completed"
     item_id = backend.list_validation_items("val_v003")[0].item_id
-    new = backend.get_candidate_prediction("RC-001", record.evaluation_id, item_id)
-    old = backend.get_candidate_prediction("RC-001", item_id)
-    assert (new == old).all()
+    labels = backend.get_candidate_prediction("RC-001", record.evaluation_id, item_id)
+    assert labels.ndim == 2
 
-    backend.evaluate_candidate("RC-003", "val_v003")
-    evaluation_id = backend.get_candidate_evaluation("RC-003", "val_v003").evaluation_id
+    evaluation_id = _evaluate(backend, "RC-003", "val_v003")
     backend.save_external_results(
         "RC-003", evaluation_id, [{"name": "平均径", "value": 1.5, "unit": "um"}], software="X"
     )

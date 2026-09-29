@@ -880,6 +880,15 @@ class ComparisonService:
             raise ValueError(f"評価 ID が複数の検証版にあります: {candidate_id}/{evaluation_id}")
         return matches[0]
 
+    def evaluation_run_dir(self, candidate_id: str, evaluation_id: str) -> Path:
+        """評価フォルダ（candidates/<候補>/evaluations/<検証版>/<評価>）を返す。
+
+        evaluation_id は候補ごとの通し番号なので、検証版を指定しなくても 1 つに決まる。
+        見つからなければ ValueError。
+        """
+        _version, run_dir = self._locate_evaluation(candidate_id, evaluation_id)
+        return run_dir
+
     def _dataset_state(self, version: str) -> tuple[dict[str, str], list[str]]:
         """検証版の manifest・metadata の sha256 と、評価対象の item_id 一覧（3.2）を返す。"""
         folder = self.workspace_root / "datasets" / _check_name(version, "検証版")
@@ -1472,6 +1481,8 @@ class ComparisonService:
             oof_evaluation=_evaluation_from_summary(oof.get("overall"), oof.get("per_class")),
             comment=str(value.get("comment", "")),
             source_attempt_number=int(source.get("attempt") or 1),
+            model_type=str(value.get("model_type") or ""),
+            inference_config_id=str(value.get("inference_config_id") or ""),
         )
 
     def list_released_models(self) -> list[ReleasedModel]:

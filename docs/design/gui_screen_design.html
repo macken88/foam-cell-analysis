@@ -295,7 +295,7 @@ table.rev{font-size:.92rem}
 <tr><td>v2.9</td><td>2026-09-28</td><td>学習キュー編集終了時のフォーム・YAML・スクロール・操作状態の復元、編集中の操作抑止、列切替時のフォーカス保持、YAML 行の完全パス強調、交差検証の層別・フォルダ単位を要約に表示</td><td>実装済み</td></tr>
 <tr><td>v3.0</td><td>2026-09-29</td><td>前処理詳細の折りたたみ、キュー停止操作分離、拡張設定表・直接順序編集、既定値リセット、ホイール抑止、無効メニュー色</td><td>実装済み</td></tr>
 <tr><td>v3.1</td><td>2026-09-29</td><td>入力欄はホイールで値を変えず上下ボタンなし、学習率の指数表記、学習開始をキュー経由に一本化、キュー状態セルの進捗バー・ステータスバーの学習進捗、終わった行の自動削除、「同じ設定でやり直す」、実験の削除</td><td>実装済み</td></tr>
-<tr><td>v3.2</td><td>2026-09-29</td><td>モデル比較・リリース（7〜9章）を実データへ接続する設計を <a href="comparison_inference_backend_design.html">モデル比較・評価バックエンド設計書</a> 16.2 に記載。mAP 表記を AP に、OOF AP の「対象外」表示、試行の選択、推論設定の範囲、評価の中止、実際のマスク出力、リリース画面の実験非依存化など。7〜9章の本文は実装時に更新する</td><td>設計のみ</td></tr>
+<tr><td>v3.2</td><td>2026-09-29</td><td>モデル比較・リリース（7〜9章）を実データへ接続する設計を <a href="comparison_inference_backend_design.html">モデル比較・評価バックエンド設計書</a> 16.2 に記載。mAP 表記を AP に、OOF AP の「対象外」表示、試行の選択、推論設定の範囲、評価の中止、実際のマスク出力、リリース画面の実験非依存化など。7〜9章の本文に反映し、実験一覧に成果物の整理（6.5）を追加</td><td>実装済み</td></tr>
 </tbody></table></div>
 <nav><strong>目次</strong><ol class="toc"><li><a href="#sec1">1. ソース構成</a></li><li><a href="#sec2">2. アプリ全体の画面構成</a> <br><a href="#sec2-6">2.6 見た目の設計（色・フォント・部品）</a> <span class="badge">v2.3</span></li><li><a href="#sec3">3. 共通部品</a></li><li><a href="#sec4">4. データ準備（PageId.DATA_PREPARATION）</a> </li><li><a href="#sec5">5. モデル学習（PageId.TRAINING）</a></li><li><a href="#sec6">6. 実験一覧（PageId.EXPERIMENTS）</a></li><li><a href="#sec7">7. モデル比較・リリース（PageId.CANDIDATES）</a></li><li><a href="#sec8">8. マスク比較（PageId.MASK_COMPARISON）</a></li><li><a href="#sec9">9. リリース済みモデル・モデル振り分け（PageId.RELEASED_MODELS）</a></li><li><a href="#sec10">10. 本番推論（PageId.INFERENCE）</a></li><li><a href="#sec11">11. MockBackend</a></li><li><a href="#sec12">12. テスト（tests/gui/）</a></li></ol></nav>
 </header>
@@ -471,7 +471,7 @@ table.rev{font-size:.92rem}
 <h4>2.6.1 方針</h4>
 <ol>
 <li><strong>色はデータの意味にだけ使う。</strong>作業エリアで色が付いているものは、必ず用途（学習・検証・未振り分け・不採用）、エラー、変更ありのどれかを表す。ボタン・選択行・タブ・フォーカスは無彩色（グラファイトと灰）で表す。これで学習の青や検証の橙が、ボタンの色と混ざらない。</li>
-<li><strong>数字は計測値の書体で表示する。</strong>件数・mAP・エポック・版番号・時刻・データ識別子は Bahnschrift の等幅数字にし、縦にそろえて読み比べられるようにする。</li>
+<li><strong>数字は計測値の書体で表示する。</strong>件数・AP・エポック・版番号・時刻・データ識別子は Bahnschrift の等幅数字にし、縦にそろえて読み比べられるようにする。</li>
 <li><strong>画像がいちばん目立つ。</strong>画像の背景は暗い灰色とし、周りの UI は明るく控えめにする。原画像やマスクの色と競う色を UI に使わない。</li>
 <li><strong>目立たせるのはホームの工程の流れ（2.1）だけ。</strong>モードウィンドウは影付きのカードや角丸の枠を使わず、罫線1本で区切る。動きはホームの学習中の点の明滅だけとする。</li>
 </ol>
@@ -600,7 +600,7 @@ table.rev{font-size:.92rem}
 <h3 id="sec3-4">3.4 学習曲線（<code>gui/widgets/chart.py</code>）</h3>
 <ul>
 <li>QtCharts は使わず、<code>QPainter</code> で折れ線を描く簡易ウィジェット。系列（名前・色・点列）を複数重ねられる。</li>
-<li>実験比較で複数実験の mAP 曲線を重ねるのに使う。</li>
+<li>実験比較で複数実験の AP 曲線を重ねるのに使う。</li>
 </ul>
 <hr />
 </section>
@@ -1035,13 +1035,13 @@ table.rev{font-size:.92rem}
 <div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span class="on">学習設定</span><span>学習キュー</span><span>実験一覧</span></span></div>
 <div class="v27-summary"><span>データ <span class="num">train_v003</span>・全分類・すべて・学習 <b class="num">515</b> 件</span><span>交差検証 <span class="num">5</span> 分割・層別・フォルダ単位・各検証 約 <span class="num">103</span> 件</span><span>モデル Mask R-CNN（COCO）</span><span>学習 <span class="num">100</span> エポック・バッチ <span class="num">8</span>・学習率 <span class="num">0.0001</span></span><span class="spacer"></span><span class="btn">設定プレビュー（YAML）</span></div>
 <div class="v27-form2"><div><p class="v27-h">実験</p><div class="row"><span>実験群</span><span class="sel-combo">foam_study ▾</span></div><div class="row"><span>実験識別子</span><span class="input ro num">exp_0046</span></div><div class="row"><span>説明</span><span class="input"></span></div><p class="v27-h">データセット・交差検証</p><div class="row"><span>データセット版</span><span class="sel-combo num">train_v003 ▾</span></div><div class="row"><span>画像分類 / 品質条件</span><span class="sel-combo">全分類 ▾　すべて ▾</span></div><div class="row"><span>分割数・条件・乱数シード</span><span class="input num">5</span>　☑ 画像分類で層別　☑ 取り込み元フォルダ単位</div><p class="small">交差検証は学習用版だけを使い、検証用版は含めない</p><p class="v27-h">共通学習設定</p><div class="row"><span>エポック / バッチ</span><span class="input num">100</span>　<span class="input num">8</span></div><div class="row"><span>学習率</span><span class="input num">0.0001</span></div></div>
-<div><p class="v27-h">モデル種類・固有設定</p><div class="row"><span>モデル種類</span><span class="sel-combo">Mask R-CNN ▾</span></div><div class="row"><span>事前学習済み重み</span><span class="sel-combo">COCO ▾</span></div><div class="row"><span>画像平均・標準偏差</span><span class="small">重みから自動決定</span></div><div class="row"><span>アンカーサイズ</span><span class="input num">32, 64, 128, 256, 512</span></div><div class="row"><span>アンカー縦横比</span><span class="input num">0.5, 1.0, 2.0</span></div><p class="small">▶ 前処理 詳細設定　▶ RPN 詳細設定　▶ ROI 詳細設定</p><p class="v27-h">データ拡張</p><div class="row"><span>プロファイル</span><span class="sel-combo num">aug_v003 ▾</span> <span class="btn">データ拡張を設定…</span></div><p class="v27-h">途中保存モデル / 評価</p><div class="row"><span>保存間隔 / 検証間隔</span><span class="input num">10</span>　<span class="input num">5</span> エポック</div><div class="row"><span>エポックの選び方</span><span class="small">OOF mAP 最大</span></div></div></div>
+<div><p class="v27-h">モデル種類・固有設定</p><div class="row"><span>モデル種類</span><span class="sel-combo">Mask R-CNN ▾</span></div><div class="row"><span>事前学習済み重み</span><span class="sel-combo">COCO ▾</span></div><div class="row"><span>画像平均・標準偏差</span><span class="small">重みから自動決定</span></div><div class="row"><span>アンカーサイズ</span><span class="input num">32, 64, 128, 256, 512</span></div><div class="row"><span>アンカー縦横比</span><span class="input num">0.5, 1.0, 2.0</span></div><p class="small">▶ 前処理 詳細設定　▶ RPN 詳細設定　▶ ROI 詳細設定</p><p class="v27-h">データ拡張</p><div class="row"><span>プロファイル</span><span class="sel-combo num">aug_v003 ▾</span> <span class="btn">データ拡張を設定…</span></div><p class="v27-h">途中保存モデル / 評価</p><div class="row"><span>保存間隔 / 検証間隔</span><span class="input num">10</span>　<span class="input num">5</span> エポック</div><div class="row"><span>エポックの選び方</span><span class="small">OOF AP 最大</span></div></div></div>
 <div class="v27-actions"><span class="btn">設定を検証</span><span class="btn">下書き保存</span><span class="v27-gap"></span><span class="btn">キューに追加</span><span class="btn primary">学習開始</span></div></div></div>
 <ul>
 <li>YAML プレビューは既定で閉じる。要約のボタンまたは「表示」メニューから開閉し、状態を <code>app_settings()</code> に保存する。開くと右側に表示し、フォーカス中の項目に対応する行を強調する。</li>
 <li>プレビューが閉じていてフォーム幅が約 1100px 以上なら 2 列にする。左列は実験・データセット（交差検証を含む）・共通学習設定、右列はモデル固有設定・データ拡張・途中保存モデル / 評価。幅が狭い場合と YAML 表示中は 1 列にする。切替時も入力値・フォーカス・スクロール位置を保つ。</li>
 <li>見出しは theme の色・書体で本文より大きく太くし、罫線と本文行間の約 2 倍の上余白を付ける。</li>
-<li>モデル固有設定、データ拡張、途中保存モデル / 評価は常時表示する。RPN と ROI の詳細設定だけ折りたたむ。アンカーサイズ・縦横比は編集可能。読み取り専用表示は画像平均・標準偏差と OOF mAP 最大で選ぶエポックだけ。</li>
+<li>モデル固有設定、データ拡張、途中保存モデル / 評価は常時表示する。RPN と ROI の詳細設定だけ折りたたむ。アンカーサイズ・縦横比は編集可能。読み取り専用表示は画像平均・標準偏差と OOF AP 最大で選ぶエポックだけ。</li>
 <li>左右の列は独立した縦積みで上から並べ、交差検証の注記は交差検証設定の直下に置く。データ拡張のプレビュー・編集ボタンはプロファイル選択欄の横に内容幅で置く。</li>
 <li>下部の操作は「設定を検証・下書き保存」と「キューに追加・学習開始」の 2 群に分け、主ボタンは「学習開始」だけにする。キュー編集中は「キューに保存」「キャンセル」と編集帯を表示し、検証・キュー追加・学習開始・新規実験のメニュー操作を無効にして理由を示す。保存またはキャンセルで編集前のフォーム値、モデル種類、YAML の開閉、スクロール位置、操作状態を戻す。</li>
 </ul>
@@ -1052,7 +1052,7 @@ table.rev{font-size:.92rem}
 <li><strong>モデル</strong>: Mask R-CNN / Cellpose を切り替える。Mask R-CNN は事前学習済み重み、バックボーン、学習層数、入力画像サイズ、重みから自動決定する画像平均・標準偏差、編集可能なアンカーサイズ・縦横比、RPN / ROI 詳細設定を持つ。Cellpose は事前学習済みモデル、最適化手法、正規化、スケール変動幅、リスケール、パッチサイズ、1 エポック当たり画像数、最小マスク数、クラス重みを持つ。セル確率閾値・フロー閾値はモデル比較・リリースの推論設定で管理する。</li>
 <li><strong>共通学習設定</strong>: エポック数、バッチサイズ、学習率、重み減衰、早期終了（有効 / 無効・待機エポック数）。</li>
 <li><strong>データ拡張</strong>: プロファイルを選択し、「データ拡張を設定…」から表形式の編集・プレビューダイアログを開く。</li>
-<li><strong>途中保存モデル / 評価</strong>: 保存間隔、検証間隔、各フォールドのモデル保存。選択エポックの指標は OOF 平均適合率（mAP）最大で、読み取り専用表示する。</li>
+<li><strong>途中保存モデル / 評価</strong>: 保存間隔、検証間隔、各フォールドのモデル保存。選択エポックの指標は OOF AP（Cellpose 方式）最大で、読み取り専用表示する。</li>
 </ol>
 <p>正規化方式と low/high percentile は Mask R-CNN・Cellpose とも「前処理 詳細設定」の折りたたみ内に置く。設定欄の数値・選択欄はホイールで値を変えない（3 章）。編集メニューの「既定値に戻す」は確認後、現在モデルの既定値を読み込み、実験群・説明・データセット版を保持する。拡張編集画面では既定値を aug_v001 相当へ戻すが、保存操作まではプロファイルを作成しない。入力のツールチップには設定キーを持たせる。YAML は入力に即時追従する。設定検証は OK / 警告 / エラーをダイアログに示し、エラーがある設定は学習開始・キュー登録を止める。下書き保存は実験一覧へ保存する。学習開始は「この設定をキューの末尾に追加し、学習していなければキューの実行を始める」操作であり、単独で学習する経路は持たない。学習していなければ確認後（待機行があればその件数も示す）にキューを実行して実験一覧へ移る。学習中なら確認せずに末尾へ追加し、ステータスバーで知らせる（警告があるときだけ確認する）。編集中の下書きは同じ実験 ID のままキューへ移る。複製・下書き編集・キュー編集では読み込んだ設定をフォームと要約に表示する。</p>
 <h3 id="sec5-2">5.2 データ拡張プロファイル編集ダイアログ</h3>
@@ -1105,12 +1105,12 @@ table.rev{font-size:.92rem}
 <div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span>学習設定</span><span class="on">実験一覧</span></span><span class="spacer"></span></div>
 <div class="m-toolbar"><span class="sel-combo">実験群: すべて ▾</span><span class="sel-combo">モデル: すべて ▾</span><span class="sel-combo">状態: すべて ▾</span><span class="spacer"></span><span class="btn primary">モデル比較へ送る…</span></div>
 <div class="table-wrap"><table>
-<thead><tr><th></th><th>ID</th><th>実験群</th><th>モデル</th><th>データセット</th><th>データ拡張</th><th>状態</th><th class="n">進捗</th><th class="n">OOF mAP</th><th>途中保存モデル</th></tr></thead>
+<thead><tr><th></th><th>ID</th><th>実験群</th><th>モデル</th><th>データセット</th><th>データ拡張</th><th>状態</th><th class="n">進捗</th><th class="n">OOF AP</th><th>途中保存モデル</th></tr></thead>
 <tbody><tr class=""><td class="ck">☐</td><td class="num">exp_0046</td><td>入力画像サイズ比較</td><td>Mask R-CNN</td><td class="num">train_v003</td><td class="num">aug_v003</td><td><span class="tag run">実行中</span></td><td class="n">epoch 40/100</td><td class="n"><b>0.874</b></td><td class="num">epoch_040.pt</td></tr><tr class="sel"><td class="ck">☑</td><td class="num">exp_0042</td><td>入力画像サイズ比較</td><td>Mask R-CNN</td><td class="num">train_v003</td><td class="num">aug_v003</td><td><span class="tag okk">完了</span></td><td class="n">100/100</td><td class="n"><b>0.913</b></td><td class="num">final.pt</td></tr><tr class=""><td class="ck">☑</td><td class="num">exp_0041</td><td>入力画像サイズ比較</td><td>Mask R-CNN</td><td class="num">train_v003</td><td class="num">aug_v002</td><td><span class="tag okk">完了</span></td><td class="n">100/100</td><td class="n"><b>0.897</b></td><td class="num">final.pt</td></tr><tr class=""><td class="ck">☐</td><td class="num">exp_0040</td><td>Cellpose 初期検討</td><td>Cellpose</td><td class="num">train_v002</td><td class="num">aug_v002</td><td><span class="tag err">失敗</span></td><td class="n">12/200</td><td class="n"><b>—</b></td><td class="num">epoch_010.pt</td></tr><tr class=""><td class="ck">☐</td><td class="num">exp_0047</td><td>入力画像サイズ比較</td><td>Mask R-CNN</td><td class="num">train_v004</td><td class="num">aug_v003</td><td><span class="tag idle">下書き</span></td><td class="n">—</td><td class="n"><b>—</b></td><td class="num">—</td></tr></tbody></table></div>
 <div class="panel">
 <div class="topbar" style="margin:-8px -10px 8px;padding:0 10px"><span class="mtabs"><span>概要</span><span class="on">学習曲線</span><span>交差検証</span><span>途中保存モデル</span><span>実行試行</span><span>実使用データ</span></span></div>
 <div class="m-split" style="grid-template-columns:1fr 1fr">
-<div><p class="ptitle">exp_0042 の mAP（交差検証（OOF）、5 エポックごと）</p><svg viewBox="0 0 420 150" style="width:100%;height:auto;display:block;font-family:Bahnschrift,Segoe UI,sans-serif" role="img" aria-label="exp_0042 の mAP の推移"><line x1="36" x2="410" y1="128.0" y2="128.0" stroke="#E4E8EB"/><text x="31" y="131.0" text-anchor="end" font-size="9" fill="#5E6B76">0.00</text><line x1="36" x2="410" y1="98.0" y2="98.0" stroke="#E4E8EB"/><text x="31" y="101.0" text-anchor="end" font-size="9" fill="#5E6B76">0.25</text><line x1="36" x2="410" y1="68.0" y2="68.0" stroke="#E4E8EB"/><text x="31" y="71.0" text-anchor="end" font-size="9" fill="#5E6B76">0.50</text><line x1="36" x2="410" y1="38.0" y2="38.0" stroke="#E4E8EB"/><text x="31" y="41.0" text-anchor="end" font-size="9" fill="#5E6B76">0.75</text><line x1="36" x2="410" y1="8.0" y2="8.0" stroke="#E4E8EB"/><text x="31" y="11.0" text-anchor="end" font-size="9" fill="#5E6B76">1.00</text><text x="36.0" y="142" text-anchor="middle" font-size="9" fill="#5E6B76">0</text><text x="129.5" y="142" text-anchor="middle" font-size="9" fill="#5E6B76">25</text><text x="223.0" y="142" text-anchor="middle" font-size="9" fill="#5E6B76">50</text><text x="316.5" y="142" text-anchor="middle" font-size="9" fill="#5E6B76">75</text><text x="410.0" y="142" text-anchor="middle" font-size="9" fill="#5E6B76">100</text><line x1="36" x2="410" y1="128" y2="128" stroke="#8A949C"/><path d="M36.0,122.9 L54.7,96.3 L73.4,77.6 L92.1,64.6 L110.8,53.2 L129.5,45.1 L148.2,38.4 L166.9,33.4 L185.6,31.5 L204.3,29.0 L223.0,25.0 L241.7,24.4 L260.4,22.4 L279.1,23.4 L297.8,21.6 L316.5,20.5 L335.2,18.4 L353.9,19.2 L372.6,19.1 L391.3,21.1 L410.0,20.9" fill="none" stroke="#1C2630" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><line x1="335.2" x2="335.2" y1="8" y2="128" stroke="#1C2630" stroke-dasharray="2 3"/><circle cx="335.2" cy="18.4" r="4.5" fill="#fff" stroke="#1C2630" stroke-width="2"/><text x="328.2" y="34.4" text-anchor="end" font-size="10" fill="#1C2630">選択 epoch 80　0.913</text></svg></div>
+<div><p class="ptitle">exp_0042 の AP（交差検証（OOF）、5 エポックごと）</p><svg viewBox="0 0 420 150" style="width:100%;height:auto;display:block;font-family:Bahnschrift,Segoe UI,sans-serif" role="img" aria-label="exp_0042 の AP の推移"><line x1="36" x2="410" y1="128.0" y2="128.0" stroke="#E4E8EB"/><text x="31" y="131.0" text-anchor="end" font-size="9" fill="#5E6B76">0.00</text><line x1="36" x2="410" y1="98.0" y2="98.0" stroke="#E4E8EB"/><text x="31" y="101.0" text-anchor="end" font-size="9" fill="#5E6B76">0.25</text><line x1="36" x2="410" y1="68.0" y2="68.0" stroke="#E4E8EB"/><text x="31" y="71.0" text-anchor="end" font-size="9" fill="#5E6B76">0.50</text><line x1="36" x2="410" y1="38.0" y2="38.0" stroke="#E4E8EB"/><text x="31" y="41.0" text-anchor="end" font-size="9" fill="#5E6B76">0.75</text><line x1="36" x2="410" y1="8.0" y2="8.0" stroke="#E4E8EB"/><text x="31" y="11.0" text-anchor="end" font-size="9" fill="#5E6B76">1.00</text><text x="36.0" y="142" text-anchor="middle" font-size="9" fill="#5E6B76">0</text><text x="129.5" y="142" text-anchor="middle" font-size="9" fill="#5E6B76">25</text><text x="223.0" y="142" text-anchor="middle" font-size="9" fill="#5E6B76">50</text><text x="316.5" y="142" text-anchor="middle" font-size="9" fill="#5E6B76">75</text><text x="410.0" y="142" text-anchor="middle" font-size="9" fill="#5E6B76">100</text><line x1="36" x2="410" y1="128" y2="128" stroke="#8A949C"/><path d="M36.0,122.9 L54.7,96.3 L73.4,77.6 L92.1,64.6 L110.8,53.2 L129.5,45.1 L148.2,38.4 L166.9,33.4 L185.6,31.5 L204.3,29.0 L223.0,25.0 L241.7,24.4 L260.4,22.4 L279.1,23.4 L297.8,21.6 L316.5,20.5 L335.2,18.4 L353.9,19.2 L372.6,19.1 L391.3,21.1 L410.0,20.9" fill="none" stroke="#1C2630" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><line x1="335.2" x2="335.2" y1="8" y2="128" stroke="#1C2630" stroke-dasharray="2 3"/><circle cx="335.2" cy="18.4" r="4.5" fill="#fff" stroke="#1C2630" stroke-width="2"/><text x="328.2" y="34.4" text-anchor="end" font-size="10" fill="#1C2630">選択 epoch 80　0.913</text></svg></div>
 <div><p class="ptitle">exp_0042 の loss</p><svg viewBox="0 0 420 150" style="width:100%;height:auto;display:block;font-family:Bahnschrift,Segoe UI,sans-serif" role="img" aria-label="exp_0042 の loss の推移"><line x1="36" x2="410" y1="128.0" y2="128.0" stroke="#E4E8EB"/><text x="31" y="131.0" text-anchor="end" font-size="9" fill="#5E6B76">0.0</text><line x1="36" x2="410" y1="98.0" y2="98.0" stroke="#E4E8EB"/><text x="31" y="101.0" text-anchor="end" font-size="9" fill="#5E6B76">0.5</text><line x1="36" x2="410" y1="68.0" y2="68.0" stroke="#E4E8EB"/><text x="31" y="71.0" text-anchor="end" font-size="9" fill="#5E6B76">1.0</text><line x1="36" x2="410" y1="38.0" y2="38.0" stroke="#E4E8EB"/><text x="31" y="41.0" text-anchor="end" font-size="9" fill="#5E6B76">1.5</text><line x1="36" x2="410" y1="8.0" y2="8.0" stroke="#E4E8EB"/><text x="31" y="11.0" text-anchor="end" font-size="9" fill="#5E6B76">2.0</text><text x="36.0" y="142" text-anchor="middle" font-size="9" fill="#5E6B76">0</text><text x="129.5" y="142" text-anchor="middle" font-size="9" fill="#5E6B76">25</text><text x="223.0" y="142" text-anchor="middle" font-size="9" fill="#5E6B76">50</text><text x="316.5" y="142" text-anchor="middle" font-size="9" fill="#5E6B76">75</text><text x="410.0" y="142" text-anchor="middle" font-size="9" fill="#5E6B76">100</text><line x1="36" x2="410" y1="128" y2="128" stroke="#8A949C"/><path d="M36.0,2.0 L54.7,25.9 L73.4,44.6 L92.1,57.9 L110.8,69.8 L129.5,81.1 L148.2,87.9 L166.9,93.8 L185.6,98.8 L204.3,103.3 L223.0,105.5 L241.7,109.3 L260.4,110.4 L279.1,111.6 L297.8,111.0 L316.5,113.6 L335.2,115.0 L353.9,115.9 L372.6,116.4 L391.3,114.7 L410.0,117.3" fill="none" stroke="#5E6B76" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/></svg></div>
 </div>
 </div>
@@ -1118,12 +1118,12 @@ table.rev{font-size:.92rem}
 </div></div>
 <ul>
 <li>状態は状態タグ（2.6.4）で表す。実行中だけをグラファイト地で目立たせる。</li>
-<li>OOF mAP と進捗は右寄せの Bahnschrift とし、行をまたいで数字を比べやすくする。</li>
-<li>学習曲線はOOF mAPを太いグラファイト線、各フォールドのmAPを淡い細線で重ね、選択エポックに点線と印、値を直接書く。lossはフォールド平均と最終学習を分ける。マウスを重ねると、そのエポックの値をツールチップで出す。</li>
+<li>OOF AP と進捗は右寄せの Bahnschrift とし、行をまたいで数字を比べやすくする。</li>
+<li>学習曲線はOOF APを太いグラファイト線、各フォールドのAPを淡い細線で重ね、選択エポックに点線と印、値を直接書く。lossはフォールド平均と最終学習を分ける。マウスを重ねると、そのエポックの値をツールチップで出す。</li>
 </ul>
 
 <p>上に絞り込み（実験群、モデル、状態）、中央に表、下に詳細タブ（上下 <code>QSplitter</code>）。</p>
-<p>表の列: 選択（チェック）、ID、実験群、モデル、データセット、データ拡張、状態（下書き / 実行中 / 完了 / 失敗 / 中断）、進捗（「分割 2/5・epoch 20/100」または「最終学習・epoch 40/80」）、OOF mAP、途中保存モデル（最新）。</p>
+<p>表の列: 選択（チェック）、ID、実験群、モデル、データセット、データ拡張、状態（下書き / 実行中 / 完了 / 失敗 / 中断）、進捗（「分割 2/5・epoch 20/100」または「最終学習・epoch 40/80」）、OOF AP、途中保存モデル（最新）。</p>
 <ul>
 <li>実行中の行は FakeJob の進捗に合わせて自動更新する（<code>JobManager</code> のシグナル、または 1 秒ごとの再読込）。</li>
 </ul>
@@ -1134,15 +1134,16 @@ table.rev{font-size:.92rem}
 - [■ 今すぐ停止]（実行中1件）: 学習キューの同名操作と同じ確認・動作（学習とキューを止め、今の学習は「中断」）。
 - [同じ設定でやり直す]（失敗・中断1件）: 同じ実験 ID の新しい実行試行として最初から学習し直す。前の試行結果は保持し、学習中なら同じ実験の次の試行としてキューへ予約する。旧形式は再試行せず、設定の複製を案内する。失敗・中断の実験では右クリックメニューの先頭に置き、詳細の「実行試行」タブにも同名のボタンを置く。
 - [実験を削除…]（下書き・中断・失敗・完了の1件）: 右クリックと学習メニュー。確認ダイアログに実験 ID・試行数・解放される容量（「約 2.4 GB を削除します」）と、取り消せないことを示す。<code>workspace/experiments/&lt;id&gt;/</code>（設定・全試行・途中保存モデル・OOF・ログ）とその実験のキュー行を削除し、<code>datasets</code>・<code>pretrained</code>・<code>augmentation</code> には触れない。学習中・待機中の実験、比較候補（非採用を除く）やリリース済みモデルが参照する実験は削除できず、理由をツールチップと警告で示す（例「比較候補 RC-003 がこの実験を参照しています。先に候補を非採用・削除してください」）。
-右クリックメニューは状態に合わせて並べる: 失敗・中断なら「同じ設定でやり直す」、実行中なら「■ 今すぐ停止」を先頭に置き、区切りの後にモデル比較へ送る・比較・複製・結果・下書き編集、最後に区切って「実験を削除…」。
+- [成果物を整理…]（チェックした実験。チェックがなければ選択中の1件）: 右クリックと学習メニュー。記録は残したまま、途中保存モデルなどの大きなファイルを種類ごとに選んで削除する（6.5）。
+右クリックメニューは状態に合わせて並べる: 失敗・中断なら「同じ設定でやり直す」、実行中なら「■ 今すぐ停止」を先頭に置き、区切りの後にモデル比較へ送る・比較・複製・結果・下書き編集、最後に区切って「成果物を整理…」「実験を削除…」。
 - [モデル比較へ送る…]（完了1件）: 引き渡しダイアログ。
 - [下書きを編集]（下書き1件）: モデル学習へ遷移（<code>edit=exp_id</code>。採番しなおさない）。</p>
 <h3 id="sec6-2">6.2 詳細タブ</h3>
 <ul>
 <li><strong>概要</strong>: 実験群、説明、データセット版、交差検証、画像分類、品質条件、モデル、主要設定、作成日時。「設定 YAML を表示」ボタン。</li>
-<li><strong>学習曲線</strong>: OOF mAP主線とフォールド別mAP、選択エポックの印。lossはフォールド平均と最終学習を別系列にする。</li>
-<li><strong>途中保存モデル</strong>: フォールド（1〜K / 最終）、ファイル名、エポック、mAP、保存日時。フォールドごとのepoch_NNN.ptと選択エポック、最終のfinal.pt。</li>
-<li><strong>実行試行</strong>: 試行番号、開始・終了日時、結果、OOF mAP、選択エポック、実行環境（GPU名、num_workers）。各行を選ぶとその試行の結果を確認できる。学習履歴、フォールド別履歴、OOF評価、途中保存モデル、実使用データとフォールド割り当ては試行ごとに保持する。実験一覧の結果欄と他の詳細タブは最新試行を表示する。</li>
+<li><strong>学習曲線</strong>: OOF AP主線とフォールド別AP、選択エポックの印。lossはフォールド平均と最終学習を別系列にする。</li>
+<li><strong>途中保存モデル</strong>: フォールド（1〜K / 最終）、ファイル名、エポック、AP、保存日時。フォールドごとのepoch_NNN.ptと選択エポック、最終のfinal.pt。成果物の整理で削除したファイルは「epoch_010.pt（削除済み）」のように示し、行を淡色にする（記録は残る）。</li>
+<li><strong>実行試行</strong>: 試行番号、開始・終了日時、結果、OOF AP、選択エポック、実行環境（GPU名、num_workers）。各行を選ぶとその試行の結果を確認できる。学習履歴、フォールド別履歴、OOF評価、途中保存モデル、実使用データとフォールド割り当ては試行ごとに保持する。実験一覧の結果欄と他の詳細タブは最新試行を表示する。</li>
 <li><strong>実使用データ</strong>: フォールドごとの件数と、データ識別子・フォールド番号の一覧（仕様 3.1）。</li>
 </ul>
 <h3 id="sec6-3">6.3 実験比較ダイアログ</h3>
@@ -1156,9 +1157,9 @@ table.rev{font-size:.92rem}
 <tr class="chg"><td>データ拡張 <span class="small">augmentation</span></td><td class="num">aug_v003</td><td class="num">aug_v002</td><td class="num">aug_v002</td></tr>
 <tr class="chg"><td>短辺サイズ <span class="small">min_size</span></td><td class="n">800</td><td class="n">800</td><td class="n">512</td></tr>
 <tr class="chg"><td>学習率 <span class="small">learning_rate</span></td><td class="n">0.0001</td><td class="n">0.0001</td><td class="n">0.0003</td></tr>
-<tr><td>OOF mAP</td><td class="n"><b>0.913</b></td><td class="n">0.897</td><td class="n">0.861</td></tr>
+<tr><td>OOF AP</td><td class="n"><b>0.913</b></td><td class="n">0.897</td><td class="n">0.861</td></tr>
 </tbody></table></div></div>
-<div class="panel"><p class="ptitle">mAP（交差検証（OOF））　縦軸は 0.5 から</p><svg viewBox="0 0 420 170" style="width:100%;height:auto;display:block;font-family:Bahnschrift,Segoe UI,sans-serif" role="img" aria-label="3 実験の mAP の推移"><clipPath id="plot63"><rect x="36" y="8" width="314" height="140"/></clipPath><line x1="36" x2="350" y1="148.0" y2="148.0" stroke="#E4E8EB"/><text x="31" y="151.0" text-anchor="end" font-size="9" fill="#5E6B76">0.5</text><line x1="36" x2="350" y1="120.0" y2="120.0" stroke="#E4E8EB"/><text x="31" y="123.0" text-anchor="end" font-size="9" fill="#5E6B76">0.6</text><line x1="36" x2="350" y1="92.0" y2="92.0" stroke="#E4E8EB"/><text x="31" y="95.0" text-anchor="end" font-size="9" fill="#5E6B76">0.7</text><line x1="36" x2="350" y1="64.0" y2="64.0" stroke="#E4E8EB"/><text x="31" y="67.0" text-anchor="end" font-size="9" fill="#5E6B76">0.8</text><line x1="36" x2="350" y1="36.0" y2="36.0" stroke="#E4E8EB"/><text x="31" y="39.0" text-anchor="end" font-size="9" fill="#5E6B76">0.9</text><line x1="36" x2="350" y1="8.0" y2="8.0" stroke="#E4E8EB"/><text x="31" y="11.0" text-anchor="end" font-size="9" fill="#5E6B76">1.0</text><text x="36.0" y="162" text-anchor="middle" font-size="9" fill="#5E6B76">0</text><text x="114.5" y="162" text-anchor="middle" font-size="9" fill="#5E6B76">25</text><text x="193.0" y="162" text-anchor="middle" font-size="9" fill="#5E6B76">50</text><text x="271.5" y="162" text-anchor="middle" font-size="9" fill="#5E6B76">75</text><text x="350.0" y="162" text-anchor="middle" font-size="9" fill="#5E6B76">100</text><text x="418" y="162" text-anchor="end" font-size="9" fill="#5E6B76">epoch</text><line x1="36" x2="350" y1="148" y2="148" stroke="#8A949C"/><path d="M36.0,276.0 L51.7,214.0 L67.4,170.5 L83.1,140.0 L98.8,113.4 L114.5,94.6 L130.2,79.0 L145.9,67.2 L161.6,62.8 L177.3,56.9 L193.0,47.6 L208.7,46.3 L224.4,41.7 L240.1,43.9 L255.8,39.8 L271.5,37.1 L287.2,32.4 L302.9,34.2 L318.6,34.0 L334.3,38.5 L350.0,38.2" fill="none" stroke="#4A3AA7" stroke-width="2" stroke-linejoin="round" clip-path="url(#plot63)"/><path d="M36.0,271.4 L51.7,219.0 L67.4,183.2 L83.1,151.2 L98.8,122.2 L114.5,103.5 L130.2,88.8 L145.9,79.1 L161.6,68.3 L177.3,61.2 L193.0,55.9 L208.7,53.9 L224.4,49.0 L240.1,46.6 L255.8,42.8 L271.5,39.6 L287.2,38.7 L302.9,40.0 L318.6,39.8 L334.3,40.2 L350.0,41.0" fill="none" stroke="#008300" stroke-width="2" stroke-linejoin="round" clip-path="url(#plot63)"/><path d="M36.0,275.5 L51.7,234.0 L67.4,202.2 L83.1,173.9 L98.8,151.4 L114.5,136.2 L130.2,121.3 L145.9,104.1 L161.6,97.0 L177.3,88.6 L193.0,77.3 L208.7,74.5 L224.4,67.6 L240.1,65.7 L255.8,61.5 L271.5,61.6 L287.2,56.6 L302.9,53.5 L318.6,53.9 L334.3,51.4 L350.0,50.8" fill="none" stroke="#E87BA4" stroke-width="2" stroke-linejoin="round" clip-path="url(#plot63)"/><circle cx="350.0" cy="38.2" r="4" fill="#4A3AA7" stroke="#fff" stroke-width="2"/><text x="358.0" y="41.2" font-size="10" fill="#1C2630">exp_0042</text><circle cx="350.0" cy="41.0" r="4" fill="#008300" stroke="#fff" stroke-width="2"/><text x="358.0" y="54.2" font-size="10" fill="#1C2630">exp_0041</text><circle cx="350.0" cy="50.8" r="4" fill="#E87BA4" stroke="#fff" stroke-width="2"/><text x="358.0" y="67.2" font-size="10" fill="#1C2630">exp_0038</text></svg>
+<div class="panel"><p class="ptitle">AP（交差検証（OOF））　縦軸は 0.5 から</p><svg viewBox="0 0 420 170" style="width:100%;height:auto;display:block;font-family:Bahnschrift,Segoe UI,sans-serif" role="img" aria-label="3 実験の AP の推移"><clipPath id="plot63"><rect x="36" y="8" width="314" height="140"/></clipPath><line x1="36" x2="350" y1="148.0" y2="148.0" stroke="#E4E8EB"/><text x="31" y="151.0" text-anchor="end" font-size="9" fill="#5E6B76">0.5</text><line x1="36" x2="350" y1="120.0" y2="120.0" stroke="#E4E8EB"/><text x="31" y="123.0" text-anchor="end" font-size="9" fill="#5E6B76">0.6</text><line x1="36" x2="350" y1="92.0" y2="92.0" stroke="#E4E8EB"/><text x="31" y="95.0" text-anchor="end" font-size="9" fill="#5E6B76">0.7</text><line x1="36" x2="350" y1="64.0" y2="64.0" stroke="#E4E8EB"/><text x="31" y="67.0" text-anchor="end" font-size="9" fill="#5E6B76">0.8</text><line x1="36" x2="350" y1="36.0" y2="36.0" stroke="#E4E8EB"/><text x="31" y="39.0" text-anchor="end" font-size="9" fill="#5E6B76">0.9</text><line x1="36" x2="350" y1="8.0" y2="8.0" stroke="#E4E8EB"/><text x="31" y="11.0" text-anchor="end" font-size="9" fill="#5E6B76">1.0</text><text x="36.0" y="162" text-anchor="middle" font-size="9" fill="#5E6B76">0</text><text x="114.5" y="162" text-anchor="middle" font-size="9" fill="#5E6B76">25</text><text x="193.0" y="162" text-anchor="middle" font-size="9" fill="#5E6B76">50</text><text x="271.5" y="162" text-anchor="middle" font-size="9" fill="#5E6B76">75</text><text x="350.0" y="162" text-anchor="middle" font-size="9" fill="#5E6B76">100</text><text x="418" y="162" text-anchor="end" font-size="9" fill="#5E6B76">epoch</text><line x1="36" x2="350" y1="148" y2="148" stroke="#8A949C"/><path d="M36.0,276.0 L51.7,214.0 L67.4,170.5 L83.1,140.0 L98.8,113.4 L114.5,94.6 L130.2,79.0 L145.9,67.2 L161.6,62.8 L177.3,56.9 L193.0,47.6 L208.7,46.3 L224.4,41.7 L240.1,43.9 L255.8,39.8 L271.5,37.1 L287.2,32.4 L302.9,34.2 L318.6,34.0 L334.3,38.5 L350.0,38.2" fill="none" stroke="#4A3AA7" stroke-width="2" stroke-linejoin="round" clip-path="url(#plot63)"/><path d="M36.0,271.4 L51.7,219.0 L67.4,183.2 L83.1,151.2 L98.8,122.2 L114.5,103.5 L130.2,88.8 L145.9,79.1 L161.6,68.3 L177.3,61.2 L193.0,55.9 L208.7,53.9 L224.4,49.0 L240.1,46.6 L255.8,42.8 L271.5,39.6 L287.2,38.7 L302.9,40.0 L318.6,39.8 L334.3,40.2 L350.0,41.0" fill="none" stroke="#008300" stroke-width="2" stroke-linejoin="round" clip-path="url(#plot63)"/><path d="M36.0,275.5 L51.7,234.0 L67.4,202.2 L83.1,173.9 L98.8,151.4 L114.5,136.2 L130.2,121.3 L145.9,104.1 L161.6,97.0 L177.3,88.6 L193.0,77.3 L208.7,74.5 L224.4,67.6 L240.1,65.7 L255.8,61.5 L271.5,61.6 L287.2,56.6 L302.9,53.5 L318.6,53.9 L334.3,51.4 L350.0,50.8" fill="none" stroke="#E87BA4" stroke-width="2" stroke-linejoin="round" clip-path="url(#plot63)"/><circle cx="350.0" cy="38.2" r="4" fill="#4A3AA7" stroke="#fff" stroke-width="2"/><text x="358.0" y="41.2" font-size="10" fill="#1C2630">exp_0042</text><circle cx="350.0" cy="41.0" r="4" fill="#008300" stroke="#fff" stroke-width="2"/><text x="358.0" y="54.2" font-size="10" fill="#1C2630">exp_0041</text><circle cx="350.0" cy="50.8" r="4" fill="#E87BA4" stroke="#fff" stroke-width="2"/><text x="358.0" y="67.2" font-size="10" fill="#1C2630">exp_0038</text></svg>
 <p class="small" style="margin:2px 0 0"><span style="color:#4A3AA7">━</span> exp_0042　<span style="color:#008300">━</span> exp_0041　<span style="color:#E87BA4">━</span> exp_0038</p></div>
 </div>
 <div class="btns"><span class="btn">閉じる</span></div>
@@ -1171,7 +1172,7 @@ table.rev{font-size:.92rem}
 
 <ul>
 <li>上: 設定比較表（行 = 内部キー + 表示名、列 = 各実験）。値が異なる行を色付けし、「差分のみ表示」チェックあり。</li>
-<li>下: mAP 曲線を重ねたグラフ（実験ごとに色分け）。</li>
+<li>下: AP 曲線を重ねたグラフ（実験ごとに色分け）。</li>
 </ul>
 <h3 id="sec6-4">6.4 モデル比較へ送るダイアログ（仕様 13章）</h3>
 <pre><code>モデル比較へ送る
@@ -1183,33 +1184,58 @@ table.rev{font-size:.92rem}
                           [キャンセル] [モデル比較へ送る]
 </code></pre>
 <p>「モデル比較へ送る」で <code>CANDIDATES</code> へ遷移し、候補追加ダイアログを実験・final.ptを入力済みの状態で開く。</p>
+<h3 id="sec6-5">6.5 成果物の整理ダイアログ（比較・評価設計 19章）</h3>
+<pre><code>成果物を整理
+対象の実験: exp_0003、exp_0004（2 件）
+記録（設定・学習曲線・OOF 評価・ログ）は残り、選んだファイルだけを削除します。
+  削除するもの                         ファイル数       容量
+☑ fold の定期保存モデル                      40   約 9.6 GB
+☐ fold の選択エポックのモデル                  10   約 2.4 GB
+    削除すると、将来の OOF 再評価ができなくなります
+☐ 最終学習モデル（final.pt）                   1   約 1.2 GB
+    うち 1 件（exp_0004 試行 1）は削除しません: 比較候補 RC-003 がこの最終学習モデルを参照しています
+☑ 中断・失敗した試行の一時ファイル              12   約 0.3 GB
+空く容量: 約 9.9 GB
+                                  [キャンセル]  [削除する…]
+</code></pre>
+<ul>
+<li>対象は、実験一覧でチェックした実験（チェックがなければ選択中の1件）。</li>
+<li>種類ごとに、削除できるものだけのファイル数・容量を出す。削除できないまとまりは、理由ごとに「うち N 件（実験 試行）は削除しません: 理由」と出す（理由の文はバックエンドが返す日本語）。</li>
+<li>削除できるものが1つもない種類は、チェックを外して選べなくし、理由（または「削除できるファイルはありません」）を下に出す。</li>
+<li>初めは「fold の定期保存モデル」と「中断・失敗した試行の一時ファイル」を選んでおく。選択エポックのモデルと最終学習モデルは利用者が選んだときだけ消す。</li>
+<li>「空く容量」は、チェックを変えるたびに <code>estimate_freed_bytes</code> で見積もり直す。何も選んでいなければ「削除する…」は押せず、理由をツールチップに出す。</li>
+<li>「削除する…」で「約 9.9 GB を削除します。取り消せません。」を確認してから <code>prune_artifacts</code> を呼ぶ。終わったらステータスバーに空いた容量を出し（条件を満たさず残したものがあれば件数も）、一覧と詳細を読み直す。</li>
+</ul>
 <hr />
 </section>
 <section class="card" id="sec7">
 <h2>7. モデル比較・リリース（<code>PageId.CANDIDATES</code>）</h2>
 <p>仕様: モデル比較・リリース仕様 1〜4章、6〜9章、11章、13章、15章。</p>
-<p class="small">実データへの接続で変わる点は <a href="comparison_inference_backend_design.html#s16">モデル比較・評価バックエンド設計書 16.2</a> を参照（7〜9章の本文は実装時に更新する）。</p>
+<p class="small">実データへの接続で変わった点の根拠は <a href="comparison_inference_backend_design.html#s16">モデル比較・評価バックエンド設計書 16.2</a>。</p>
 <h3 id="sec7-1">7.1 レイアウト</h3>
 <div class="mock"><div class="mock-title">モデル比較・リリース — 気泡インスタンスセグメンテーション</div>
 <div class="mock-body">
 <div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span class="on">リリース候補</span><span>マスク比較</span><span>リリース済みモデル・振り分け</span></span><span class="spacer"></span></div>
 <div class="m-toolbar"><span class="sel-combo">検証用データセット: <span class="num">val_v003</span> ▾</span><span class="sel-combo">状態: すべて ▾</span><span class="spacer"></span><span class="small">評価済みの候補を 1 つ選ぶとリリースできます</span><span class="btn dis">選択候補をリリース…</span></div>
 <div class="table-wrap"><table>
-<thead><tr><th></th><th>候補ID</th><th>モデル</th><th>実験</th><th>最終学習モデル</th><th>推論設定</th><th class="n">検証 mAP</th><th class="n">OOF mAP</th><th>状態</th><th>外部解析</th></tr></thead>
+<thead><tr><th></th><th>候補ID</th><th>モデル</th><th>実験</th><th>最終学習モデル</th><th>推論設定</th><th class="n">検証 AP</th><th class="n">OOF AP</th><th>状態</th><th>外部解析</th></tr></thead>
 <tbody><tr class="sel"><td class="ck">☑</td><td class="num">RC-001</td><td>Mask R-CNN</td><td class="num">exp_0042</td><td class="num">final.pt</td><td class="num">infer_v005</td><td class="n"><b>0.913</b></td><td class="n"><b>0.901</b></td><td><span class="tag idle">候補</span></td><td>あり</td></tr><tr class="sel"><td class="ck">☑</td><td class="num">RC-002</td><td>Cellpose</td><td class="num">exp_0051</td><td class="num">final.pt</td><td class="num">infer_v006</td><td class="n">0.890</td><td class="n">0.882</td><td><span class="tag idle">候補</span></td><td>—</td></tr><tr class=""><td class="ck">☐</td><td class="num">RC-003</td><td>Mask R-CNN</td><td class="num">exp_0060</td><td class="num">final.pt</td><td class="num">infer_v007</td><td class="n"><span class="small">未評価</span></td><td class="n">0.874</td><td><span class="tag idle">候補</span></td><td>—</td></tr><tr class=""><td class="ck">☐</td><td class="num">RC-000</td><td>Mask R-CNN</td><td class="num">exp_0031</td><td class="num">final.pt</td><td class="num">infer_v004</td><td class="n">0.884</td><td><span class="tag okk">リリース済み</span></td><td>あり</td></tr></tbody></table></div>
 <div class="status"><span>RC-003 を追加しました</span><span>実行中ジョブ <span class="num">1</span></span><span>自動保存 <span class="num">10:42:08</span></span></div>
 </div></div>
 <ul>
-<li>検証 mAP・OOF mAP の列は右寄せにし、列ごとに最も高い値を太字にする（検証 mAP は選択中の検証用データセットでの値）。未評価はスレートの文字で「未評価」と出す。</li>
+<li>検証 AP・OOF AP の列は右寄せにし、列ごとに最も高い値を太字にする（検証 AP は選択中の検証用データセットでの値）。未評価はスレートの文字で「未評価」と出す。</li>
 <li>「選択候補をリリース…」は、評価済みの候補を1件だけ選んだときに主ボタンになる。それ以外は無効にし、理由をツールチップに出す（モックでは2件選択中のため無効）。</li>
 <li>候補の追加・評価・詳細・マスク比較・非採用・出力は「候補」メニューまたは右クリックに置く。「選択候補をリリース…」だけを絞り込み行の右端に置き、押せない理由はボタン左に表示する。</li>
 </ul>
 
 <ul>
-<li>mAP は選択中の検証用データセットでの全体 mAP。未評価なら「未評価」。</li>
-<li>状態: 候補 / 評価中 / リリース済み / 非採用。</li>
+<li>検証 AP は選択中の検証用データセットでの全体 AP（Cellpose 方式）。未評価なら「未評価」。</li>
+<li>OOF AP は、学習時の OOF AP をこの候補と比べられるとき（推論設定が学習時の評価と同じ）だけ値を出し、それ以外は「対象外」と出す。</li>
+<li>状態: 候補 / 評価待ち / 評価中 / リリース済み / 非採用。評価待ち・評価中は評価の実行状況から決める。</li>
+<li>検証用データセットの初期値は、最も新しい候補の基準検証版（なければ最も新しい検証版）。基準検証版と違う版を選んでいるときは注記を出す。</li>
 <li>ボタンの有効条件:</li>
-<li>評価を実行: 1件以上（リリース済み・非採用を除く）。FakeJob で全体・分類別 mAP と件数を生成する。</li>
+<li>評価を実行: 1件以上（リリース済み・非採用を除く）。評価プロセスで全体・分類別 AP と件数を求める。</li>
+<li>評価を中止: 評価待ち・評価中の候補。候補メニューと右クリックに置く。</li>
 <li>詳細評価を見る: 1件（評価済み）。</li>
 <li>マスク比較: 2件以上（最大4件）。</li>
 <li>粒子解析用マスク出力: 1件以上。</li>
@@ -1218,17 +1244,17 @@ table.rev{font-size:.92rem}
 </ul>
 <h3 id="sec7-2">7.2 候補追加ダイアログ</h3>
 <ul>
-<li>実験（完了した実験のみ）、試行番号とその試行の final.pt、モデル種類（実験から自動・読み取り専用）、前処理設定（実験から自動・読み取り専用で表示）。候補詳細には元の試行番号を表示し、再試行後も候補の OOF mAP と参照モデルを変えない。</li>
+<li>実験（完了した実験のみ）、試行番号（必須）とその試行の final.pt、モデル種類（実験から自動・読み取り専用）、前処理設定（実験から自動・読み取り専用で表示）。候補詳細には元の試行番号を表示し、再試行後も候補の OOF AP と参照モデルを変えない。</li>
 <li>推論設定: 「既存の推論設定を使う [infer_v005 ▼]」または「新しい推論設定を作る」。</li>
 <li>Mask R-CNN: 検出スコア閾値、Box NMS閾値、最大検出数。</li>
 <li>Cellpose: セル確率閾値、フロー閾値。</li>
 <li>表示中のモデル種類に合う項目だけを出す。</li>
 <li>コメント。</li>
-<li>同じ final.pt + 同じ推論設定の候補がすでにあれば、「既に RC-00x として登録済み」とエラーにする。推論設定が異なれば別候補として登録できる（仕様 3章）。</li>
+<li>同じ final.pt + 同じ推論設定の候補がすでにあれば、ダイアログ内に「既に RC-00x として登録済み」と出す。推論設定が異なれば別候補として登録できる（仕様 3章）。推論設定の初期値と範囲はバックエンド設計 5.1 に合わせる。</li>
 </ul>
 <h3 id="sec7-3">7.3 詳細評価ダイアログ（仕様 9章）</h3>
 <ul>
-<li>評価表: 行 = 平均適合率(mAP)・対象件数、列 = 全体・分類A・分類B・分類C。</li>
+<li>評価表: 行 = AP（Cellpose 方式）・対象件数、列 = 全体・分類A・分類B・分類C。説明は「Cellpose 方式 AP（TP / (TP + FP + FN)、IoU 0.50–0.95 の平均、画像平均）」。全体の対象件数、学習時 OOF AP（参考）と注記、学習データとの同一画像の混入の有無も出す。</li>
 <li>外部粒子解析結果（手入力）: 自由項目の表（項目名・値・単位。例: 平均粒子径 12.3 µm）で行を追加・削除できる。解析ソフト名、解析日。</li>
 <li>コメント（目視所見・注意事項）。</li>
 <li>「アプリ内では自動算出しない補助評価です」と注記する。</li>
@@ -1238,7 +1264,7 @@ table.rev{font-size:.92rem}
 <ul>
 <li>出力先フォルダ、出力内容（インスタンスラベルマスク / 粒子解析用二値マスク、複数選択）、ファイル形式（PNG / TIFF）、対象（検証用データセット全体 / 画像分類で絞り込み）。</li>
 <li>「後処理は隣接気泡の分離のみ（8近傍接触の境界を背景化）」と注記する。</li>
-<li>FakeJob。実ファイルは作らない。</li>
+<li>実際にファイルを出力する（バックエンド設計 12章）。完了時に出力フォルダと、消失・分断した粒子の件数を出し、フォルダを開けるようにする。</li>
 </ul>
 <h3 id="sec7-5">7.5 リリース登録ダイアログ（仕様 15章）</h3>
 <pre><code>リリース済みモデル登録
@@ -1248,12 +1274,13 @@ table.rev{font-size:.92rem}
 途中保存モデル     : 試行 1/final.pt
 推論設定           : infer_v005
 検証用データセット  : val_v003
-評価結果           : mAP 0.91（分類A 0.93 / 分類B 0.85 / 分類C 0.90）
+評価結果           : AP 0.91（分類A 0.93 / 分類B 0.85 / 分類C 0.90）
 コメント           : [分類A 本番用モデル]
 ※ 登録後は変更できません。本番で使うには「モデル振り分け」で明示的に割り当てます。
                     [キャンセル] [リリース済みモデルとして登録]
 </code></pre>
 <ul>
+<li>登録に使う評価（evaluation_id）は開いた時点で固定する。学習データとの混入を確認できない評価では注意を出す。重みのコピー中は進行状況を出す。</li>
 <li>登録後、候補の状態を「リリース済み」にし、「モデル振り分け画面を開きますか？」を聞く（はい → <code>RELEASED_MODELS</code>、<code>select=model_id</code>）。</li>
 </ul>
 <hr />
@@ -1277,15 +1304,20 @@ table.rev{font-size:.92rem}
 <ul>
 <li>表示枠の見出し（候補 ID・モデル）と検出数は、画像の上に小さく重ねる。枠の外に見出し行を置かないことで、画像を大きく取る。</li>
 <li>表示形式は「原画像」と共有設定した1種類の二択で、全枠に同時に効く。設定名は全画面の原画像切替設定に追従する。</li>
-<li>比べる画像は、選択中の検証用データセットのものを使う（交差検証・OOF 評価の導入後も同じ）。</li>
+<li>比べる画像は、選択中の確定済み検証用データセット版から読む（作業中データは読まない）。</li>
+<li>画面を開いた時点で、候補ごとにこの検証版で採用する評価（evaluation_id）を固定し、予測はその評価の保存済み予測を読む。開いている間に新しい評価ができても、画面を開き直すまで表示は変えない。</li>
+<li>選んだ候補のどれかがこの検証版で未評価、または評価結果が壊れているときは開かず、理由を出す（例「マスク比較を開けません。RC-003 はこの検証用データセットで未評価です」）。</li>
+<li>原画像が uint16 や浮動小数のときは、表示用に 0.5〜99.5 パーセンタイルを 0〜255 に伸ばして描く（uint8 はそのまま。モデル入力の正規化とは別で、画面表示だけに使う）。</li>
+<li>予測や原画像を読めない枠には「予測を読み込めません」「原画像を読み込めません」と出し、他の枠は表示を続ける。</li>
 <li>モックの右の枠は、Cellpose が左の2つの気泡を1つにまとめてしまった例（統合エラー）を示している。見比べて違いに気づけることがこの画面の目的である。</li>
 </ul>
 
 <ul>
 <li>候補数 + 1（原画像）の表示枠を横並びにする。5枠を超える場合は 2 段にする。</li>
 <li>全表示枠のズーム・パンを <code>ViewSynchronizer</code> で同期する。</li>
-<li>画像分類で絞り込むと、対象画像の候補が絞られる。</li>
-<li>各候補の結果は合成マスク（候補ごとに乱数シードを変えて少し違う結果にする）。</li>
+<li>画像分類の選択肢は、その検証版に現れる分類。絞り込むと、対象画像の候補が絞られる。</li>
+<li>表示のキャッシュのキーには、検証版・evaluation_id・表示形式を含める。</li>
+<li>MockBackend では、各候補の予測は合成マスク（候補ごとに乱数シードを変えて少し違う結果にする）。</li>
 <li>前/次ボタンと左右キーで画像を送る。</li>
 </ul>
 <hr />
@@ -1299,14 +1331,14 @@ table.rev{font-size:.92rem}
 <div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span>リリース候補</span><span>マスク比較</span><span class="on">リリース済みモデル・振り分け</span></span><span class="spacer"></span></div>
 <div class="m-split" style="grid-template-columns:2fr 1fr">
 <div class="table-wrap"><table>
-<thead><tr><th>モデルID</th><th>モデル</th><th>候補</th><th>推論設定</th><th>検証用</th><th class="n">検証用 mAP</th><th class="n">OOF mAP</th><th>リリース日時</th><th>割り当て中</th></tr></thead>
+<thead><tr><th>モデルID</th><th>モデル</th><th>候補</th><th>検証用</th><th class="n">検証 AP</th><th class="n">OOF AP</th><th>リリース日時</th><th>割り当て中</th></tr></thead>
 <tbody>
-<tr class="sel"><td class="num">model_008</td><td>Mask R-CNN</td><td class="num">RC-001</td><td class="num">infer_v005</td><td class="num">val_v003</td><td class="n">0.913</td><td class="n">0.901</td><td class="num">2026-09-25 10:12</td><td class="small">—</td></tr>
-<tr><td class="num">model_007</td><td>Mask R-CNN</td><td class="num">RC-000</td><td class="num">infer_v004</td><td class="num">val_v003</td><td class="n">0.884</td><td class="n">0.872</td><td class="num">2026-09-10 16:40</td><td>分類A, 分類C</td></tr>
-<tr><td class="num">model_012</td><td>Cellpose</td><td class="num">RC-010</td><td class="num">infer_v006</td><td class="num">val_v002</td><td class="n">0.871</td><td class="n">0.862</td><td class="num">2026-08-28 09:05</td><td>分類B</td></tr>
+<tr class="sel"><td class="num">model_008</td><td>Mask R-CNN</td><td class="num">RC-001</td><td class="num">val_v003</td><td class="n">0.913</td><td class="n">0.901</td><td class="num">2026-09-25 10:12</td><td class="small">—</td></tr>
+<tr><td class="num">model_007</td><td>Mask R-CNN</td><td class="num">RC-000</td><td class="num">val_v003</td><td class="n">0.884</td><td class="n">0.872</td><td class="num">2026-09-10 16:40</td><td>分類A, 分類C</td></tr>
+<tr><td class="num">model_012</td><td>Cellpose</td><td class="num">RC-010</td><td class="num">val_v002</td><td class="n">0.871</td><td class="n">0.862</td><td class="num">2026-08-28 09:05</td><td>分類B</td></tr>
 </tbody></table></div>
 <div class="panel" style="font-size:.8rem;line-height:1.8"><p class="ptitle">model_008 の詳細</p>
-実験 <span class="num">exp_0042</span> ・ <span class="num">final.pt</span><br>検証用 mAP <span class="num">0.913</span> ・ OOF mAP <span class="num">0.901</span>（A <span class="num">0.93</span> / B <span class="num">0.85</span> / C <span class="num">0.90</span>）<br>コメント 分類A 本番用モデル<br>
+実験 <span class="num">exp_0042</span> ・ <span class="num">final.pt</span><br>検証 AP <span class="num">0.913</span> ・ OOF AP <span class="num">0.901</span>（A <span class="num">0.93</span> / B <span class="num">0.85</span> / C <span class="num">0.90</span>）<br>コメント 分類A 本番用モデル<br>
 <span class="small">「設定を変えて新しいリリースを作る」は「リリース」メニューまたは右クリックから実行</span></div>
 </div>
 <p class="ptitle" style="margin-top:10px;border-bottom:1px solid var(--rule);padding-bottom:2px">モデル振り分け</p>
@@ -1323,13 +1355,14 @@ table.rev{font-size:.92rem}
 </div></div>
 
 <p><strong>上: リリース済みモデル一覧</strong>（読み取り専用）
-- 列: モデルID、モデル、候補、実験、final.pt、推論設定、検証用データセット、検証用 mAP、OOF mAP、リリース日時、割り当て中の分類、コメント。
-- 選択すると右に詳細（仕様 11章の全項目: model_id, experiment_id, checkpoint, preprocessing_config, inference_config, validation_dataset, evaluation_result, released_at, comment）。
+- 列: モデルID、モデル、候補、実験、途中保存モデル、検証用データセット、検証 AP、OOF AP、リリース日時、割り当て中の分類、コメント。
+- 一覧と詳細はリリースの記録（release.json）だけから作り、実験や候補は引かない（実験が消えても表示できる）。モデル種類は記録の前処理設定・推論設定から判断する。
+- 選択すると右に詳細（実験・途中保存モデル、検証 AP と分類別の値、OOF AP、推論設定の値、検証用データセット、リリース日時、コメント）。「リリースの詳細を表示…」で前処理設定・推論設定・評価結果の全項目を表で出す。
 - [設定を変えて新しいリリースを作る]: 「リリース」メニューまたは右クリックから元の実験・final.ptで候補追加へ遷移する（上書きしない原則の導線）。</p>
 <p><strong>下: モデル振り分け</strong>
-- 表: 画像分類 | 現在の有効モデル | 変更後（コンボ: リリース済みモデル + 未割り当て）。
+- 表: 画像分類 | 現在の有効モデル | 変更後（コンボ: リリース済みモデル + 未割り当て）。行は、確定済みの全データセット版（学習・検証）に現れる分類と、振り分けにすでにある分類。
 - 変更がある行は色付けする。
-- [変更を適用…]: 変更点の一覧（分類A: model_007 → model_008）を出して確認後、反映する。
+- [変更を適用…]: 変更点の一覧（分類A: model_007 → model_008）を出して確認後、画面を読み込んだ時点の revision を付けて反映する。別の操作で振り分けが変わっていたときは何も変えず、「振り分けが別の操作で変更されました。画面を開き直してください」と出して読み直す。未適用の変更があるうちは、タブを切り替えて戻っても読み込み時の振り分けと revision を保つ。
 - [変更を破棄] は「リリース」メニューまたは右クリックから実行する。
 - 変更履歴表: 日時、画像分類、変更前、変更後。
 - 注記: 「新しいリリース済みモデルを登録しても自動では切り替わりません」。</p>

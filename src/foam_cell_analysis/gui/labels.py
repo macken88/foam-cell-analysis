@@ -216,6 +216,18 @@ def candidate_status_label(value: str) -> str:
     return _CANDIDATE_STATUSES.get(value, value)
 
 
+_CONTAMINATION_LABELS = {
+    "none": "なし",
+    "found": "あり（リリース不可）",
+    "unknown": "確認できません",
+}
+
+
+def contamination_label(status: str | None) -> str:
+    """学習混入の検査結果（比較・推論設計 3.4）を「同一画像の混入」の表示へ変換する。"""
+    return _CONTAMINATION_LABELS.get(str(status or "unknown"), "確認できません")
+
+
 def format_score(value: float | None, digits: int = 3) -> str:
     """スコアを指定桁数で表示する。値が無い場合はダッシュにする。"""
     return "—" if value is None else f"{value:.{digits}f}"

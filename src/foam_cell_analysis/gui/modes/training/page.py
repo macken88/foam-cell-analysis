@@ -660,7 +660,7 @@ class TrainingPage(BasePage):
             if path == "checkpoint.best_metric":
                 section.add_row(
                     "",
-                    QLabel("エポック選択の指標：OOF 平均適合率（AP）・最大"),
+                    QLabel("エポック選択の指標：OOF AP（Cellpose 方式）・最大"),
                     path,
                 )
                 continue

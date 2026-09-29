@@ -112,8 +112,8 @@ def test_qtest_training_click_finishes_cv_and_final_model(shell, qapp, monkeypat
         for row in range(candidates.table.rowCount())
         if candidates.table.item(row, 1).text() == candidate.candidate_id
     )
-    assert candidates.table.horizontalHeaderItem(6).text() == "検証 mAP"
-    assert candidates.table.horizontalHeaderItem(7).text() == "OOF mAP"
+    assert candidates.table.horizontalHeaderItem(6).text() == "検証 AP"
+    assert candidates.table.horizontalHeaderItem(7).text() == "OOF AP"
     assert candidates.table.item(candidate_row, 7).text() != "—"
 
 
@@ -317,7 +317,7 @@ def test_qtest_final_training_uses_selected_epoch_for_first_run_and_retry(shell,
 
 
 def test_epoch_selection_is_read_only_oof_map_maximum(shell, qapp, monkeypatch):
-    """学習フォームは OOF mAP 最大固定を表示し、設定へ旧方向キーを出さない。"""
+    """学習フォームは OOF AP 最大固定を表示し、設定へ旧方向キーを出さない。"""
     from PySide6.QtCore import Qt
 
     monkeypatch.setattr(QMessageBox, "question", lambda *_: QMessageBox.StandardButton.Yes)
@@ -326,7 +326,7 @@ def test_epoch_selection_is_read_only_oof_map_maximum(shell, qapp, monkeypatch):
     selection_label = next(
         label
         for label in page.findChildren(QLabel)
-        if label.text() == "エポック選択の指標：OOF 平均適合率（AP）・最大"
+        if label.text() == "エポック選択の指標：OOF AP（Cellpose 方式）・最大"
     )
     assert selection_label
     assert "checkpoint.best_metric" not in page.fields

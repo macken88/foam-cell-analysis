@@ -1,6 +1,7 @@
 """ホームと複数モードウィンドウを通した画面間 E2E フロー。"""
 
 from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
 
 from foam_cell_analysis.gui.modes.comparison.dialogs import CandidateDialog
 from foam_cell_analysis.gui.navigation import ModeId, PageId
@@ -91,12 +92,19 @@ def test_training_candidate_release_and_routing_flow(shell, qtbot, monkeypatch):
     candidates.table.item(row, 0).setCheckState(Qt.CheckState.Checked)
     candidates._evaluate()
     _wait_for(
-        qtbot, lambda: candidate.status == "candidate" and "val_v003" in candidate.evaluations
+        qtbot,
+        lambda: not shell.ctx.evaluation_runner.is_busy and "val_v003" in candidate.evaluations,
     )
     candidates.table.item(row, 0).setCheckState(Qt.CheckState.Checked)
+
+    def register(dialog):
+        # 登録ボタンを押し、ワーカースレッドでのコピーが終わるまで待つ
+        QTest.mouseClick(dialog.ok_button, Qt.MouseButton.LeftButton)
+        qtbot.waitUntil(lambda: dialog.model is not None, timeout=5000)
+        return dialog.result()
+
     monkeypatch.setattr(
-        "foam_cell_analysis.gui.modes.comparison.candidates_page.ReleaseDialog.exec",
-        lambda dialog: QDialog.DialogCode.Accepted,
+        "foam_cell_analysis.gui.modes.comparison.candidates_page.ReleaseDialog.exec", register
     )
     monkeypatch.setattr(
         QMessageBox, "question", lambda *args, **kwargs: QMessageBox.StandardButton.Yes
@@ -106,12 +114,9 @@ def test_training_candidate_release_and_routing_flow(shell, qtbot, monkeypatch):
     assert released.oof_evaluation is not None
     assert shell.current_page() is shell.page(PageId.RELEASED_MODELS)
     assert (
-        shell.page(PageId.RELEASED_MODELS).model_table.horizontalHeaderItem(7).text()
-        == "検証用 mAP"
+        shell.page(PageId.RELEASED_MODELS).model_table.horizontalHeaderItem(6).text() == "検証 AP"
     )
-    assert (
-        shell.page(PageId.RELEASED_MODELS).model_table.horizontalHeaderItem(8).text() == "OOF mAP"
-    )
+    assert shell.page(PageId.RELEASED_MODELS).model_table.horizontalHeaderItem(7).text() == "OOF AP"
     assert shell.page(PageId.RELEASED_MODELS).select_model(released.model_id)
     routing = shell.page(PageId.RELEASED_MODELS)
     control = routing._routing_controls["分類A"]
@@ -152,7 +157,8 @@ def test_copy_experiment_allocates_new_id_and_copies_config(shell):
 
 def test_unassigned_inference_routes_to_released_models(shell):
     inference = shell.page(PageId.INFERENCE)
-    shell.ctx.backend.apply_routing({"分類A": None})
+    state = shell.ctx.backend.get_routing_state()
+    shell.ctx.backend.apply_routing({"分類A": None}, expected_revision=state.revision)
     inference.refresh_routing()
     inference.add_images(["unassigned.png"])
     assert not inference.route_button.isHidden()

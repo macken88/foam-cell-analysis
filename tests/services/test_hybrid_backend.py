@@ -58,10 +58,8 @@ def test_comparison_methods_are_defined_on_hybrid_itself():
 
 def test_mock_only_comparison_api_does_not_fall_through(tmp_path):
     backend = HybridBackend(tmp_path)
-    for name in ("add_candidate_from_snapshot", "_seed_validation_data"):
+    for name in ("add_candidate_from_snapshot", "_seed_validation_data", "start_evaluation"):
         assert not hasattr(backend, name)
-    with pytest.raises(ValueError, match="評価ランナー"):
-        backend.start_evaluation(["RC-001"], "val_v000")
 
 
 def test_validation_versions_come_from_dataset_store(hybrid):
@@ -203,10 +201,8 @@ def test_export_masks_from_adopted_evaluation_and_old_call_forms(hybrid, tmp_pat
     assert result.n_images == 1
     assert result.folder is not None and (result.folder / "export_info.json").is_file()
     assert progress[-1] == (1, 1)
-    # 段階 D2 まで残す旧形式: (candidate_id, item_id) と (candidate_id, comment, version)
-    new = hybrid.get_candidate_prediction(candidate.candidate_id, "eval_001", "val_v000_0")
-    old = hybrid.get_candidate_prediction(candidate.candidate_id, "val_v000_0")
-    assert (new == old).all()
+    labels = hybrid.get_candidate_prediction(candidate.candidate_id, "eval_001", "val_v000_0")
+    assert labels.ndim == 2
     released = hybrid.release_candidate(candidate.candidate_id, "eval_001", "採用")
     assert released.validation_dataset == "val_v000"
     state = hybrid.get_routing_state()

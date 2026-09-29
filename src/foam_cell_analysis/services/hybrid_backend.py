@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime
@@ -26,21 +25,15 @@ from foam_cell_analysis.services.comparison_service import ComparisonService
 from foam_cell_analysis.services.mock.backend import MockBackend
 from foam_cell_analysis.services.models import (
     DatasetVersion,
-    ExternalResult,
-    RoutingHistory,
 )
 from foam_cell_analysis.services.training_service import TrainingService
 
 logger = logging.getLogger(__name__)
 
-_EVALUATION_ID = re.compile(r"eval_\d{3,}")
 
 # MockBackend にあるが hybrid では使わせない名前（比較系の旧 API・模擬データの作成口）
 _BLOCKED_MOCK_NAMES = frozenset(
     {
-        "add_candidate_from_snapshot",
-        "start_evaluation",
-        "evaluate_candidate",
         "_experiment_reference_reason",
         "_seed_validation_data",
         "_seed_inference_configs",
@@ -255,11 +248,6 @@ class HybridBackend:
 
     def add_candidate(self, experiment_id, attempt, inference_config_id, comment=""):
         """試行を明示して比較候補を作る（5.3）。"""
-        if isinstance(attempt, str):
-            # 旧形式（checkpoint="final.pt"）。最新の完了試行を使う。段階 D2 で旧形式を削除
-            if attempt != "final.pt":
-                raise ValueError("比較候補には最終学習モデルのみ指定できます")
-            attempt = self.training.create_candidate_snapshot(experiment_id).attempt
         return self.comparison.add_candidate(experiment_id, attempt, inference_config_id, comment)
 
     def reject_candidate(self, candidate_id):
@@ -299,42 +287,8 @@ class HybridBackend:
     def base_validation_version_for(self, candidate_id):
         return self.comparison.base_validation_version_for(candidate_id)
 
-    def start_evaluation(self, candidate_ids, validation_version):
-        """旧 API。hybrid では評価ランナー（EvaluationRunner.start）から実行する。
-
-        段階 D2 で画面を EvaluationRunner に接続したら削除する。
-        """
-        del candidate_ids, validation_version
-        raise ValueError("評価は評価ランナーから実行してください")
-
-    def evaluate_candidate(self, candidate_id, validation_version=None):
-        """旧 API（start_evaluation と同じ扱い）。段階 D2 で削除する。"""
-        del candidate_id, validation_version
-        raise ValueError("評価は評価ランナーから実行してください")
-
-    def _adopted_evaluation_id(self, candidate_id: str, validation_version: str | None) -> str:
-        """旧形式の呼び出し用: 検証版で採用する評価 ID を返す。なければ ValueError。"""
-        version = validation_version or self.comparison.base_validation_version_for(candidate_id)
-        version = version or self.comparison.default_validation_version()
-        record = (
-            self.comparison.get_candidate_evaluation(candidate_id, version) if version else None
-        )
-        if record is None or record.broken:
-            raise ValueError("評価済みの結果がありません。先に評価を実行してください")
-        return record.evaluation_id
-
-    def get_candidate_prediction(self, candidate_id, *args):
-        """評価で保存した予測を返す。(candidate_id, evaluation_id, item_id)。
-
-        旧形式 (candidate_id, item_id) は既定の検証版で採用する評価を使う。段階 D2 で旧形式を削除。
-        """
-        if len(args) == 2:
-            evaluation_id, item_id = args
-        elif len(args) == 1:
-            item_id = args[0]
-            evaluation_id = self._adopted_evaluation_id(candidate_id, None)
-        else:
-            raise TypeError("get_candidate_prediction の引数が不正です")
+    def get_candidate_prediction(self, candidate_id, evaluation_id, item_id):
+        """評価で保存した予測を返す。"""
         return self.comparison.get_candidate_prediction(candidate_id, evaluation_id, item_id)
 
     # ---- 外部解析（9.4） ----
@@ -342,31 +296,9 @@ class HybridBackend:
     def list_external_results(self, candidate_id):
         return self.comparison.list_external_results(candidate_id)
 
-    def save_external_results(self, candidate_id, evaluation_id, results=None, *args, **kwargs):
-        """外部解析結果を評価 ID 付きで保存する。
-
-        旧形式 (candidate_id, results, software, date, comment) は、既定の検証版で採用する評価に
-        結び付ける。段階 D2 で旧形式を削除。
-        """
-        if isinstance(evaluation_id, list):
-            old = dict(zip(("software", "date", "comment"), (results, *args), strict=False))
-            old.update(kwargs)
-            return self.comparison.save_external_results(
-                candidate_id,
-                self._adopted_evaluation_id(candidate_id, None),
-                [
-                    item if isinstance(item, ExternalResult) else ExternalResult(**item)
-                    for item in evaluation_id
-                ],
-                software=old.get("software") or "",
-                analyzed_on=old.get("date") or "",
-                comment=old.get("comment"),
-            )
-        if args:
-            raise TypeError("save_external_results の追加項目はキーワードで指定してください")
-        return self.comparison.save_external_results(
-            candidate_id, evaluation_id, results or [], **kwargs
-        )
+    def save_external_results(self, candidate_id, evaluation_id, results, **kwargs):
+        """外部解析結果を評価 ID 付きで保存する。"""
+        return self.comparison.save_external_results(candidate_id, evaluation_id, results, **kwargs)
 
     # ---- マスク出力（12 章） ----
 
@@ -387,13 +319,7 @@ class HybridBackend:
             raise ValueError(f"{candidate_id} は評価が完了していないため出力できません")
         if record.broken:
             raise ValueError("評価結果のファイルが壊れています。再評価してください")
-        run_dir = (
-            self.comparison.candidates_root
-            / candidate_id
-            / "evaluations"
-            / record.validation_version
-            / evaluation_id
-        )
+        run_dir = self.comparison.evaluation_run_dir(candidate_id, evaluation_id)
         try:
             spec = read_json(run_dir / "run_spec.json")
             result = read_json(run_dir / "result.json")
@@ -446,18 +372,8 @@ class HybridBackend:
 
     # ---- リリース（13 章） ----
 
-    def release_candidate(
-        self, candidate_id, evaluation_id="", comment="", validation_version=None
-    ):
-        """指定した評価で候補をリリースする（13.1）。
-
-        旧形式 (candidate_id, comment, validation_version) は、その検証版で採用する評価を使う。
-        段階 D2 で旧形式を削除。
-        """
-        if not _EVALUATION_ID.fullmatch(str(evaluation_id or "")):
-            old_comment, old_version = evaluation_id, comment or validation_version
-            evaluation_id = self._adopted_evaluation_id(candidate_id, old_version or None)
-            comment = old_comment or ""
+    def release_candidate(self, candidate_id, evaluation_id, comment=""):
+        """指定した評価で候補をリリースする（13.1）。"""
         return self.comparison.release_candidate(candidate_id, evaluation_id, comment)
 
     def list_released_models(self):
@@ -471,24 +387,9 @@ class HybridBackend:
     def get_routing(self):
         return self.comparison.get_routing()
 
-    def apply_routing(self, changes, *, expected_revision=None):
-        """全変更を検証してから一括で適用する。
-
-        expected_revision を省いた旧形式は、今の revision で適用し、変わった分類の履歴を返す。
-        段階 D2 で旧形式を削除。
-        """
-        if expected_revision is not None:
-            return self.comparison.apply_routing(changes, expected_revision=expected_revision)
-        before = self.comparison.get_routing_state()
-        after = self.comparison.apply_routing(changes, expected_revision=before.revision)
-        if after.revision == before.revision:
-            return []
-        now = datetime.now().astimezone()
-        return [
-            RoutingHistory(now, name, before.assignments.get(name), after.assignments.get(name))
-            for name in changes
-            if before.assignments.get(name) != after.assignments.get(name)
-        ]
+    def apply_routing(self, changes, *, expected_revision):
+        """全変更を検証してから一括で適用する。"""
+        return self.comparison.apply_routing(changes, expected_revision=expected_revision)
 
     def list_routing_history(self):
         return self.comparison.list_routing_history()

@@ -433,16 +433,31 @@ class HomeWindow(QMainWindow):
         self.raise_()
         self.activateWindow()
 
+    def _interrupt_prompt(self) -> str | None:
+        """学習・評価の実行中なら、中断して終了するかを尋ねる文を返す。"""
+        training = self.ctx.training_runner.is_busy
+        evaluation = bool(self.ctx.evaluation_runner and self.ctx.evaluation_runner.is_busy)
+        if training and evaluation:
+            return "学習と評価を中断して終了しますか？"
+        if training:
+            return "学習を中断して終了しますか？"
+        if evaluation:
+            return "評価を中断して終了しますか？"
+        return None
+
     def confirm_exit(self) -> bool:
         """モード画面または学習中ジョブがある場合の終了確認。"""
-        if not self.manager.open_modes() and self.ctx.jobs.running_count == 0:
+        if (
+            not self.manager.open_modes()
+            and self.ctx.jobs.running_count == 0
+            and self._interrupt_prompt() is None
+        ):
             return True
         result = QMessageBox.question(
             self,
             "終了の確認",
-            "学習を中断して終了しますか？"
-            if self.ctx.training_runner.is_busy
-            else "開いているモード画面または実行中ジョブがあります。アプリを終了しますか？",
+            self._interrupt_prompt()
+            or "開いているモード画面または実行中ジョブがあります。アプリを終了しますか？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -456,17 +471,18 @@ class HomeWindow(QMainWindow):
         self.manager.settings.sync()
         queue = self.ctx.queue_controller
         queue_state = queue.suspend_for_shutdown() if queue else None
+        evaluation = self.ctx.evaluation_runner
         needs_confirmation = (
             bool(self.manager.open_modes())
             or self.ctx.training_runner.is_busy
+            or bool(evaluation and evaluation.is_busy)
             or bool(queue and queue_state and queue_state[0])
         )
         answer = True
         if needs_confirmation:
             prompt = (
-                "学習を中断して終了しますか？"
-                if self.ctx.training_runner.is_busy
-                else "実行中の画面または学習があります。アプリを終了しますか？"
+                self._interrupt_prompt()
+                or "実行中の画面または学習があります。アプリを終了しますか？"
             )
             answer = (
                 QMessageBox.question(
@@ -481,6 +497,9 @@ class HomeWindow(QMainWindow):
         if answer:
             if self.ctx.training_runner.is_busy:
                 self.ctx.training_runner.request_stop("app_exit", timeout_ms=10_000)
+            if evaluation is not None and evaluation.is_busy:
+                # 学習と同じ手順（stop_request.json → kill → 最大 10 秒待つ。比較・推論設計 15.2）
+                evaluation.shutdown()
             self.manager.save_all_windows()
             event.accept()
             from PySide6.QtWidgets import QApplication

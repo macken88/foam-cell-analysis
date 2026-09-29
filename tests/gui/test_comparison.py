@@ -1,8 +1,9 @@
-"""比較・リリース画面の動作確認。"""
+"""比較・リリース画面の動作確認（比較・推論設計 16.2）。"""
 
+import pytest
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QHeaderView
+from PySide6.QtWidgets import QDialog, QDialogButtonBox, QMessageBox
 
 from foam_cell_analysis.gui.context import AppContext
 from foam_cell_analysis.gui.jobs import JobManager
@@ -11,43 +12,65 @@ from foam_cell_analysis.gui.modes.comparison.dialogs import (
     CandidateDialog,
     EvaluationDialog,
     MaskExportDialog,
+    MaskExportDoneDialog,
+    ReleaseDialog,
 )
 from foam_cell_analysis.gui.modes.comparison.mask_compare import MaskComparisonPage
 from foam_cell_analysis.gui.navigation import ModeId, Navigator, PageId
 from foam_cell_analysis.services.mock.backend import MockBackend
+from foam_cell_analysis.services.models import RunAttempt
 
 
 def make_context() -> AppContext:
     return AppContext(MockBackend(), Navigator(), JobManager())
 
 
-def test_candidate_add_evaluate_release_and_route(qtbot):
-    ctx = make_context()
-    experiment = ctx.backend.get_experiment("exp_0042")
-    config = ctx.backend.create_inference_config("mask_rcnn", {"box_score_thresh": 0.3})
-    candidate = ctx.backend.add_candidate(
-        "exp_0042", experiment.checkpoints[-1].name, config.config_id
+def _row(page, candidate_id):
+    return next(
+        row
+        for row in range(page.table.rowCount())
+        if page.table.item(row, 1).text() == candidate_id
     )
-    ctx.backend.start_evaluation([candidate.candidate_id], "val_v003")
-    ctx.backend.evaluate_candidate(candidate.candidate_id, "val_v003")
-    released = ctx.backend.release_candidate(candidate.candidate_id, "テスト", "val_v003")
-    assert candidate.status == "released"
-    assert released.candidate_id == candidate.candidate_id
-    assert released.model_id in [model.model_id for model in ctx.backend.list_released_models()]
+
+
+def _click_checkbox(page, candidate_id):
+    rect = page.table.visualItemRect(page.table.item(_row(page, candidate_id), 0))
+    QTest.mouseClick(
+        page.table.viewport(),
+        Qt.MouseButton.LeftButton,
+        pos=rect.topLeft() + QPoint(12, rect.height() // 2),
+    )
+
+
+def _click_menu_item(window, top_label, item_label):
+    """メニューバーのメニューを開き、項目をマウスでクリックする。"""
+    menu = next(
+        action.menu()
+        for action in window.menuBar().actions()
+        if action.text().startswith(top_label)
+    )
+    action = next(item for item in menu.actions() if item.text().split("\t", 1)[0] == item_label)
+    assert action.isEnabled(), action.toolTip()
+    menu.popup(window.mapToGlobal(QPoint(0, 0)))
+    QTest.qWaitForWindowExposed(menu)
+    QTest.mouseClick(menu, Qt.MouseButton.LeftButton, pos=menu.actionGeometry(action).center())
+
+
+def _candidates(shell):
+    shell.navigate(PageId.CANDIDATES)
+    window = shell.manager.window(ModeId.COMPARISON)
+    window.resize(1400, 900)
+    page = shell.page(PageId.CANDIDATES)
+    page.refresh()
+    return window, page
 
 
 def test_duplicate_candidate_raises():
     ctx = make_context()
-    experiment = ctx.backend.get_experiment("exp_0042")
     config = ctx.backend.create_inference_config("mask_rcnn", {"box_score_thresh": 0.3})
-    checkpoint = experiment.checkpoints[-1].name
-    ctx.backend.add_candidate("exp_0042", checkpoint, config.config_id)
-    try:
-        ctx.backend.add_candidate("exp_0042", checkpoint, config.config_id)
-    except ValueError as error:
-        assert "登録済み" in str(error)
-    else:
-        raise AssertionError("重複候補が拒否されませんでした")
+    ctx.backend.add_candidate("exp_0042", 1, config.config_id)
+    with pytest.raises(ValueError, match="登録済み"):
+        ctx.backend.add_candidate("exp_0042", 1, config.config_id)
 
 
 def test_mask_comparison_slots_and_navigation(qtbot):
@@ -80,143 +103,241 @@ def test_mask_comparison_shortcuts_update_every_slot_and_status(qtbot):
     assert all(not view.scene().items() == [] for view in page.views)
 
 
-def test_candidate_table_defaults_to_latest_and_uses_checkboxes(qtbot):
+def test_candidate_table_defaults_to_backend_version_and_uses_checkboxes(qtbot):
     ctx = make_context()
     page = CandidatesPage(ctx)
     qtbot.addWidget(page)
-    assert page.validation.currentText() == "val_v003"
+    assert page.validation.currentText() == ctx.backend.default_validation_version()
     assert page.table.columnCount() == 11
     assert page.table.horizontalHeaderItem(0).text() == "選択"
+    assert page.table.horizontalHeaderItem(6).text() == "検証 AP"
+    assert page.table.horizontalHeaderItem(7).text() == "OOF AP"
     page.resize(1200, 700)
     page.show()
     QTest.qWait(50)
-    rect = page.table.visualItemRect(page.table.item(0, 0))
-    position = rect.topLeft() + QPoint(12, rect.height() // 2)
-    QTest.mouseClick(page.table.viewport(), Qt.MouseButton.LeftButton, pos=position)
+    _click_checkbox(page, page.table.item(0, 1).text())
     assert len(page._selected()) == 1
 
 
-def test_seeded_candidates_show_inference_specific_oof_in_gui(shell):
-    page = shell.page(PageId.CANDIDATES)
-    page.resize(1400, 800)
-    page.show()
-    rows = {}
-    for row in range(page.table.rowCount()):
-        candidate_id = page.table.item(row, 1).text()
-        if candidate_id in {"RC-001", "RC-003"}:
-            rows[candidate_id] = row
-    assert set(rows) == {"RC-001", "RC-003"}
-    for _candidate_id, row in rows.items():
-        cell = page.table.visualItemRect(page.table.item(row, 7))
-        QTest.mouseClick(
-            page.table.viewport(),
-            Qt.MouseButton.LeftButton,
-            pos=cell.center(),
-        )
-        assert page.table.item(row, 7).text()
-    assert page.table.item(rows["RC-001"], 7).text() != page.table.item(rows["RC-003"], 7).text()
+def test_oof_ap_is_shown_only_when_inference_matches_training(qtbot):
+    ctx = make_context()
+    backend = ctx.backend
+    config = backend.create_inference_config(
+        "mask_rcnn", backend.default_inference_params("mask_rcnn")
+    )
+    matching = backend.add_candidate("exp_0042", 1, config.config_id)
+    backend.get_candidate("RC-003").oof_reason = "推論設定が学習時と異なります"
+    page = CandidatesPage(ctx)
+    qtbot.addWidget(page)
+    seeded = page.table.item(_row(page, "RC-003"), 7)
+    assert seeded.text() == "対象外"
+    assert seeded.toolTip() == "推論設定が学習時と異なります"
+    value = page.table.item(_row(page, matching.candidate_id), 7).text()
+    assert value not in {"対象外", "—"}
+    float(value)
 
 
-def test_candidate_evaluation_counts_unclassified_images_and_preserves_qtest_selection(
-    shell, qapp, monkeypatch
-):
-    """評価・詳細保存の QTest 後も選択を保ち、OOF/検証件数に未分類を含める。"""
-    from PySide6.QtWidgets import QDialog, QDialogButtonBox
+def test_evaluate_from_menu_completes_and_shows_validation_ap(shell, qtbot):
+    window, page = _candidates(shell)
+    assert page.table.item(_row(page, "RC-003"), 6).text() == "未評価"
+    _click_checkbox(page, "RC-003")
+    _click_menu_item(window, "候補", "評価を実行")
+    qtbot.waitUntil(lambda: not shell.ctx.evaluation_runner.is_busy, timeout=5000)
+    qtbot.waitUntil(lambda: page.table.item(_row(page, "RC-003"), 6).text() != "未評価")
+    row = _row(page, "RC-003")
+    float(page.table.item(row, 6).text())
+    assert page.table.item(row, 8).text() == "候補"
+    assert page.table.item(row, 0).checkState() == Qt.CheckState.Checked
 
+
+def test_stop_evaluation_from_menu(shell, qtbot, monkeypatch):
+    monkeypatch.setenv("FOAM_MOCK_SPEED", "0.2")
+    window, page = _candidates(shell)
+    runner = shell.ctx.evaluation_runner
+    outcomes = []
+    runner.ended.connect(outcomes.append)
+    _click_checkbox(page, "RC-003")
+    _click_menu_item(window, "候補", "評価を実行")
+    assert runner.is_busy
+    qtbot.waitUntil(lambda: page.table.item(_row(page, "RC-003"), 8).text().startswith("評価中"))
+    _click_menu_item(window, "候補", "評価を中止")
+    qtbot.waitUntil(lambda: not runner.is_busy, timeout=5000)
+    assert [outcome.status for outcome in outcomes] == ["stopped"]
+    row = _row(page, "RC-003")
+    assert page.table.item(row, 6).text() == "未評価"
+    assert page.table.item(row, 8).text() == "候補"
+    assert not page.candidate_actions["stop"].isEnabled()
+
+
+def test_add_dialog_requires_attempt_and_creates_candidate(shell, qtbot, monkeypatch):
     backend = shell.ctx.backend
     experiment = backend.get_experiment("exp_0042")
-    train_items = backend._items_for_version(experiment.config.values["data"]["dataset_version"])
-    used_item_id = experiment.used_item_ids[0]
-    next(item for item in train_items if item.item_id == used_item_id).classification = None
-    val_items = backend._items_for_version("val_v003")
-    next(
-        item for item in val_items if item.usage == "val" and item.classification is not None
-    ).classification = None
-    candidate = backend.get_candidate("RC-001")
-    candidate.evaluations.clear()
-    candidate.oof_evaluation = backend._candidate_oof_evaluation(
-        experiment, candidate.inference_config_id
-    )
-    page = shell.page(PageId.CANDIDATES)
-    page.refresh()
-    row = next(
-        row
-        for row in range(page.table.rowCount())
-        if page.table.item(row, 1).text() == candidate.candidate_id
-    )
-    rect = page.table.visualItemRect(page.table.item(row, 0))
-    QTest.mouseClick(
-        page.table.viewport(),
-        Qt.MouseButton.LeftButton,
-        pos=rect.topLeft() + QPoint(12, rect.height() // 2),
-    )
-    assert page.buttons["evaluate"].isEnabled()
-    page.candidate_actions["evaluate"].trigger()
-    for _ in range(1000):
-        qapp.processEvents()
-        if page.validation.currentText() in candidate.evaluations:
-            break
-        QTest.qWait(2)
-    row = next(
-        row
-        for row in range(page.table.rowCount())
-        if page.table.item(row, 1).text() == candidate.candidate_id
-    )
-    assert page.table.item(row, 0).checkState() == Qt.CheckState.Checked
-    assert page.table.item(page.table.currentRow(), 1).text() == candidate.candidate_id
-    assert page.buttons["detail"].isEnabled()
-    assert sum(count for _score, count in candidate.oof_evaluation.per_class.values()) == len(
-        experiment.used_item_ids
-    )
-    assert candidate.evaluations[page.validation.currentText()].per_class["未分類"][1] == 1
-    selected_scroll = page.table.verticalScrollBar().value()
-    page.refresh_on_activate()
-    assert page.table.item(row, 0).checkState() == Qt.CheckState.Checked
-    assert page.table.item(page.table.currentRow(), 1).text() == candidate.candidate_id
-    assert page.table.verticalScrollBar().value() == selected_scroll
-
+    experiment.runs.append(RunAttempt(2, experiment.runs[0].started_at, result="completed"))
+    window, page = _candidates(shell)
     observed = {}
 
-    def save_details(dialog):
+    def interact(dialog):
+        dialog.show()
+        dialog.experiment.setCurrentText("exp_0042")
+        observed.setdefault("disabled_before_choice", not dialog.ok_button.isEnabled())
+        assert dialog.attempt.itemText(0) == "試行 1 / final.pt"
+        dialog.attempt.setFocus()
+        QTest.keyClick(dialog.attempt, Qt.Key.Key_Down)
+        QTest.keyClick(dialog.attempt, Qt.Key.Key_Down)
+        assert dialog.attempt.currentData() == 2
+        assert dialog.ok_button.isEnabled()
+        assert dialog.fields["box_detections_per_img"].maximum() == 1000
+        QTest.mouseClick(dialog.use_new, Qt.MouseButton.LeftButton)
+        QTest.mouseClick(dialog.ok_button, Qt.MouseButton.LeftButton)
+        observed.setdefault("results", []).append(dialog.result())
+        observed.setdefault("errors", []).append(
+            dialog.error.text() if dialog.error.isVisible() else ""
+        )
+        return dialog.result()
+
+    monkeypatch.setattr(CandidateDialog, "exec", interact)
+    _click_menu_item(window, "候補", "候補を追加…")
+    created = [c for c in backend.list_candidates() if c.source_attempt_number == 2]
+    assert observed["disabled_before_choice"]
+    assert len(created) == 1
+    assert observed["results"] == [QDialog.DialogCode.Accepted]
+    page.refresh()
+    assert page.table.item(_row(page, created[0].candidate_id), 4).text() == "試行 2 / final.pt"
+
+    # 同じ試行・同じ推論設定はダイアログ内でエラーを出し、閉じない
+    _click_menu_item(window, "候補", "候補を追加…")
+    assert observed["results"][-1] != QDialog.DialogCode.Accepted
+    assert "登録済み" in observed["errors"][-1]
+    assert len([c for c in backend.list_candidates() if c.source_attempt_number == 2]) == 1
+
+
+def _evaluate_open_candidate(backend, page, candidate_id="RC-003"):
+    """リリース前の候補（RC-003）の評価を模擬イベントで完了させ、表を読み直す。"""
+    version = page.validation.currentText()
+    prepared = backend.prepare_evaluation_run(candidate_id, version)
+    evaluation_id = prepared.run_id.rsplit("/", 1)[1]
+    event = {"v": 1, "run_id": prepared.run_id, "seq": 1, "time": 0, "type": "completed"}
+    backend.apply_evaluation_event(candidate_id, evaluation_id, event)
+    backend.conclude_evaluation_run(candidate_id, evaluation_id)
+    page.refresh()
+    return backend.get_candidate_evaluation(candidate_id, version)
+
+
+def test_detail_dialog_opens_and_saves_external_result(shell, qtbot, monkeypatch):
+    window, page = _candidates(shell)
+    backend = shell.ctx.backend
+    record = _evaluate_open_candidate(backend, page)
+    _click_checkbox(page, "RC-003")
+    observed = {}
+
+    def save(dialog):
         dialog.show()
         observed["headers"] = [
             dialog.metrics.horizontalHeaderItem(column).text()
             for column in range(dialog.metrics.columnCount())
         ]
-        observed["counts"] = [dialog.metrics.item(row, 1).text() for row in (1, 3)]
-        assert "未分類" in observed["headers"]
-        assert observed["counts"] == ["30", "59"]
+        observed["rows"] = [dialog.metrics.item(row, 0).text() for row in range(4)]
         QTest.mouseClick(dialog.add_row, Qt.MouseButton.LeftButton)
-        dialog.results.item(0, 0).setText("diameter_delta")
-        dialog.results.item(0, 1).setText("1.2")
-        dialog.results.item(0, 2).setText("um")
-        QTest.mouseClick(
-            dialog.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Save),
-            Qt.MouseButton.LeftButton,
-        )
-        return QDialog.DialogCode.Accepted
+        dialog.results.item(0, 0).setText("平均粒子径")
+        dialog.results.item(0, 1).setText("12.3")
+        dialog.results.item(0, 2).setText("µm")
+        QTest.keyClicks(dialog.software, "ImageJ")
+        QTest.mouseClick(dialog.save_button, Qt.MouseButton.LeftButton)
+        return dialog.result()
 
-    monkeypatch.setattr(EvaluationDialog, "exec", save_details)
-    page.candidate_actions["detail"].trigger()
-    row = next(
-        row
-        for row in range(page.table.rowCount())
-        if page.table.item(row, 1).text() == candidate.candidate_id
+    monkeypatch.setattr(EvaluationDialog, "exec", save)
+    _click_menu_item(window, "候補", "詳細評価を見る…")
+    assert observed["headers"][:2] == ["評価項目", "全体"]
+    classes = list(record.evaluation.per_class)
+    assert observed["headers"][2 : 2 + len(classes)] == classes
+    assert observed["rows"][0] == "検証 AP"
+    assert observed["rows"][2] == "学習時 OOF AP（参考）"
+    saved = backend.list_external_results("RC-003")[-1]
+    assert saved["evaluation_id"] == record.evaluation_id
+    assert saved["software"] == "ImageJ"
+    assert saved["results"][0]["name"] == "平均粒子径"
+    assert page.table.item(_row(page, "RC-003"), 9).text() == "あり"
+
+
+def test_mask_export_dialog_completes_and_shows_summary(shell, qtbot, monkeypatch, tmp_path):
+    window, page = _candidates(shell)
+    _click_checkbox(page, "RC-001")
+    _click_checkbox(page, "RC-002")
+    summaries = []
+
+    def export(dialog):
+        dialog.show()
+        assert not dialog.start_button.isEnabled()
+        QTest.keyClicks(dialog.output_dir, str(tmp_path))
+        QTest.mouseClick(dialog.start_button, Qt.MouseButton.LeftButton)
+        qtbot.waitUntil(lambda: dialog.summary is not None, timeout=5000)
+        return dialog.result()
+
+    def done(dialog):
+        summaries.append(dialog.summary)
+        return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(MaskExportDialog, "exec", export)
+    monkeypatch.setattr(MaskExportDoneDialog, "exec", done)
+    _click_menu_item(window, "ファイル", "粒子解析用マスクを出力…")
+    assert len(summaries) == 1
+    summary = summaries[0]
+    assert summary["n_candidates"] == 2
+    assert summary["n_images"] > 0
+    dialog = MaskExportDoneDialog(summary)
+    qtbot.addWidget(dialog)
+    assert dialog.windowTitle() == "粒子解析用マスクを出力しました"
+    assert dialog.open_button.text() == "フォルダを開く"
+
+
+def test_release_flow_via_dialog(shell, qtbot, monkeypatch):
+    window, page = _candidates(shell)
+    backend = shell.ctx.backend
+    record = _evaluate_open_candidate(backend, page)
+    _click_checkbox(page, "RC-003")
+    observed = {}
+
+    def release(dialog):
+        dialog.show()
+        observed["evaluation_id"] = dialog.evaluation_id
+        QTest.mouseClick(dialog.ok_button, Qt.MouseButton.LeftButton)
+        qtbot.waitUntil(lambda: dialog.model is not None, timeout=5000)
+        return dialog.result()
+
+    monkeypatch.setattr(ReleaseDialog, "exec", release)
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *_args, **_kwargs: QMessageBox.StandardButton.No
     )
-    assert candidate.external_results[0].name == "diameter_delta"
-    assert page.table.item(row, 0).checkState() == Qt.CheckState.Checked
-    assert page.table.item(page.table.currentRow(), 1).text() == candidate.candidate_id
+    QTest.mouseClick(page.buttons["release"], Qt.MouseButton.LeftButton)
+    assert observed["evaluation_id"] == record.evaluation_id
+    assert backend.get_candidate("RC-003").status == "released"
+    assert page.table.item(_row(page, "RC-003"), 8).text() == "リリース済み"
+
+
+def test_release_dialog_refuses_found_contamination(qtbot):
+    ctx = make_context()
+    record = ctx.backend.get_candidate_evaluation("RC-001", "val_v003")
+    record.contamination = {"status": "found", "pairs": [["a", "b"]], "reason": None}
+    dialog = ReleaseDialog(ctx, ctx.backend.get_candidate("RC-001"), record)
+    qtbot.addWidget(dialog)
+    assert not dialog.ok_button.isEnabled()
+    assert "リリースできません" in dialog.ok_button.toolTip()
+
+
+def test_blocked_compute_disables_evaluation(shell):
+    _window, page = _candidates(shell)
+    _click_checkbox(page, "RC-003")
+    assert page.candidate_actions["evaluate"].isEnabled()
+    shell.ctx.compute.block("前回のプロセスが残っています")
+    assert not page.candidate_actions["evaluate"].isEnabled()
+    assert page.candidate_actions["evaluate"].toolTip() == "前回のプロセスが残っています"
 
 
 def test_release_button_explains_missing_evaluation(qtbot):
     ctx = make_context()
     page = CandidatesPage(ctx)
     qtbot.addWidget(page)
-    row = next(
-        row for row in range(page.table.rowCount()) if page.table.item(row, 1).text() == "RC-003"
-    )
-
-    page.table.item(row, 0).setCheckState(Qt.CheckState.Checked)
+    page.table.item(_row(page, "RC-003"), 0).setCheckState(Qt.CheckState.Checked)
 
     assert not page.buttons["release"].isEnabled()
     assert page.buttons["release"].toolTip() == "評価済みの候補を 1 つ選ぶとリリースできます"
@@ -232,44 +353,14 @@ def test_candidate_dialog_builds_model_specific_fields(qtbot):
         "box_nms_thresh",
         "box_detections_per_img",
     }
+    assert dialog.fields["box_detections_per_img"].value() == 300
     assert not dialog.fields["box_score_thresh"].isEnabled()
     dialog.use_new.setChecked(True)
     assert dialog.fields["box_score_thresh"].isEnabled()
     dialog.experiment.setCurrentText("exp_0043")
     assert dialog.model_type.text() == "Cellpose"
     assert set(dialog.fields) == {"cellprob_threshold", "flow_threshold"}
-
-
-def test_detail_evaluation_and_mask_export_dialogs(qtbot):
-    ctx = make_context()
-    evaluation = EvaluationDialog(ctx, ctx.backend.get_candidate("RC-001"), "val_v003")
-    qtbot.addWidget(evaluation)
-    assert (evaluation.minimumWidth(), evaluation.minimumHeight()) == (800, 640)
-    assert evaluation.metrics.rowCount() == 4
-    assert evaluation.metrics.columnCount() == 6
-    assert evaluation.metrics.horizontalHeaderItem(5).text() == "未分類"
-    assert evaluation.metrics.item(0, 1).text() == "0.910"
-    assert evaluation.metrics.height() <= 160
-    assert all(
-        evaluation.metrics.horizontalHeader().sectionResizeMode(column)
-        == QHeaderView.ResizeMode.Interactive
-        for column in range(evaluation.metrics.columnCount())
-    )
-    assert all(
-        evaluation.results.horizontalHeader().sectionResizeMode(column)
-        == QHeaderView.ResizeMode.Interactive
-        for column in range(evaluation.results.columnCount())
-    )
-    evaluation.show()
-    QTest.qWait(50)
-    assert evaluation.add_row.y() < evaluation.results.y()
-    assert evaluation.add_row.width() < evaluation.width() // 2
-    export = MaskExportDialog()
-    qtbot.addWidget(export)
-    assert export.browse.text() == "参照…"
-    assert not export.classification.isEnabled()
-    export.scope.setCurrentIndex(1)
-    assert export.classification.isEnabled()
+    assert dialog.fields["cellprob_threshold"].minimum() == -6.0
 
 
 def test_candidate_page_refreshes_validation_versions_from_home(shell, qapp):
@@ -299,5 +390,17 @@ def test_candidate_menu_actions_disable_without_selection(qapp, qtbot):
     page.show()
     assert not page.menu_actions["export"].isEnabled()
     assert not page.menu_actions["reject"].isEnabled()
+    assert not page.candidate_actions["stop"].isEnabled()
     page.menu_actions["export"].trigger()
     assert not page.menu_actions["export"].isEnabled()
+
+
+def test_detail_dialog_is_read_only_for_released_candidate(qtbot):
+    ctx = make_context()
+    candidate = ctx.backend.get_candidate("RC-001")
+    candidate.status = "released"
+    record = ctx.backend.get_candidate_evaluation("RC-001", "val_v003")
+    dialog = EvaluationDialog(ctx, candidate, record)
+    qtbot.addWidget(dialog)
+    assert not dialog.save_button.isEnabled()
+    assert dialog.controls.button(QDialogButtonBox.StandardButton.Close).isEnabled()
