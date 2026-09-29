@@ -51,5 +51,5 @@ testpaths = ["tests"]
 addopts = "-m 'not slow and not ml'"
 markers = [
     "slow: 実行時間の長い学習・統合テスト",
-    "ml: torch/cellpose など ML 依存が必要なテスト",
+    "ml: 事前学習済みの重みや実際の Mask R-CNN / Cellpose のモデルが必要なテスト",
 ]

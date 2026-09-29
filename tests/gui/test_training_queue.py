@@ -4,7 +4,7 @@ import time
 import pytest
 from PySide6.QtCore import QItemSelection, QItemSelectionModel, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QMessageBox, QSpinBox
+from PySide6.QtWidgets import QDoubleSpinBox, QMessageBox, QSpinBox
 
 from foam_cell_analysis.gui.navigation import PageId
 from foam_cell_analysis.gui.theme import Color
@@ -731,3 +731,64 @@ def test_double_clicking_nonwaiting_fixed_column_opens_experiment_list(shell, qa
     assert experiments._current_experiment().experiment_id == item.experiment_id
     job = training_jobs(shell)[0]
     job.cancel()
+
+
+def test_queue_check_cell_click_changes_setting(shell):
+    """チェック欄をクリックすると、キュー行の設定が実際に変わる。"""
+    backend = shell.ctx.backend
+    config = backend.default_experiment_config("mask_rcnn")
+    config["experiment"]["id"] = backend.next_experiment_id()
+    row = backend.add_training_queue_item(config)
+    shell.navigate(PageId.TRAINING_QUEUE)
+    page = shell.page(PageId.TRAINING_QUEUE)
+    column = page.model.column_for_path("data.cv.stratify_by_classification")
+    index = page.model.index(0, column)
+    assert page.model.data(index, Qt.ItemDataRole.CheckStateRole) == Qt.CheckState.Checked
+    rect = page.table.visualRect(index)
+    QTest.mouseClick(page.table.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
+    saved = backend.get_experiment(row.experiment_id).config.values
+    assert saved["data"]["cv"]["stratify_by_classification"] is False
+
+
+def test_queue_edit_survives_live_progress_and_is_saved(shell, qapp):
+    """学習の進捗で表が更新されても、編集中の入力が消えずに保存できる。"""
+    backend = shell.ctx.backend
+    first_config = backend.default_experiment_config("mask_rcnn")
+    first_config["experiment"]["id"] = backend.next_experiment_id()
+    first_config["training"]["epochs"] = 200
+    first = backend.add_training_queue_item(first_config)
+    waiting_config = backend.default_experiment_config("mask_rcnn")
+    waiting_config["experiment"]["id"] = backend.next_experiment_id()
+    waiting = backend.add_training_queue_item(waiting_config)
+    shell.navigate(PageId.TRAINING_QUEUE)
+    page = shell.page(PageId.TRAINING_QUEUE)
+    QTest.mouseClick(page.run_button, Qt.MouseButton.LeftButton)
+    assert shell.ctx.queue_controller.active_id == first.experiment_id
+
+    waiting_row = next(
+        row
+        for row, entry in enumerate(page.model.entries)
+        if entry.experiment_id == waiting.experiment_id
+    )
+    index = page.model.index(waiting_row, page.model.column_for_path("training.learning_rate"))
+    QTest.mouseClick(
+        page.table.viewport(), Qt.MouseButton.LeftButton, pos=page.table.visualRect(index).center()
+    )
+    QTest.keyClick(page.table, Qt.Key.Key_F2)
+    qapp.processEvents()
+    editor = page.table.focusWidget()
+    assert isinstance(editor, QDoubleSpinBox) and editor.isVisible()
+    editor.selectAll()
+    QTest.keyClicks(editor, "3.7e-4")
+    # 学習の進捗による表の更新が、編集の途中に何度も起きる
+    started = time.monotonic()
+    while time.monotonic() - started < 0.3:
+        qapp.processEvents()
+    assert shell.ctx.backend.get_experiment(first.experiment_id).current_epoch > 0
+    assert editor.isVisible()
+    QTest.keyClick(editor, Qt.Key.Key_Enter)
+    qapp.processEvents()
+    saved = backend.get_experiment(waiting.experiment_id).config.values
+    assert saved["training"]["learning_rate"] == pytest.approx(3.7e-4)
+    shell.ctx.queue_controller.stop()
+    shell.ctx.training_runner.request_stop(timeout_ms=5000)
