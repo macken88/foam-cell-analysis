@@ -1,36 +1,35 @@
-"""スナップショット由来候補を比較画面に表示する。"""
+"""hybrid の比較候補（ComparisonService の実データ）を比較画面に表示する。"""
 
 from foam_cell_analysis.gui.navigation import PageId
 from foam_cell_analysis.services.hybrid_backend import HybridBackend
-from foam_cell_analysis.services.models import CandidateSnapshot
 from tests.gui.test_stage_f_acceptance import _make_shell
+from tests.services.test_comparison_service import FakeTraining, _dataset, _write_evaluation
 
 
 def test_snapshot_candidate_oof_and_evaluation_render_without_experiment_lookup(qapp, tmp_path):
-    backend = HybridBackend(tmp_path)
-    snapshot = CandidateSnapshot(
-        experiment_id="exp_snapshot_001",
-        attempt=2,
-        selected_epoch=3,
-        run_id="exp_snapshot_001/attempt_002",
-        checkpoint_path="checkpoints/final.pt",
-        oof_evaluation={"ap": 0.64, "per_class": {"A": [0.64, 2]}, "n_images": 2},
-        experiment_config={"model": {"type": "cellpose", "scale_range": 0.2}},
+    _dataset(tmp_path, "train_v000", "train", ["分類A", "分類B"], "val_v000")
+    _dataset(tmp_path, "val_v000", "val", ["分類A", "分類C"])
+    fake = FakeTraining(tmp_path)
+    fake.add_attempt("exp_snapshot_001", 2)
+    backend = HybridBackend(tmp_path, process_alive=lambda _record: False)
+    backend.training.create_candidate_snapshot = fake.create_candidate_snapshot
+    config = backend.create_inference_config(
+        "mask_rcnn", backend.default_inference_params("mask_rcnn")
     )
-    candidate = backend.mock.add_candidate_from_snapshot(snapshot, "infer_v006", "固定試行")
+    candidate = backend.add_candidate("exp_snapshot_001", 2, config.config_id, "固定試行")
     context, manager, home = _make_shell(qapp, tmp_path, backend)
     context.navigator.navigate(PageId.CANDIDATES)
     page = manager.page(PageId.CANDIDATES)
     assert page.table.rowCount() == 1
-    assert page.table.item(0, 2).text() == "Cellpose"
     assert page.table.item(0, 7).text() != "—"
+    assert page.table.item(0, 6).text() == "未評価"
 
-    backend.mock.start_evaluation([candidate.candidate_id], "val_v003")
-    backend.mock.evaluate_candidate(candidate.candidate_id, "val_v003")
+    _write_evaluation(backend.comparison, candidate.candidate_id, "eval_001")
     page.refresh()
     assert page.table.item(0, 6).text() != "未評価"
     assert page.table.item(0, 7).text() != "—"
-    backend.mock.release_candidate(candidate.candidate_id, "ready", "val_v003")
+    backend.release_candidate(candidate.candidate_id, "eval_001", "ready")
+    assert backend.get_candidate(candidate.candidate_id).status == "released"
     home.hide()
     for window in manager._windows.values():
         window.close()

@@ -1,5 +1,8 @@
 """学習・評価で共通の終端判定（decide_terminal_state）。"""
 
+import os
+import time
+
 import pytest
 
 from foam_cell_analysis.jobs.lifecycle import TerminalDecision, decide_terminal_state
@@ -79,3 +82,34 @@ def test_decide_terminal_state_evaluates_callables_only_when_needed():
 
     assert _decide(result_valid=result_valid, process_alive=alive) is None
     assert calls == ["result", "alive"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows のプロセス API を使う")
+def test_terminate_process_kills_real_process():
+    import subprocess
+    import sys
+
+    from foam_cell_analysis.jobs.lifecycle import (
+        process_alive,
+        process_creation_time,
+        process_record,
+        terminate_process,
+    )
+
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        created = None
+        for _ in range(50):
+            created = process_creation_time(child.pid)
+            if created is not None:
+                break
+            time.sleep(0.05)
+        assert created is not None
+        record = process_record(child.pid, created)
+        assert process_alive(record)
+        assert terminate_process(record) is True
+        assert child.wait(timeout=5) is not None
+        assert not process_alive(record)
+    finally:
+        child.kill()
+        child.wait()

@@ -1281,11 +1281,20 @@ class TrainingService:
                 row["attempt"], row["state"] = found
             elif row["state"] == "running":
                 row.update(state="queued", attempt=None)
-        for pruned_path in sorted(self.root.glob("exp_*/runs/attempt_*/pruned.json")):
+        for experiment_dir in sorted(self.root.glob("exp_*")):
+            # リンク（ジャンクション含む）の試行フォルダは _attempt_dirs が除外する
             try:
-                self._finish_pruning(pruned_path.parent)
-            except (OSError, ValueError):
-                logger.exception("成果物の整理を再開できませんでした: %s", pruned_path)
+                attempt_dirs = self._attempt_dirs(experiment_dir.name)
+            except ValueError:
+                continue
+            for _attempt, attempt_dir in attempt_dirs:
+                pruned_path = attempt_dir / "pruned.json"
+                if not pruned_path.is_file():
+                    continue
+                try:
+                    self._finish_pruning(attempt_dir)
+                except (OSError, ValueError):
+                    logger.exception("成果物の整理を再開できませんでした: %s", pruned_path)
         for path in self.root.glob("exp_*/runs/.preparing_*"):
             shutil.rmtree(path, ignore_errors=True)
         for storage_root in (self.root, self.workspace_root / "augmentation"):
@@ -1460,6 +1469,10 @@ class TrainingService:
             return False
         if ".." in relative.parts:
             return False
+        # run_dir 自身と、実験フォルダまでの祖先がリンクなら外部を指している可能性がある
+        for ancestor in (run_dir, run_dir.parent, run_dir.parent.parent):
+            if ancestor.is_symlink() or ancestor.is_junction():
+                return False
         probe = run_dir
         for part in relative.parts:
             probe = probe / part
@@ -1513,8 +1526,11 @@ class TrainingService:
 
     def _attempt_dirs(self, experiment_id: str) -> list[tuple[int, Path]]:
         """run_spec.json のある試行フォルダを試行番号順に返す。"""
-        runs_root = self._experiment_dir(experiment_id) / "runs"
+        experiment_dir = self._experiment_dir(experiment_id)
+        runs_root = experiment_dir / "runs"
         result = []
+        if any(item.is_symlink() or item.is_junction() for item in (experiment_dir, runs_root)):
+            return result
         for path in sorted(runs_root.glob("attempt_*")):
             match = re.fullmatch(r"attempt_(\d+)", path.name)
             if (

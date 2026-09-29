@@ -52,11 +52,18 @@ def main() -> int:
             return 2
         backend = HybridBackend(workspace)
         try:
+            # 学習（5.4）・比較とリリース（13.3）・評価（7.6）の起動時の復旧
             backend.recover()
         except Exception as error:
-            QMessageBox.critical(None, "復旧できません", f"学習状態の復旧に失敗しました: {error}")
+            QMessageBox.critical(
+                None, "復旧できません", f"学習・評価の状態の復旧に失敗しました: {error}"
+            )
             lock.unlock()
             return 2
+        blockers = list(getattr(backend, "recovery_blockers", []) or [])
+        if blockers:
+            # 評価・学習プロセスを終了できなかった。利用者に終了してから再起動するよう案内する
+            QMessageBox.warning(None, "終了できない処理があります", "\n\n".join(blockers))
     else:
         backend = MockBackend()
     jobs = JobManager()

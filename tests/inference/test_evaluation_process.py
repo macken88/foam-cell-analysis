@@ -392,3 +392,55 @@ def test_recovery_concludes_crashed_evaluations_and_cleans_temporaries(evaluatio
     assert Path(done.run_dir, "result.json").is_file()
     # 2 回目の復旧では何もしない
     assert service.recover_evaluations() == []
+
+
+def test_recovery_blocks_when_live_process_cannot_be_terminated(evaluation_env, monkeypatch):
+    from types import SimpleNamespace
+
+    from foam_cell_analysis.services import comparison_service
+
+    env = evaluation_env
+    service = env.service
+    stuck = Path(service.prepare_evaluation_run("RC-001", "val_v000").run_dir)
+    service.record_evaluation_process("RC-001", "eval_001", 4444, 1000.0)
+    env.alive[4444] = True
+    (stuck / "predictions").mkdir()
+    partial = stuck / "predictions" / "val_a.png.tmp"
+    partial.write_bytes(b"partial")
+    preparing = stuck.parent / ".preparing_leftover"
+    preparing.mkdir()
+    (preparing / "x.tmp").write_bytes(b"x")
+    service.process_terminator = lambda process: None  # 終了できない
+    ticks = iter(range(1000))
+    monkeypatch.setattr(
+        comparison_service,
+        "time",
+        SimpleNamespace(monotonic=lambda: next(ticks), sleep=lambda _s: None),
+    )
+
+    assert service.recover_evaluations() == []
+
+    assert not (stuck / "status.json").exists()
+    assert partial.exists()
+    assert not preparing.exists()  # 別の準備中フォルダは評価の外なので消える
+    assert len(service.recovery_blockers) == 1
+    assert "eval_001" in service.recovery_blockers[0]
+
+
+def test_evaluation_fails_when_image_changes_after_preflight(evaluation_env):
+    from foam_cell_analysis.inference.adapters import build_inference_adapter
+
+    env = evaluation_env
+    prepared = env.service.prepare_evaluation_run("RC-001", "val_v000")
+
+    def factory(**kwargs):
+        adapter = build_inference_adapter(**kwargs)
+        _tamper_image(env, None)  # preflight 通過後に画像を差し替える
+        return adapter
+
+    code, _lines = _run(prepared, adapter_factory=factory)
+
+    assert code == 1
+    message = read_json(Path(prepared.run_dir) / "error.json")["message"]
+    assert "変更されました" in message
+    assert not (Path(prepared.run_dir) / "result.json").exists()

@@ -85,5 +85,10 @@ class AppContext:
             from .evaluation_runner import EvaluationRunner
 
             self.evaluation_runner = EvaluationRunner(self.backend, compute=self.compute)
+        # 候補の非採用・リリース・成果物の整理で「評価中・評価待ち」を判定できるようにする
+        set_activity = getattr(self.backend, "set_evaluation_activity", None)
+        is_active = getattr(self.evaluation_runner, "is_evaluation_active", None)
+        if callable(set_activity) and callable(is_active):
+            set_activity(is_active)
         if hasattr(self.jobs, "set_training_runner"):
             self.jobs.set_training_runner(self.training_runner)

@@ -111,7 +111,10 @@ def test_protocol_and_mock_backend_methods_match():
     backend_methods = {
         name for name, method in getmembers(MockBackend, isfunction) if not name.startswith("_")
     }
-    assert protocol_methods == backend_methods
+    # 旧 GUI のために MockBackend にだけ残す旧 API（段階 D2 で削除する）
+    deprecated_until_d2 = {"start_evaluation", "evaluate_candidate", "add_candidate_from_snapshot"}
+    assert protocol_methods == backend_methods - deprecated_until_d2
+    assert deprecated_until_d2 <= backend_methods
 
 
 def test_seed_experiments_checkpoints_and_references_are_consistent():
@@ -201,3 +204,178 @@ def test_evaluation_can_be_started_and_completed():
     assert backend.get_candidate("RC-003").status == "candidate"
     assert evaluation.overall_map > 0
     assert len(backend.list_validation_items("val_v002", "分類A")) == 10
+
+
+# ---- 比較・評価設計 16.1 の新しい API の形（段階 D1） ----
+
+
+def test_mock_evaluation_lifecycle_through_fake_evaluation_job(qtbot):
+    from foam_cell_analysis.gui.evaluation_runner import EvaluationRunner
+
+    backend = MockBackend()
+    runner = EvaluationRunner(backend)
+    backend.set_evaluation_activity(runner.is_evaluation_active)
+    outcomes = []
+    progressed = []
+    runner.ended.connect(outcomes.append)
+    runner.progressed.connect(progressed.append)
+
+    runner.start(["RC-003"], "val_v002")
+    with pytest.raises(ValueError, match="評価中"):
+        backend.reject_candidate("RC-003")
+    qtbot.waitUntil(lambda: not runner.is_busy, timeout=5000)
+
+    assert [(item.status, item.evaluation_id) for item in outcomes] == [("completed", "eval_001")]
+    assert progressed
+    record = backend.get_candidate_evaluation("RC-003", "val_v002")
+    assert record.evaluation_id == "eval_001"
+    assert record.evaluation.overall_map > 0
+    assert record.evaluation.n_images == 30
+    assert backend.get_candidate("RC-003").evaluations["val_v002"] is record.evaluation
+    assert backend.get_evaluation_progress("RC-003") is None
+
+
+def test_mock_evaluation_stop_and_numbering_across_versions(qtbot):
+    from foam_cell_analysis.gui.evaluation_runner import EvaluationRunner
+
+    backend = MockBackend()
+    runner = EvaluationRunner(backend)
+    outcomes = []
+    runner.ended.connect(outcomes.append)
+    runner.start(["RC-003"], "val_v003")
+    qtbot.waitUntil(lambda: runner.job is not None, timeout=5000)
+    runner.request_stop()
+    qtbot.waitUntil(lambda: not runner.is_busy, timeout=5000)
+    assert (outcomes[0].status, outcomes[0].reason) == ("stopped", "user_stop")
+    assert backend.get_candidate_evaluation("RC-003", "val_v003") is None
+
+    prepared = backend.prepare_evaluation_run("RC-003", "val_v002")
+    assert prepared.fake
+    assert prepared.run_id == "RC-003/val_v002/eval_002"
+    statuses = [item.status for item in backend.list_candidate_evaluations("RC-003", "val_v003")]
+    assert statuses == ["stopped"]
+
+
+def test_mock_release_prediction_and_external_results_by_evaluation_id():
+    backend = MockBackend()
+    record = backend.get_candidate_evaluation("RC-001", "val_v003")
+    assert record is not None and record.status == "completed"
+    item_id = backend.list_validation_items("val_v003")[0].item_id
+    new = backend.get_candidate_prediction("RC-001", record.evaluation_id, item_id)
+    old = backend.get_candidate_prediction("RC-001", item_id)
+    assert (new == old).all()
+
+    backend.evaluate_candidate("RC-003", "val_v003")
+    evaluation_id = backend.get_candidate_evaluation("RC-003", "val_v003").evaluation_id
+    backend.save_external_results(
+        "RC-003", evaluation_id, [{"name": "平均径", "value": 1.5, "unit": "um"}], software="X"
+    )
+    assert backend.list_external_results("RC-003")[-1]["evaluation_id"] == evaluation_id
+    with pytest.raises(ValueError, match="評価がありません"):
+        backend.release_candidate("RC-003", "eval_099")
+    model = backend.release_candidate("RC-003", evaluation_id, "新形式")
+    assert model.validation_dataset == "val_v003"
+    assert backend.get_candidate("RC-003").released_model_id == model.model_id
+
+
+def test_mock_routing_revision_and_validation():
+    backend = MockBackend()
+    state = backend.get_routing_state()
+    assert "分類A" in backend.list_routing_classifications()
+
+    applied = backend.apply_routing({"分類A": "model_012"}, expected_revision=state.revision)
+    assert applied.revision == state.revision + 1
+    assert applied.assignments["分類A"] == "model_012"
+    with pytest.raises(ValueError, match="別の操作"):
+        backend.apply_routing({"分類A": None}, expected_revision=state.revision)
+    with pytest.raises(ValueError, match="未登録"):
+        backend.apply_routing(
+            {"分類B": None, "分類C": "model_999"}, expected_revision=applied.revision
+        )
+    assert backend.get_routing()["分類B"] == "model_012"
+
+
+def test_mock_inference_config_range_and_reuse():
+    backend = MockBackend()
+    with pytest.raises(ValueError, match="範囲"):
+        backend.create_inference_config("mask_rcnn", {"box_score_thresh": 1.5})
+    first = backend.create_inference_config("cellpose", {"flow_threshold": 0.8})
+    again = backend.create_inference_config("cellpose", {"flow_threshold": 0.8})
+    assert first.config_id == again.config_id
+
+
+def test_mock_add_candidate_with_attempt_number():
+    backend = MockBackend()
+    config = backend.create_inference_config("mask_rcnn", {"box_score_thresh": 0.3})
+    candidate = backend.add_candidate("exp_0042", 1, config.config_id)
+    assert candidate.source_attempt_number == 1
+    with pytest.raises(ValueError, match="登録済み"):
+        backend.add_candidate("exp_0042", 1, config.config_id)
+    with pytest.raises(ValueError, match="試行 9"):
+        backend.add_candidate("exp_0042", 9, config.config_id)
+
+
+def test_mock_inference_result_does_not_depend_on_releases():
+    empty = MockBackend(seed_samples=False)
+    seeded = MockBackend()
+    image, labels = empty.get_inference_result("foam_0001.tif", "model_999")
+    other_image, other_labels = seeded.get_inference_result("foam_0001.tif", "model_999")
+    assert (image == other_image).all() and (labels == other_labels).all()
+
+
+def test_mock_without_samples_has_no_comparison_seed():
+    backend = MockBackend(seed_samples=False)
+    assert backend.list_inference_configs() == []
+    assert backend.list_candidates() == []
+    assert backend.list_released_models() == []
+    assert backend.get_routing() == {}
+    assert backend.list_validation_versions() == []
+    assert backend.default_validation_version() is None
+
+
+def test_mock_cleanup_plan_protects_candidate_final_and_records_pruned():
+    backend = MockBackend()
+    plan = backend.artifact_cleanup_plan(["exp_0042"])
+    final = next(group for group in plan if group.category == "final")
+    assert not final.deletable and "RC-003" in final.reason
+    assert all(group.category != "temporary" for group in plan)
+    freed = backend.estimate_freed_bytes(["exp_0042"], ["fold_periodic", "final"])
+    assert freed > 0
+
+    result = backend.prune_artifacts(["exp_0042"], ["fold_periodic", "final"])
+    assert result.freed_bytes == freed
+    assert [group.category for group in result.skipped] == ["final"]
+    assert "checkpoints/fold_1/epoch_010.pt" in backend.pruned_paths("exp_0042", 1)
+    remaining = backend.artifact_cleanup_plan(["exp_0042"])
+    assert all(group.category != "fold_periodic" for group in remaining)
+    stopped = backend.artifact_cleanup_plan(["exp_0044"])
+    assert any(group.category == "temporary" and group.deletable for group in stopped)
+
+
+def test_mock_export_counts_images_and_can_be_cancelled():
+    backend = MockBackend()
+    params = {
+        "output_parent": "C:/unused",
+        "selections": [("RC-001", "eval_001"), ("RC-002", "eval_001")],
+        "contents": ["label", "binary"],
+        "file_format": "png",
+    }
+    progress = []
+    result = backend.export_particle_masks(
+        params, lambda done, total: progress.append((done, total)), lambda: False
+    )
+    assert result.n_images == 60 and result.folder is None and not result.cancelled
+    assert progress[-1] == (60, 60)
+
+    checks = []
+
+    def cancel_after_two():
+        checks.append(1)
+        return len(checks) > 2
+
+    cancelled = backend.export_particle_masks(params, lambda *_: None, cancel_after_two)
+    assert cancelled.cancelled and cancelled.n_images == 2
+    with pytest.raises(ValueError, match="評価がありません"):
+        backend.export_particle_masks(
+            {**params, "selections": [("RC-003", "eval_001")]}, lambda *_: None, lambda: False
+        )

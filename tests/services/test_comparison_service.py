@@ -164,7 +164,10 @@ def _write_evaluation(
         "validation_version": version,
         "input_fingerprint": fingerprint,
         "overall": {"ap": 0.6, "n_images": len(item_ids)},
-        "per_class": {"分類A": {"ap": 0.7, "n_images": 1}, "分類C": {"ap": None, "n_images": 0}},
+        "per_class": {
+            "分類A": {"ap": 0.7, "n_images": len(item_ids)},
+            "分類C": {"ap": None, "n_images": 0},
+        },
         "metric": {"id": "cellpose_ap_iou50_95_image_mean_v1"},
         "contamination": {"status": contamination, "pairs": []},
         "predictions": predictions,
@@ -441,3 +444,34 @@ def test_validation_version_defaults(env):
     cid = service.add_candidate("exp_0001", 1, _default_config(service).config_id).candidate_id
     assert service.base_validation_version_for(cid) == "val_v000"
     assert service.default_validation_version() == "val_v000"
+
+
+def _rewrite_result(run_dir, mutate):
+    path = run_dir / "result.json"
+    result = json.loads(path.read_text("utf-8"))
+    mutate(result)
+    path.write_text(json.dumps(result), "utf-8")
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda r: r.pop("contamination"),
+        lambda r: r["contamination"].update(status="maybe"),
+        lambda r: r["overall"].update(ap=1.5),
+        lambda r: r["overall"].update(n_images=99),
+        lambda r: r["per_class"]["分類A"].update(n_images=1),
+        lambda r: r.pop("per_class"),
+    ],
+)
+def test_invalid_result_summary_is_broken_and_not_releasable(env, mutate):
+    service, _training = env
+    cid = service.add_candidate("exp_0001", 1, _default_config(service).config_id).candidate_id
+    run_dir = _write_evaluation(service, cid, "eval_001")
+    assert validate_evaluation_result(run_dir)
+    _rewrite_result(run_dir, mutate)
+    assert not validate_evaluation_result(run_dir)
+    with pytest.raises(ValueError, match="壊れています"):
+        service.release_candidate(cid, "eval_001")
+    assert service.get_candidate_evaluation(cid, "val_v000").broken
+    assert "val_v000" not in service.get_candidate(cid).evaluations

@@ -426,7 +426,17 @@ def execute_evaluation(
     }
     for index, item_id in enumerate(item_ids, start=1):
         image_path, mask_path = checked["paths"][item_id]
-        image, mask = _decode(image_path.read_bytes()), _decode(mask_path.read_bytes())
+        # preflight の後に差し替えられていないかを、デコードの前に sha256 で確かめる
+        image_bytes, mask_bytes = image_path.read_bytes(), mask_path.read_bytes()
+        expected = resolved["verified_hashes"][item_id]
+        if (
+            sha256_bytes(image_bytes) != expected["image"]
+            or sha256_bytes(mask_bytes) != expected["mask"]
+        ):
+            raise ValueError(
+                f"評価の途中で画像またはマスクが変更されました。評価をやり直してください: {item_id}"
+            )
+        image, mask = _decode(image_bytes), _decode(mask_bytes)
         _check_pair(item_id, image, mask)
         prediction = np.asarray(
             run_inference(adapter, image, spec.get("preprocessing"), spec["model_type"])

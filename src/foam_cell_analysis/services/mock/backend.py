@@ -5,6 +5,8 @@ from __future__ import annotations
 import copy
 import hashlib
 import math
+import re
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Any, ClassVar
 
@@ -13,6 +15,7 @@ import numpy as np
 from ...training.folds import assign_folds
 from ..backend import normalization_for_weights
 from ..models import (
+    ArtifactGroup,
     AugmentationProfile,
     Candidate,
     CandidateSnapshot,
@@ -22,6 +25,9 @@ from ..models import (
     DatasetVersion,
     EpochMetrics,
     Evaluation,
+    EvaluationOutcome,
+    EvaluationProgress,
+    EvaluationRecord,
     Experiment,
     ExperimentConfig,
     ExperimentDeletionInfo,
@@ -30,8 +36,10 @@ from ..models import (
     InferenceConfig,
     JobExit,
     PreparedRun,
+    PruneResult,
     ReleasedModel,
     RoutingHistory,
+    RoutingState,
     RunAttempt,
     TrainingOutcome,
     TransformSetting,
@@ -40,6 +48,18 @@ from ..models import (
     WorkingDataset,
 )
 from .synthetic import make_sample, make_thumbnail, predict_like
+
+_EVALUATION_ID = re.compile(r"eval_\d{3,}")
+_MIB = 1024 * 1024
+# 成果物の整理（比較・評価設計 19 章）の模擬: 種類 → (ファイル数, 1 ファイルの大きさ, 相対パスの例)
+_MOCK_ARTIFACTS: dict[str, tuple[int, int, str]] = {
+    "fold_periodic": (50, 170 * _MIB, "checkpoints/fold_{n}/epoch_{e:03d}.pt"),
+    "fold_selected": (5, 170 * _MIB, "checkpoints/fold_{n}/selected.pt"),
+    "final": (1, 170 * _MIB, "checkpoints/final.pt"),
+    "temporary": (3, 12 * _MIB, "tmp_ckpt/part_{n}.tmp"),
+}
+_FAILED_RESULTS = {"stopped", "failed", "中断", "失敗"}
+_RUNNING_RESULTS = {"running", "実行中", "queued"}
 
 
 class MockBackend:
@@ -72,14 +92,24 @@ class MockBackend:
         self.inference_configs: dict[str, InferenceConfig] = {}
         self.candidates: dict[str, Candidate] = {}
         self.released: dict[str, ReleasedModel] = {}
-        self.routing: dict[str, str | None] = {name: None for name in self.classifications}
+        self.routing: dict[str, str | None] = {}
+        self.routing_revision = 0
         self.routing_history: list[RoutingHistory] = []
+        # 評価（比較・評価設計 7 章の模擬）。ファイルは作らない
+        self.evaluation_records: dict[str, list[EvaluationRecord]] = {}
+        self._evaluation_progress: dict[str, EvaluationProgress] = {}
+        self._evaluation_stops: dict[tuple[str, str], str] = {}
+        self.external_records: dict[str, list[dict[str, Any]]] = {}
+        self._is_evaluation_active: Callable[[str], bool] = lambda _candidate_id: False
+        # 成果物の整理で消した (実験, 試行) → 種類
+        self._pruned: dict[tuple[str, int], set[str]] = {}
         if seed_samples:
+            self.routing = {name: None for name in self.classifications}
             self._seed()
         else:
+            # hybrid 用: 比較候補・推論設定・リリース・振り分けの初期データは作らない（2.2）
             empty = WorkingDataset("all", "", [])
             self.working = {purpose: empty for purpose in ("all", "train", "val")}
-            self._seed_inference_configs()
         empty_dataset = WorkingDataset("all", "", [])
         items_by_id = {item.item_id: item for item in self.working.get("all", empty_dataset).items}
         self._version_items = {
@@ -463,6 +493,8 @@ class MockBackend:
             candidate.checkpoint_reference = (
                 f"試行 {candidate.source_attempt_number}/{candidate.checkpoint}"
             )
+            for version, evaluation in candidate.evaluations.items():
+                self._add_completed_evaluation(candidate.candidate_id, version, evaluation)
         now = self._now()
         for model_id, candidate_id in (("model_007", "RC-001"), ("model_012", "RC-002")):
             candidate = self.candidates[candidate_id]
@@ -1107,19 +1139,33 @@ class MockBackend:
         )
         return self.get_item_mask(purpose, item_id, revision)
 
-    def get_candidate_prediction(self, candidate_id: str, item_id: str) -> np.ndarray:
-        """候補別に決定的な予測ラベルを返す。"""
+    def get_candidate_prediction(self, candidate_id: str, *args: str) -> np.ndarray:
+        """候補別に決定的な予測ラベルを返す。(candidate_id, evaluation_id, item_id)。
+
+        旧形式 (candidate_id, item_id) も受け付ける。段階 D2 で旧形式を削除。
+        """
         if candidate_id not in self.candidates:
             raise KeyError(candidate_id)
+        if len(args) == 2:
+            evaluation_id, item_id = args
+            record = self._find_evaluation(candidate_id, evaluation_id)
+            if record.status != "completed":
+                raise ValueError("完了した評価の予測だけ表示できます")
+        elif len(args) == 1:
+            item_id = args[0]
+        else:
+            raise TypeError("get_candidate_prediction の引数が不正です")
         _, labels = make_sample(self._get_item("val", item_id).seed, channels=("A",))
         return predict_like(
             labels, self._seed_number(candidate_id) + self._get_item("val", item_id).seed
         )
 
     def get_inference_result(self, filename: str, model_id: str) -> tuple[np.ndarray, np.ndarray]:
-        """ファイル名とモデルから決定的な合成画像・予測ラベルを返す。"""
-        model = self.released[model_id]
-        seed = self._seed_number(filename + model.model_id)
+        """ファイル名とモデルから決定的な合成画像・予測ラベルを返す。
+
+        リリースの有無に依存させない（hybrid ではリリースが ComparisonService にあるため。2.4）。
+        """
+        seed = self._seed_number(filename + model_id)
         images, labels = make_sample(seed, channels=("A",))
         return images["A"].copy(), predict_like(labels, seed + 7)
 
@@ -2033,45 +2079,73 @@ class MockBackend:
             if model_type is None or config.model_type == model_type
         ]
 
+    def default_inference_params(self, model_type: str) -> dict[str, Any]:
+        """推論設定の初期値を返す（ComparisonService と同じ値）。"""
+        from ..comparison_service import ComparisonService
+
+        return ComparisonService.default_inference_params(model_type)
+
     def create_inference_config(self, model_type: str, params: dict[str, Any]) -> InferenceConfig:
-        """推論設定を採番して保存する。"""
+        """範囲を検証して推論設定を採番する。同じ設定があればそれを返す（5.1）。"""
+        from ..comparison_service import ComparisonService
+
+        normalized = ComparisonService.validate_inference_params(model_type, params)
+        for config in self.list_inference_configs(model_type):
+            if config.params == normalized:
+                return config
         number = max((int(key[-3:]) for key in self.inference_configs), default=0) + 1
-        config = InferenceConfig(f"infer_v{number:03d}", model_type, copy.deepcopy(params))
+        config = InferenceConfig(f"infer_v{number:03d}", model_type, normalized)
         self.inference_configs[config.config_id] = config
         return config
 
     def add_candidate(
-        self, experiment_id: str, checkpoint: str, inference_config_id: str, comment: str = ""
+        self,
+        experiment_id: str,
+        attempt: int | str,
+        inference_config_id: str,
+        comment: str = "",
     ) -> Candidate:
-        """重複を確認して比較候補を追加する。"""
+        """試行を明示して比較候補を追加する（5.3）。
+
+        旧形式（attempt の位置に "final.pt"）は最新の試行を使う。段階 D2 で旧形式を削除。
+        """
         experiment = self.get_experiment(experiment_id)
         if experiment.status != "completed":
             raise ValueError("完了した実験のみ候補に追加できます")
-        if checkpoint != "final.pt":
-            raise ValueError("比較候補には最終学習モデルのみ指定できます")
-        if not any(item.name == checkpoint for item in experiment.checkpoints):
+        if isinstance(attempt, str):
+            if attempt != "final.pt":
+                raise ValueError("比較候補には最終学習モデルのみ指定できます")
+            attempt = len(experiment.runs)
+        if not 1 <= attempt <= len(experiment.runs):
+            raise ValueError(f"試行 {attempt} がありません")
+        if not any(item.name == "final.pt" for item in experiment.checkpoints):
             raise ValueError("最終学習モデルが実験にありません")
+        if inference_config_id not in self.inference_configs:
+            raise ValueError(f"推論設定がありません: {inference_config_id}")
+        if "final" in self._pruned.get((experiment_id, attempt), set()):
+            raise ValueError("最終学習モデルは成果物の整理で削除されています")
         for candidate in self.candidates.values():
             if (
-                candidate.experiment_id == experiment_id
-                and candidate.checkpoint == checkpoint
-                and candidate.source_attempt_number == len(experiment.runs)
+                candidate.status != "rejected"
+                and candidate.experiment_id == experiment_id
+                and candidate.source_attempt_number == attempt
                 and candidate.inference_config_id == inference_config_id
             ):
-                raise ValueError(f"同じ試行の設定は {candidate.candidate_id} として登録済みです")
+                raise ValueError(f"既に {candidate.candidate_id} として登録済みです")
         number = max((int(key[-3:]) for key in self.candidates), default=0) + 1
         oof = self._candidate_oof_evaluation(experiment, inference_config_id)
         candidate = Candidate(
             f"RC-{number:03d}",
             experiment_id,
-            checkpoint,
+            "final.pt",
             inference_config_id,
             oof_evaluation=oof,
             oof_experiment_id=experiment_id,
             oof_epoch=experiment.selected_epoch,
             comment=comment,
-            source_attempt_number=len(experiment.runs),
-            checkpoint_reference=f"試行 {len(experiment.runs)}/final.pt",
+            source_attempt_number=attempt,
+            checkpoint_reference=f"試行 {attempt}/final.pt",
+            oof_applicability="matching",
         )
         self.candidates[candidate.candidate_id] = candidate
         return candidate
@@ -2079,7 +2153,10 @@ class MockBackend:
     def add_candidate_from_snapshot(
         self, snapshot: CandidateSnapshot, inference_config_id: str, comment: str = ""
     ) -> Candidate:
-        """実測 OOF と実験設定を保持したスナップショットを比較候補へ加える。"""
+        """実測 OOF と実験設定を保持したスナップショットを比較候補へ加える。
+
+        旧 API（Backend 契約からは外した）。段階 D2 で削除する。
+        """
         inference = self.inference_configs.get(inference_config_id)
         model_config = snapshot.experiment_config.get("model", {})
         model_type = model_config.get("type")
@@ -2140,10 +2217,215 @@ class MockBackend:
             },
         )
 
+    def reject_candidate(self, candidate_id: str) -> Candidate:
+        """候補を非採用にする。評価中・評価待ちの候補はできない。"""
+        candidate = self.candidates[candidate_id]
+        if candidate.status != "candidate":
+            raise ValueError("候補状態のモデルだけ非採用にできます")
+        if self._is_evaluation_active(candidate_id):
+            raise ValueError("評価中または評価待ちの候補は非採用にできません")
+        candidate.status = "rejected"
+        return candidate
+
+    # ---- 評価（7 章の模擬。EvaluationRunner の FakeEvaluationJob で動く） ----
+
+    def set_evaluation_activity(self, is_evaluation_active: Callable[[str], bool]) -> None:
+        """候補が評価中・評価待ちかを答える関数を受け取る。"""
+        self._is_evaluation_active = is_evaluation_active
+
+    def _mock_score(self, candidate_id: str) -> float:
+        return 0.86 + int(candidate_id[-3:]) % 10 / 100
+
+    def _next_evaluation_id(self, candidate_id: str) -> str:
+        """候補ごとの通し番号（検証版をまたいで同じ番号を使わない）。"""
+        records = self.evaluation_records.get(candidate_id, [])
+        number = max((int(record.evaluation_id[5:]) for record in records), default=0) + 1
+        return f"eval_{number:03d}"
+
+    def _add_completed_evaluation(
+        self, candidate_id: str, version: str, evaluation: Evaluation
+    ) -> EvaluationRecord:
+        record = EvaluationRecord(
+            self._next_evaluation_id(candidate_id),
+            candidate_id,
+            version,
+            "completed",
+            evaluation=evaluation,
+            contamination={"status": "none", "pairs": [], "reason": None},
+            completed_at=self._now().isoformat(timespec="seconds"),
+            input_fingerprint=self._digest(f"{candidate_id}:{version}"),
+        )
+        self.evaluation_records.setdefault(candidate_id, []).append(record)
+        return record
+
+    def _find_evaluation(self, candidate_id: str, evaluation_id: str) -> EvaluationRecord:
+        for record in self.evaluation_records.get(candidate_id, []):
+            if record.evaluation_id == evaluation_id:
+                return record
+        raise ValueError(f"評価がありません: {candidate_id}/{evaluation_id}")
+
+    def prepare_evaluation_run(self, candidate_id: str, validation_version: str) -> PreparedRun:
+        """評価を 1 回分準備する。模擬なので fake=True の PreparedRun を返す（7.1）。"""
+        candidate = self.candidates.get(candidate_id)
+        if candidate is None:
+            raise ValueError(f"比較候補がありません: {candidate_id}")
+        if candidate.status != "candidate":
+            raise ValueError("候補状態のモデルだけ評価できます")
+        if validation_version not in {item.version for item in self.list_validation_versions()}:
+            raise ValueError(f"検証用データセット {validation_version} がありません")
+        if not self._items_for_version(validation_version):
+            raise ValueError(f"検証用データセット {validation_version} に画像がありません")
+        evaluation_id = self._next_evaluation_id(candidate_id)
+        record = EvaluationRecord(
+            evaluation_id,
+            candidate_id,
+            validation_version,
+            "running",
+            input_fingerprint=self._digest(f"{candidate_id}:{validation_version}"),
+        )
+        self.evaluation_records.setdefault(candidate_id, []).append(record)
+        self._evaluation_progress[candidate_id] = EvaluationProgress(
+            candidate_id, evaluation_id, validation_version
+        )
+        run_id = f"{candidate_id}/{validation_version}/{evaluation_id}"
+        return PreparedRun(run_id, f"mock://{run_id}", "mock", [], {}, fake=True)
+
+    def record_evaluation_process(
+        self, candidate_id: str, evaluation_id: str, pid: int, creation_time: float
+    ) -> None:
+        """模擬なので保存しない。"""
+        self._find_evaluation(candidate_id, evaluation_id)
+
+    def request_evaluation_stop(self, candidate_id: str, evaluation_id: str, reason: str) -> None:
+        """中断要求を記録する。"""
+        if reason not in {"user_stop", "app_exit"}:
+            raise ValueError("中断理由は user_stop または app_exit です")
+        self._find_evaluation(candidate_id, evaluation_id)
+        self._evaluation_stops[(candidate_id, evaluation_id)] = reason
+
+    def apply_evaluation_event(
+        self, candidate_id: str, evaluation_id: str, event: dict[str, Any]
+    ) -> EvaluationProgress | None:
+        """評価イベントを進捗へ反映する。成功は確定しない。"""
+        for key in ("v", "run_id", "seq", "time", "type"):
+            if key not in event:
+                raise ValueError(f"イベントの共通項目がありません: {key}")
+        if event["type"] == "hello":
+            return self.get_evaluation_progress(candidate_id)
+        record = self._find_evaluation(candidate_id, evaluation_id)
+        if event["run_id"] != f"{candidate_id}/{record.validation_version}/{evaluation_id}":
+            raise ValueError("イベントの run_id が評価に対応していません")
+        progress = self._evaluation_progress.get(candidate_id)
+        if progress is None or progress.evaluation_id != evaluation_id:
+            progress = EvaluationProgress(candidate_id, evaluation_id, record.validation_version)
+            self._evaluation_progress[candidate_id] = progress
+        kind = event["type"]
+        if kind == "started":
+            progress.phase = "preflight"
+        elif kind == "preflight":
+            progress.phase = "inference"
+            progress.total = int(event["n_images"])
+        elif kind == "image_done":
+            progress.phase = "inference"
+            progress.completed = int(event["completed"])
+            progress.total = int(event["total"])
+        elif kind in {"completed", "error"}:
+            progress.phase = kind
+        return copy.copy(progress)
+
+    def conclude_evaluation_run(
+        self, candidate_id: str, evaluation_id: str, job_exit: JobExit | None = None
+    ) -> EvaluationOutcome:
+        """模擬の終端判定。停止要求 → 起動失敗 → エラー → completed イベントの順で決める。"""
+        record = self._find_evaluation(candidate_id, evaluation_id)
+        version = record.validation_version
+        if record.status != "running":
+            return EvaluationOutcome(candidate_id, evaluation_id, record.status, "", None, version)
+        progress = self._evaluation_progress.get(candidate_id)
+        phase = progress.phase if progress and progress.evaluation_id == evaluation_id else ""
+        stop = self._evaluation_stops.pop((candidate_id, evaluation_id), None)
+        message, reason = "", None
+        if stop is not None:
+            status, reason = "stopped", stop
+        elif job_exit is not None and job_exit.start_failed:
+            status, reason, message = "failed", "start_failed", job_exit.message
+        elif job_exit is not None and (job_exit.protocol_error or job_exit.returncode not in {0}):
+            status, reason, message = "failed", "error", job_exit.message
+        elif phase == "completed":
+            status = "completed"
+        else:
+            status, reason, message = "failed", "error", "評価結果がありません"
+        record.status = status
+        if status == "completed":
+            items = self._items_for_version(version)
+            record.evaluation = self._evaluation_for_items(self._mock_score(candidate_id), items)
+            record.evaluation.n_images = len(items)
+            record.contamination = {"status": "none", "pairs": [], "reason": None}
+            record.completed_at = self._now().isoformat(timespec="seconds")
+            self.candidates[candidate_id].evaluations[version] = record.evaluation
+        if progress and progress.evaluation_id == evaluation_id:
+            del self._evaluation_progress[candidate_id]
+        return EvaluationOutcome(candidate_id, evaluation_id, status, message, reason, version)
+
+    def get_evaluation_progress(self, candidate_id: str) -> EvaluationProgress | None:
+        """実行中の評価の進捗を返す。"""
+        progress = self._evaluation_progress.get(candidate_id)
+        return copy.copy(progress) if progress is not None else None
+
+    def list_candidate_evaluations(
+        self, candidate_id: str, validation_version: str
+    ) -> list[EvaluationRecord]:
+        """その候補・検証版の全評価を番号順に返す。"""
+        if candidate_id not in self.candidates:
+            raise KeyError(candidate_id)
+        return [
+            copy.copy(record)
+            for record in self.evaluation_records.get(candidate_id, [])
+            if record.validation_version == validation_version
+        ]
+
+    def get_candidate_evaluation(
+        self, candidate_id: str, validation_version: str
+    ) -> EvaluationRecord | None:
+        """その候補・検証版で最も新しい完了済みの評価を返す（7.7）。"""
+        completed = [
+            record
+            for record in self.list_candidate_evaluations(candidate_id, validation_version)
+            if record.status == "completed"
+        ]
+        return completed[-1] if completed else None
+
+    def base_validation_version_for(self, candidate_id: str) -> str | None:
+        """候補の学習用の版が参照する基準検証版を返す。"""
+        candidate = self.candidates[candidate_id]
+        if candidate.snapshot is not None:
+            data = candidate.snapshot.experiment_config.get("data", {})
+        else:
+            experiment = self.experiments.get(candidate.experiment_id)
+            data = experiment.config.values.get("data", {}) if experiment else {}
+        train_version = data.get("dataset_version")
+        record = next((item for item in self.versions if item.version == train_version), None)
+        return record.base_validation_version if record is not None else None
+
+    def default_validation_version(self) -> str | None:
+        """最も新しい候補の基準検証版。なければ最も新しい検証版（3.5）。"""
+        versions = [item.version for item in self.list_validation_versions()]
+        if not versions:
+            return None
+        if self.candidates:
+            latest = max(self.candidates, key=lambda key: int(key[-3:]))
+            base = self.base_validation_version_for(latest)
+            if base in versions:
+                return base
+        return versions[-1]
+
     def start_evaluation(
         self, candidate_ids: list[str], validation_version: str
     ) -> list[Candidate]:
-        """評価対象候補を評価中状態にする。"""
+        """評価対象候補を評価中状態にする。
+
+        旧 API（Backend 契約からは外した）。段階 D2 で EvaluationRunner に置き換えて削除する。
+        """
         candidates = [self.candidates[candidate_id] for candidate_id in candidate_ids]
         for candidate in candidates:
             if candidate.status not in {"candidate", "evaluating"}:
@@ -2154,47 +2436,164 @@ class MockBackend:
     def evaluate_candidate(
         self, candidate_id: str, validation_version: str = "val_v003"
     ) -> Evaluation:
-        """全体・分類別評価値を記録して候補状態へ戻す。"""
+        """全体・分類別評価値を記録して候補状態へ戻す。
+
+        旧 API（Backend 契約からは外した）。段階 D2 で EvaluationRunner に置き換えて削除する。
+        """
         candidate = self.candidates[candidate_id]
-        number = int(candidate_id[-3:])
         items = self._items_for_version(validation_version)
-        evaluation = self._evaluation_for_items(0.86 + number % 10 / 100, items)
+        evaluation = self._evaluation_for_items(self._mock_score(candidate_id), items)
         candidate.evaluations[validation_version] = evaluation
         candidate.status = "candidate"
+        self._add_completed_evaluation(candidate_id, validation_version, evaluation)
         return evaluation
+
+    # ---- 外部解析（9.4） ----
+
+    def list_external_results(self, candidate_id: str) -> list[dict[str, Any]]:
+        """外部解析結果の記録を古い順に返す。"""
+        if candidate_id not in self.candidates:
+            raise KeyError(candidate_id)
+        return copy.deepcopy(self.external_records.get(candidate_id, []))
 
     def save_external_results(
         self,
         candidate_id: str,
-        results: list[ExternalResult | dict[str, Any]],
+        evaluation_id: Any,
+        results: Any = None,
+        *args: Any,
         software: str = "",
+        software_version: str = "",
+        analyzed_on: str = "",
+        scope: str = "全体",
+        export_id: str | None = None,
+        comment: str | None = None,
         date: str = "",
-        comment: str = "",
     ) -> Candidate:
-        """外部解析値とコメントを保存する。"""
+        """外部解析値を評価 ID 付きで保存する。
+
+        旧形式 (candidate_id, results, software, date, comment) も受け付ける。
+        段階 D2 で旧形式を削除。
+        """
         candidate = self.candidates[candidate_id]
-        candidate.external_results = [
+        if isinstance(evaluation_id, list):
+            old = [results, *args]
+            software = old[0] if len(old) > 0 and old[0] is not None else software
+            analyzed_on = old[1] if len(old) > 1 else date
+            comment = old[2] if len(old) > 2 else comment
+            results, evaluation_id = evaluation_id, None
+        else:
+            if args:
+                raise TypeError("save_external_results の追加項目はキーワードで指定してください")
+            if candidate.status == "released":
+                raise ValueError("リリース済みの候補の外部解析結果は変更できません")
+            self._find_evaluation(candidate_id, evaluation_id)
+        values = [
             result if isinstance(result, ExternalResult) else ExternalResult(**result)
-            for result in results
+            for result in results or []
         ]
+        records = self.external_records.setdefault(candidate_id, [])
+        records.append(
+            {
+                "record_id": f"ext_{len(records) + 1:03d}",
+                "evaluation_id": evaluation_id,
+                "export_id": export_id,
+                "scope": scope,
+                "software": software,
+                "software_version": software_version,
+                "analyzed_on": analyzed_on,
+                "results": [
+                    {"name": item.name, "value": item.value, "unit": item.unit} for item in values
+                ],
+                "comment": comment or "",
+                "saved_at": self._now().isoformat(timespec="seconds"),
+            }
+        )
+        candidate.external_results = values
         candidate.external_software = software
-        candidate.external_date = date
-        candidate.comment = comment
+        candidate.external_date = analyzed_on
+        if comment is not None:
+            candidate.comment = comment
         return candidate
 
-    def reject_candidate(self, candidate_id: str) -> Candidate:
-        """候補を非採用にする。"""
-        candidate = self.candidates[candidate_id]
-        candidate.status = "rejected"
-        return candidate
+    # ---- マスク出力（12 章の模擬。ファイルは作らない） ----
+
+    def export_particle_masks(
+        self,
+        request: Any,
+        progress: Callable[[int, int], None],
+        is_cancelled: Callable[[], bool],
+    ) -> Any:
+        """出力の件数だけを数える模擬。ExportResult と同じ形の結果を返す。"""
+        from ...inference.mask_export import ExportResult
+        from ..backend import MaskExportParams
+
+        params = MaskExportParams.from_value(request)
+        if not params.contents or not params.contents <= {"label", "binary"}:
+            raise ValueError("出力内容にはラベル画像・二値マスクのいずれかを選んでください")
+        if params.file_format not in {"png", "tiff"}:
+            raise ValueError("出力形式は PNG または TIFF を選んでください")
+        if not params.selections:
+            raise ValueError("出力する候補を選択してください")
+        targets: list[tuple[str, str, str]] = []
+        for candidate_id, evaluation_id in params.selections:
+            record = self._find_evaluation(candidate_id, evaluation_id)
+            if record.status != "completed":
+                raise ValueError(f"{candidate_id} は評価が完了していないため出力できません")
+            item_ids = [item.item_id for item in self._items_for_version(record.validation_version)]
+            if params.item_ids is not None:
+                item_ids = [item_id for item_id in item_ids if item_id in set(params.item_ids)]
+            targets.extend((candidate_id, evaluation_id, item_id) for item_id in item_ids)
+        if not targets:
+            raise ValueError("出力する画像がありません")
+        result = ExportResult()
+        progress(0, len(targets))
+        for index, (candidate_id, _evaluation_id, item_id) in enumerate(targets, start=1):
+            if is_cancelled():
+                result.cancelled = True
+                return result
+            seed = self._seed_number(candidate_id + item_id)
+            vanished, split = seed % 3 == 0, seed % 5 == 0
+            result.vanished_count += int(vanished)
+            result.vanished_images += int(vanished)
+            result.split_count += int(split)
+            result.split_images += int(split)
+            result.n_images = index
+            progress(index, len(targets))
+        return result
+
+    # ---- リリース（13 章） ----
 
     def release_candidate(
-        self, candidate_id: str, comment: str = "", validation_version: str = "val_v003"
+        self,
+        candidate_id: str,
+        evaluation_id: str = "",
+        comment: str = "",
+        validation_version: str | None = None,
     ) -> ReleasedModel:
-        """評価済み候補を変更不可のリリースとして登録する。"""
+        """指定した評価で候補を変更不可のリリースとして登録する（13.1）。
+
+        旧形式 (candidate_id, comment, validation_version) も受け付ける。段階 D2 で旧形式を削除。
+        """
         candidate = self.candidates[candidate_id]
-        if validation_version not in candidate.evaluations:
-            raise ValueError("評価済み候補のみリリースできます")
+        if _EVALUATION_ID.fullmatch(str(evaluation_id or "")):
+            record = self._find_evaluation(candidate_id, evaluation_id)
+            if record.status != "completed" or record.evaluation is None:
+                raise ValueError("完了した評価でだけリリースできます")
+            if record.contamination.get("status") == "found":
+                raise ValueError(
+                    "学習データと同じ画像が検証用データセットにあるためリリースできません"
+                )
+            version, evaluation = record.validation_version, record.evaluation
+        else:
+            comment, version = evaluation_id, comment or validation_version or "val_v003"
+            if version not in candidate.evaluations:
+                raise ValueError("評価済み候補のみリリースできます")
+            evaluation = candidate.evaluations[version]
+        if candidate.status != "candidate":
+            raise ValueError("候補状態のモデルだけリリースできます")
+        if self._is_evaluation_active(candidate_id):
+            raise ValueError("評価中または評価待ちの候補はリリースできません")
         number = max((int(key[-3:]) for key in self.released), default=0) + 1
         experiment = (
             None if candidate.snapshot is not None else self.get_experiment(candidate.experiment_id)
@@ -2212,8 +2611,8 @@ class MockBackend:
             checkpoint=candidate.checkpoint,
             preprocessing_config=copy.deepcopy(preprocessing),
             inference_config=copy.deepcopy(inference.params),
-            validation_dataset=validation_version,
-            evaluation_result=candidate.evaluations[validation_version],
+            validation_dataset=version,
+            evaluation_result=evaluation,
             oof_evaluation=copy.deepcopy(candidate.oof_evaluation),
             released_at=self._now(),
             comment=comment or candidate.comment,
@@ -2221,13 +2620,17 @@ class MockBackend:
         )
         self.released[model.model_id] = model
         candidate.status = "released"
+        candidate.released_model_id = model.model_id
         return model
 
     def list_validation_items(
-        self, validation_version: str = "val_v003", classification: str | None = None
+        self, validation_version: str | None = None, classification: str | None = None
     ) -> list[DataItem]:
         """検証用版の画像を分類条件付きで返す。"""
-        items = self._items_for_version(validation_version)
+        version = validation_version or self.default_validation_version()
+        if version is None:
+            return []
+        items = self._items_for_version(version)
         return [
             item
             for item in items
@@ -2238,22 +2641,58 @@ class MockBackend:
         """リリース済みモデルを返す。"""
         return list(self.released.values())
 
+    # ---- 振り分け（14 章） ----
+
+    def get_routing_state(self) -> RoutingState:
+        """振り分けの現在値と revision を返す。"""
+        return RoutingState(self.routing_revision, self.routing.copy())
+
     def get_routing(self) -> dict[str, str | None]:
         """分類ごとの現在の振り分けを返す。"""
         return self.routing.copy()
 
-    def apply_routing(self, changes: dict[str, str | None]) -> list[RoutingHistory]:
-        """振り分け変更を検証・適用し履歴を返す。"""
+    def list_routing_classifications(self) -> list[str]:
+        """確定済みの全版に現れる分類 ∪ 振り分けにすでにある分類。"""
+        names = set(self.routing)
+        for version in self.versions:
+            if version.purpose in {"train", "val"}:
+                names.update(
+                    item.classification
+                    for item in self._version_items.get(version.version, [])
+                    if item.classification
+                )
+        return sorted(names)
+
+    def apply_routing(
+        self, changes: dict[str, str | None], *, expected_revision: int | None = None
+    ) -> RoutingState | list[RoutingHistory]:
+        """全変更を検証してから一括で適用する（14 章）。
+
+        expected_revision を省いた旧形式は変更履歴の一覧を返す。段階 D2 で旧形式を削除。
+        """
+        if expected_revision is not None and expected_revision != self.routing_revision:
+            raise ValueError("振り分けが別の操作で変更されました。画面を開き直してください")
+        classifications = set(self.list_routing_classifications())
+        errors = []
+        for classification, model_id in changes.items():
+            if classification not in classifications:
+                errors.append(f"振り分けの対象にない分類です: {classification}")
+            if model_id is not None and model_id not in self.released:
+                errors.append(f"未登録のリリースモデルです: {model_id}")
+        if errors:
+            raise ValueError("、".join(errors))
         records = []
         for classification, model_id in changes.items():
-            if model_id is not None and model_id not in self.released:
-                raise ValueError(f"未登録のリリースモデルです: {model_id}")
             before = self.routing.get(classification)
             if before != model_id:
                 records.append(RoutingHistory(self._now(), classification, before, model_id))
                 self.routing[classification] = model_id
+        if records:
+            self.routing_revision += 1
         self.routing_history.extend(records)
-        return records
+        if expected_revision is None:
+            return records
+        return self.get_routing_state()
 
     def list_routing_history(self) -> list[RoutingHistory]:
         """振り分け変更履歴を返す。"""
@@ -2263,6 +2702,96 @@ class MockBackend:
         """分類から有効なモデルを返す。"""
         model_id = self.routing.get(classification or "")
         return self.released.get(model_id) if model_id else None
+
+    # ---- 成果物の整理（19 章の模擬。大きさは固定値、状態だけを持つ） ----
+
+    def _protected_final_reason(self, experiment_id: str, attempt: int) -> str:
+        users = [
+            candidate.candidate_id
+            for candidate in self.candidates.values()
+            if candidate.experiment_id == experiment_id
+            and candidate.source_attempt_number == attempt
+            and (
+                candidate.status in {"candidate", "evaluating"}
+                or self._is_evaluation_active(candidate.candidate_id)
+            )
+        ]
+        if not users:
+            return ""
+        return "比較候補 " + "、".join(users) + " がこの最終学習モデルを参照しています"
+
+    def artifact_cleanup_plan(self, experiment_ids: list[str]) -> list[ArtifactGroup]:
+        """試行・種類ごとに、消せるファイルの数・容量と可否を返す。"""
+        groups = []
+        for experiment_id in experiment_ids:
+            if experiment_id not in self.experiments:
+                raise ValueError(f"実験がありません: {experiment_id}")
+            experiment = self.experiments[experiment_id]
+            busy = ""
+            if experiment.status in {"running", "queued"}:
+                busy = "学習中・待機中の実験は整理できません"
+            for run in experiment.runs:
+                pruned = self._pruned.get((experiment_id, run.attempt), set())
+                failed = run.result in _FAILED_RESULTS or "失敗" in run.result
+                for category, (count, size, _pattern) in _MOCK_ARTIFACTS.items():
+                    if category in pruned or (category == "temporary" and not failed):
+                        continue
+                    reason = busy
+                    if not reason and run.result in _RUNNING_RESULTS:
+                        reason = "試行が確定していないため整理できません"
+                    if not reason and category == "final":
+                        reason = self._protected_final_reason(experiment_id, run.attempt)
+                    groups.append(
+                        ArtifactGroup(
+                            experiment_id,
+                            run.attempt,
+                            category,
+                            count,
+                            count * size,
+                            not reason,
+                            reason,
+                        )
+                    )
+        return groups
+
+    def estimate_freed_bytes(self, experiment_ids: list[str], categories: list[str]) -> int:
+        """選んだ種類を整理したときに空く容量を見積もる。"""
+        unknown = [item for item in categories if item not in _MOCK_ARTIFACTS]
+        if unknown:
+            raise ValueError(f"成果物の種類が不正です: {', '.join(unknown)}")
+        return sum(
+            group.size_bytes
+            for group in self.artifact_cleanup_plan(experiment_ids)
+            if group.deletable and group.category in categories
+        )
+
+    def prune_artifacts(self, experiment_ids: list[str], categories: list[str]) -> PruneResult:
+        """選んだ種類を削除済みとして記録する。条件を満たさないものは skipped に入れる。"""
+        unknown = [item for item in categories if item not in _MOCK_ARTIFACTS]
+        if unknown:
+            raise ValueError(f"成果物の種類が不正です: {', '.join(unknown)}")
+        selected = [
+            group
+            for group in self.artifact_cleanup_plan(experiment_ids)
+            if group.category in categories
+        ]
+        freed = count = 0
+        for group in selected:
+            if group.deletable:
+                key = (group.experiment_id, group.attempt)
+                self._pruned.setdefault(key, set()).add(group.category)
+                freed += group.size_bytes
+                count += group.n_files
+        return PruneResult(freed, count, [group for group in selected if not group.deletable])
+
+    def pruned_paths(self, experiment_id: str, attempt: int) -> set[str]:
+        """削除済みとして記録した種類の模擬パスを返す。"""
+        paths = set()
+        for category in self._pruned.get((experiment_id, attempt), set()):
+            count, _size, pattern = _MOCK_ARTIFACTS[category]
+            for index in range(count):
+                paths.add(pattern.format(n=index % 5 + 1, e=(index // 5 + 1) * 10))
+        return paths
 
     def validate_excel_import(self, filename: str) -> dict[str, Any]:
         """ファイル名に応じたモック Excel 取込チェックを返す。"""

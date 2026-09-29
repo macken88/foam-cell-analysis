@@ -795,7 +795,10 @@ def test_hybrid_refuses_to_delete_experiment_referenced_by_candidate(tmp_path):
 
     backend, experiment = _completed_service(tmp_path, HybridBackend)
     expid = experiment.experiment_id
-    candidate = backend.add_candidate(expid, "final.pt", "infer_v005")
+    config = backend.create_inference_config(
+        "mask_rcnn", backend.default_inference_params("mask_rcnn")
+    )
+    candidate = backend.add_candidate(expid, 1, config.config_id)
 
     info = backend.experiment_deletion_info(expid)
     assert not info.allowed
@@ -1092,3 +1095,27 @@ def test_candidate_snapshot_uses_explicit_attempt_and_records_weights(tmp_path):
     first.write_bytes(b"changed weights")
     with pytest.raises(ValueError, match="大きさ"):
         service.create_candidate_snapshot(expid, attempt=1)
+
+
+def test_recovery_does_not_resume_pruning_through_linked_attempt_dir(tmp_path):
+    service, experiment = _completed_service(tmp_path)
+    expid = experiment.experiment_id
+    runs = tmp_path / "experiments" / expid / "runs"
+    outside_dir = tmp_path / "outside_attempt"
+    outside_dir.mkdir()
+    victim = outside_dir / "victim.pt"
+    victim.write_bytes(b"outside")
+    record = {"schema": 1, "entries": [_deleting_entry("victim.pt", "final")]}
+    (outside_dir / "pruned.json").write_text(json.dumps(record), encoding="utf-8")
+    link = runs / "attempt_009"
+    try:
+        link.symlink_to(outside_dir, target_is_directory=True)
+    except OSError:
+        _winapi = pytest.importorskip("_winapi")
+        _winapi.CreateJunction(str(outside_dir), str(link))
+
+    TrainingService(tmp_path, process_alive=lambda _record: False).recover()
+
+    assert victim.read_bytes() == b"outside"
+    states = json.loads((outside_dir / "pruned.json").read_text("utf-8"))["entries"]
+    assert states[0]["state"] == "deleting"

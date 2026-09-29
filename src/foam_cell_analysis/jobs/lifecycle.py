@@ -102,8 +102,18 @@ def _kernel32():
     return kernel32
 
 
-def windows_process_handle(pid: int) -> tuple[Any, float] | None:
-    """生存中の Windows プロセスのハンドルと作成時刻（Unix 秒）を返す。"""
+_QUERY_LIMITED_INFORMATION = 0x1000
+_PROCESS_TERMINATE = 0x0001
+_SYNCHRONIZE = 0x00100000
+
+
+def windows_process_handle(
+    pid: int, access: int = _QUERY_LIMITED_INFORMATION
+) -> tuple[Any, float] | None:
+    """生存中の Windows プロセスのハンドルと作成時刻（Unix 秒）を返す。
+
+    access は OpenProcess の要求権限。終了させるときは TERMINATE と SYNCHRONIZE を足す。
+    """
     if os.name != "nt":
         return None
 
@@ -123,7 +133,7 @@ def windows_process_handle(pid: int) -> tuple[Any, float] | None:
     kernel32.GetProcessTimes.restype = ctypes.c_int
     kernel32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
     kernel32.GetExitCodeProcess.restype = ctypes.c_int
-    handle = kernel32.OpenProcess(0x1000, False, pid)
+    handle = kernel32.OpenProcess(access, False, pid)
     if not handle:
         return None
     created = FileTime()
@@ -220,26 +230,37 @@ def process_alive(process: dict[str, Any]) -> bool:
     return abs(expected_created - actual_created) <= CREATION_TIME_TOLERANCE_S
 
 
-def terminate_process(process: dict[str, Any]) -> None:
-    """PID と作成時刻が一致するプロセスを終了して待機する。"""
+def terminate_process(process: dict[str, Any]) -> bool:
+    """PID と作成時刻が一致するプロセスを終了して待機する。
+
+    終了できた（もともと存在しない場合を含む）ときは True、終了できなかったときは False を返す。
+    """
     try:
         pid = int(process["pid"])
     except (KeyError, TypeError, ValueError):
-        return
+        return True
     expected_created = process_created_at(process)
-    identity = windows_process_handle(pid) if expected_created is not None else None
+    if expected_created is None:
+        return True
+    identity = windows_process_handle(
+        pid, _QUERY_LIMITED_INFORMATION | _PROCESS_TERMINATE | _SYNCHRONIZE
+    )
     if identity is None:
-        return
+        # 開けない。すでに終了しているのか、権限がなく開けないのかを生存確認で区別する
+        return not process_alive(process)
     handle, actual_created = identity
     kernel32 = _kernel32()
     kernel32.TerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
     kernel32.TerminateProcess.restype = ctypes.c_int
     kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
     kernel32.WaitForSingleObject.restype = ctypes.c_uint32
+    done = True
     if abs(expected_created - actual_created) <= CREATION_TIME_TOLERANCE_S:
-        kernel32.TerminateProcess(handle, 1)
-        kernel32.WaitForSingleObject(handle, 5000)
+        done = bool(kernel32.TerminateProcess(handle, 1))
+        if done:
+            done = kernel32.WaitForSingleObject(handle, 5000) == 0
     kernel32.CloseHandle(handle)
+    return done
 
 
 def process_record(pid: int, creation_time: float) -> dict[str, Any]:

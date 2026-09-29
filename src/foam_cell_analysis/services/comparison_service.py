@@ -300,6 +300,44 @@ def _artifact_path(run_dir: Path, result: dict[str, Any], key: str, default: str
     return resolve_recorded_path(run_dir, relative or default)
 
 
+def _valid_ap_entry(entry: Any) -> bool:
+    """AP が 0〜1 の実数か null で、n_images が 0 以上の整数か。"""
+    if not isinstance(entry, dict):
+        return False
+    ap = entry.get("ap")
+    n_images = entry.get("n_images")
+    if type(n_images) is not int or n_images < 0:
+        return False
+    if ap is None:
+        return True
+    return (
+        isinstance(ap, (int, float))
+        and not isinstance(ap, bool)
+        and math.isfinite(ap)
+        and 0.0 <= ap <= 1.0
+    )
+
+
+def _valid_summary(result: dict[str, Any], target_count: int) -> bool:
+    """result.json の overall・per_class・contamination の形と整合を確かめる。"""
+    overall = result.get("overall")
+    if not _valid_ap_entry(overall) or overall["n_images"] != target_count:
+        return False
+    per_class = result.get("per_class")
+    if not isinstance(per_class, dict) or not all(
+        _valid_ap_entry(entry) for entry in per_class.values()
+    ):
+        return False
+    if sum(entry["n_images"] for entry in per_class.values()) != target_count:
+        return False
+    contamination = result.get("contamination")
+    return isinstance(contamination, dict) and contamination.get("status") in {
+        "none",
+        "found",
+        "unknown",
+    }
+
+
 def validate_evaluation_result(run_dir: str | Path) -> bool:
     """評価の result.json が妥当か（7.5）。sha256 は再計算せず、存在とバイト数だけを見る。"""
     directory = Path(run_dir)
@@ -322,6 +360,8 @@ def validate_evaluation_result(run_dir: str | Path) -> bool:
             path = resolve_recorded_path(directory, entry.get("path"))
             if not path.is_file() or path.stat().st_size != entry["bytes"]:
                 return False
+        if not _valid_summary(result, len(item_ids)):
+            return False
         per_image = _artifact_path(directory, result, "per_image_csv", "per_image.csv")
         with per_image.open("r", encoding="utf-8-sig", newline="") as stream:
             rows = [row for row in csv.reader(stream) if row]
@@ -368,6 +408,11 @@ _default_process_alive = process_alive
 _default_terminate_process = terminate_process
 
 
+def _within_any(path: Path, dirs: list[Path]) -> bool:
+    """path が dirs のどれか（自身を含む）の中にあるか。"""
+    return any(path == item or item in path.parents for item in dirs)
+
+
 class ComparisonService:
     """推論設定・比較候補・評価の読み取り・外部解析・リリース・振り分けの窓口。"""
 
@@ -395,6 +440,8 @@ class ComparisonService:
         self.git_commit = getattr(training_service, "git_commit", None)
         self.process_alive = process_alive or _default_process_alive
         self.process_terminator = process_terminator or _default_terminate_process
+        # 復旧で終了できなかった評価プロセスの説明。GUI が新しい計算を止めるために使う
+        self.recovery_blockers: list[str] = []
         # 実行中の評価の進捗（保存しない）と、評価ごとの最後の seq
         self._progress: dict[str, EvaluationProgress] = {}
         self._last_event_seq: dict[tuple[str, str], int] = {}
@@ -1265,6 +1312,7 @@ class ComparisonService:
         自動では再開しない。
         """
         outcomes: list[EvaluationOutcome] = []
+        self.recovery_blockers = []
         if not self.candidates_root.is_dir():
             return outcomes
         for candidate_dir in sorted(self.candidates_root.iterdir()):
@@ -1274,6 +1322,7 @@ class ComparisonService:
             root = candidate_dir / "evaluations"
             if not root.is_dir():
                 continue
+            blocked_dirs: list[Path] = []
             for version in self._evaluated_versions(candidate_id):
                 for _evaluation_id, run_dir in self._evaluation_dirs(candidate_id, version):
                     if (run_dir / "status.json").exists():
@@ -1289,6 +1338,12 @@ class ComparisonService:
                                     time.sleep(0.1)
                                 if self.process_alive(process):
                                     logger.error("評価プロセスを終了できませんでした: %s", run_dir)
+                                    blocked_dirs.append(run_dir)
+                                    self.recovery_blockers.append(
+                                        f"評価 {run_dir.name}（候補 {candidate_id}）のプロセスを"
+                                        "終了できませんでした。タスクマネージャーで終了してから"
+                                        "アプリを再起動してください。"
+                                    )
                                     continue
                         outcomes.append(
                             self._conclude_evaluation(candidate_id, version, run_dir, None)
@@ -1296,9 +1351,11 @@ class ComparisonService:
                     except (OSError, ValueError) as error:
                         logger.error("評価の状態を確定できませんでした (%s): %s", run_dir, error)
             for path in root.glob("*/.preparing_*"):
-                self._remove(path)
+                if not _within_any(path, blocked_dirs):
+                    self._remove(path)
             for path in root.rglob("*.tmp"):
-                self._remove(path)
+                if not _within_any(path, blocked_dirs):
+                    self._remove(path)
         return outcomes
 
     # ---- 外部解析結果（9.4） ----

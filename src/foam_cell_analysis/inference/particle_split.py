@@ -76,7 +76,7 @@ def split_report(labels: np.ndarray) -> dict:
     split = sorted(
         label
         for label, count in after_counts.items()
-        if count > before_counts.get(label, 0) and count >= 2
+        if before_counts.get(label) == 1 and count >= 2
     )
     return {
         "id": PARTICLE_SPLIT_ID,

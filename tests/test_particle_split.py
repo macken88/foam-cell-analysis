@@ -61,3 +61,14 @@ def test_empty_image_report():
     report = split_report(np.zeros((3, 3), dtype=np.uint16))
     assert report["removed_pixels"] == 0 and report["removed_fraction"] == 0.0
     assert report["vanished_labels"] == [] and report["split_labels"] == []
+
+
+def test_label_with_two_components_before_is_not_counted_as_split():
+    labels = np.zeros((5, 13), dtype=np.int32)
+    labels[1:4, 0:3] = 5
+    labels[2, 3:6] = 5  # 幅 1 の橋
+    labels[1:4, 6:9] = 5
+    labels[1, 4] = 7
+    labels[1:4, 10:13] = 5  # 分離前から別の連結成分（合計 2 成分 -> 分離後 3 成分）
+    report = split_report(labels)
+    assert 5 not in report["split_labels"]
