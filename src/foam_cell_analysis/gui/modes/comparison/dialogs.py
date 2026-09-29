@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QObject, Qt, QThread, QUrl, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QFontMetrics
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -77,6 +77,23 @@ def user_message(error: BaseException, fallback: str) -> str:
 def completed_attempts(experiment: Experiment) -> list[int]:
     """実験の完了した試行番号を返す。"""
     return [run.attempt for run in experiment.runs if run.result in _COMPLETED_RESULTS]
+
+
+FINAL_PRUNED_PATH = "checkpoints/final.pt"
+FINAL_PRUNED_REASON = "最終学習モデルは成果物の整理で削除されています"
+
+
+def usable_attempts(backend, experiment: Experiment) -> list[int]:
+    """候補にできる試行番号を返す。final.pt が成果物の整理で削除された試行は除く。"""
+    result = []
+    for attempt in completed_attempts(experiment):
+        try:
+            pruned = backend.pruned_paths(experiment.experiment_id, attempt)
+        except (KeyError, ValueError, OSError):
+            pruned = set()
+        if FINAL_PRUNED_PATH not in pruned:
+            result.append(attempt)
+    return result
 
 
 def oof_note(candidate: Candidate) -> str | None:
@@ -238,13 +255,14 @@ class CandidateDialog(QDialog):
         self.experiments = {
             experiment.experiment_id: experiment
             for experiment in ctx.backend.list_experiments()
-            if completed_attempts(experiment)
+            if usable_attempts(ctx.backend, experiment)
         }
         self.experiment.addItems(list(self.experiments))
         self.experiment.currentTextChanged.connect(self._experiment_changed)
         self.attempt.currentIndexChanged.connect(self._update_ok)
         self.use_existing.toggled.connect(self._toggle_config_mode)
         self.config.currentTextChanged.connect(self._show_config_values)
+        self.config.currentTextChanged.connect(self._update_ok)
         preset = preset or {}
         index = self.experiment.findText(str(preset.get("experiment_id", "")))
         if index >= 0:
@@ -264,7 +282,7 @@ class CandidateDialog(QDialog):
         if not experiment:
             self._update_ok()
             return
-        attempts = completed_attempts(experiment)
+        attempts = usable_attempts(self.ctx.backend, experiment)
         for number in attempts:
             self.attempt.addItem(f"試行 {number} / final.pt", number)
         # 試行が 1 つだけなら迷わないので選んでおく。複数なら利用者が選ぶ（5.3）
@@ -338,6 +356,15 @@ class CandidateDialog(QDialog):
         if self.config.findText(current) >= 0:
             self.config.setCurrentText(current)
         self._show_config_values(self.config.currentText())
+        if self.config.count() == 0:
+            # 既存の設定がないときは、新しく作る以外に選べない
+            self.use_existing.setEnabled(False)
+            self.use_existing.setToolTip("このモデル種類の推論設定はまだありません")
+            self.use_new.setChecked(True)
+        elif not self.use_existing.isEnabled():
+            self.use_existing.setEnabled(True)
+            self.use_existing.setToolTip("")
+            self.use_existing.setChecked(True)
 
     def _show_config_values(self, config_id: str) -> None:
         config = next(
@@ -360,6 +387,7 @@ class CandidateDialog(QDialog):
         self.config_values.setEnabled(existing)
         for widget in self.fields.values():
             widget.setEnabled(not existing)
+        self._update_ok()
 
     def _update_ok(self, *_args) -> None:
         reason = ""
@@ -367,6 +395,8 @@ class CandidateDialog(QDialog):
             reason = "完了した実験がありません"
         elif self.attempt.currentIndex() < 0:
             reason = "試行を選んでください"
+        elif self.use_existing.isChecked() and not self.config.currentText():
+            reason = "推論設定を選んでください"
         self.ok_button.setEnabled(not reason)
         self.ok_button.setToolTip(reason)
 
@@ -376,6 +406,10 @@ class CandidateDialog(QDialog):
         if not isinstance(attempt, int):
             raise ValueError("試行を選んでください")
         config_id = self.config.currentText()
+        experiment = self.experiments.get(self.experiment.currentText())
+        # 新しい推論設定を作る前に、この試行が使えるか確かめる（使えないのに設定だけ残さない）
+        if experiment is None or attempt not in usable_attempts(self.ctx.backend, experiment):
+            raise ValueError(FINAL_PRUNED_REASON)
         if self.use_new.isChecked():
             values = {key: widget.value() for key, widget in self.fields.items()}
             config = self.ctx.backend.create_inference_config(self.model_type_value, values)
@@ -1018,14 +1052,24 @@ class MaskExportDialog(QDialog):
 class MaskExportDoneDialog(QDialog):
     """粒子解析用マスクの出力完了の案内（承認済みモック）。"""
 
+    FOLDER_TEXT_WIDTH = 520
+
     def __init__(self, summary: dict[str, Any], parent=None) -> None:
         super().__init__(parent)
         self.summary = summary
         self.setWindowTitle("粒子解析用マスクを出力しました")
         self.setMinimumWidth(460)
         layout = QVBoxLayout(self)
-        folder = QLabel(f"出力先: {summary['folder']}")
-        folder.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        # 長いパスでダイアログが横に伸びないよう、中央を省略して全文はツールチップに出す
+        full_text = f"出力先: {summary['folder']}"
+        folder = QLabel(
+            QFontMetrics(self.font()).elidedText(
+                full_text, Qt.TextElideMode.ElideMiddle, self.FOLDER_TEXT_WIDTH
+            )
+        )
+        folder.setToolTip(str(summary["folder"]))
+        folder.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.folder_label = folder
         layout.addWidget(folder)
         layout.addWidget(
             QLabel(f"候補 {summary['n_candidates']} 件 ・ 画像 {summary['n_images']} 枚")

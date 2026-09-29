@@ -444,3 +444,15 @@ def test_evaluation_fails_when_image_changes_after_preflight(evaluation_env):
     message = read_json(Path(prepared.run_dir) / "error.json")["message"]
     assert "変更されました" in message
     assert not (Path(prepared.run_dir) / "result.json").exists()
+
+
+def test_prepare_failure_removes_preparing_folder(evaluation_env, monkeypatch):
+    service = evaluation_env.service
+
+    def fail_replace(_source, _target):
+        raise OSError("path too long")
+
+    monkeypatch.setattr("foam_cell_analysis.services.comparison_service.os.replace", fail_replace)
+    with pytest.raises(OSError):
+        service.prepare_evaluation_run("RC-001", "val_v000")
+    assert not list((service.candidates_root / "RC-001").glob("evaluations/*/.preparing_*"))

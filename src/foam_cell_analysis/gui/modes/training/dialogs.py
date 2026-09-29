@@ -163,9 +163,16 @@ class ExperimentCompareDialog(QDialog):
 class SendToCandidatesDialog(QDialog):
     """最終学習モデルを比較候補へ渡す。"""
 
-    def __init__(self, experiment: Experiment, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        experiment: Experiment,
+        parent: QWidget | None = None,
+        attempts: list[int] | None = None,
+    ) -> None:
         super().__init__(parent)
         self.experiment = experiment
+        # 候補にできる試行。None のときは完了した試行すべて
+        self.attempts = attempts
         self.setWindowTitle("モデル比較へ送る")
         self.resize(520, 260)
         self.setMinimumSize(480, 250)
@@ -201,7 +208,9 @@ class SendToCandidatesDialog(QDialog):
             "checkpoint": self.checkpoint.currentText(),
             "comment": self.comment.text().strip(),
         }
-        attempts = completed_attempts(self.experiment)
+        attempts = (
+            self.attempts if self.attempts is not None else completed_attempts(self.experiment)
+        )
         if attempts:
             # 最終学習モデルは最新の完了試行のもの
             params["attempt"] = max(attempts)

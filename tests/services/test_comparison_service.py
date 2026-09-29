@@ -297,6 +297,7 @@ def test_broken_prediction_detected(env):
     adopted = service.get_candidate_evaluation(cid, "val_v000")
     assert adopted.broken
     assert "val_v000" not in service.get_candidate(cid).evaluations
+    service.list_candidates()  # 壊れた結果があっても一覧は例外にならない
 
 
 def test_path_traversal_rejected(env, tmp_path):
@@ -462,6 +463,7 @@ def _rewrite_result(run_dir, mutate):
         lambda r: r["overall"].update(n_images=99),
         lambda r: r["per_class"]["分類A"].update(n_images=1),
         lambda r: r.pop("per_class"),
+        lambda r: r.update(per_class=[1, 2]),
     ],
 )
 def test_invalid_result_summary_is_broken_and_not_releasable(env, mutate):

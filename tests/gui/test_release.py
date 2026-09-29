@@ -139,3 +139,29 @@ def test_release_page_does_not_read_experiments(qapp, mock_backend, monkeypatch)
     assert not any("mAP" in header for header in headers)
     assert page.model_table.item(0, 1).text() == "Mask R-CNN"
     assert page.detail_values["推論設定"].text() != "—"
+
+
+def test_inference_summary_uses_specific_names_and_hides_internal_keys(qapp, mock_backend):
+    page = make_page(mock_backend)
+
+    rows = page._inference_rows(
+        {
+            "channel_axis": 2,
+            "normalize": False,
+            "bsize": 256,
+            "flow_threshold": 0.4,
+            "cellprob_threshold": 0.0,
+            "min_size": 15,
+            "max_size_fraction": 0.4,
+        }
+    )
+    labels = [label for label, _value in rows]
+
+    assert labels == [
+        "セル確率閾値",
+        "フロー閾値",
+        "最小サイズ（画素）",
+        "最大サイズの割合",
+    ]
+    summary = page._inference_summary({"min_size": 15, "bsize": 256, "unknown_key": 1})
+    assert summary == "最小サイズ（画素） 15"

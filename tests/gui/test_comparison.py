@@ -388,11 +388,11 @@ def test_candidate_menu_actions_disable_without_selection(qapp, qtbot):
     page = CandidatesPage(AppContext(MockBackend(), Navigator(), JobManager()))
     qtbot.addWidget(page)
     page.show()
-    assert not page.menu_actions["export"].isEnabled()
-    assert not page.menu_actions["reject"].isEnabled()
+    assert not page.candidate_actions["export"].isEnabled()
+    assert not page.candidate_actions["reject"].isEnabled()
     assert not page.candidate_actions["stop"].isEnabled()
-    page.menu_actions["export"].trigger()
-    assert not page.menu_actions["export"].isEnabled()
+    page.candidate_actions["export"].trigger()
+    assert not page.candidate_actions["export"].isEnabled()
 
 
 def test_detail_dialog_is_read_only_for_released_candidate(qtbot):
@@ -404,3 +404,124 @@ def test_detail_dialog_is_read_only_for_released_candidate(qtbot):
     qtbot.addWidget(dialog)
     assert not dialog.save_button.isEnabled()
     assert dialog.controls.button(QDialogButtonBox.StandardButton.Close).isEnabled()
+
+
+def test_candidate_dialog_without_existing_config_defaults_to_new(qtbot):
+    ctx = make_context()
+    ctx.backend.inference_configs.clear()
+    dialog = CandidateDialog(ctx)
+    qtbot.addWidget(dialog)
+
+    assert dialog.use_new.isChecked()
+    assert not dialog.use_existing.isEnabled()
+    assert dialog.ok_button.isEnabled()
+    dialog.use_existing.setEnabled(True)
+    dialog.use_existing.setChecked(True)
+    assert not dialog.ok_button.isEnabled()
+
+
+def test_candidate_dialog_skips_experiment_whose_final_model_was_pruned(qtbot):
+    ctx = make_context()
+    for run in ctx.backend.get_experiment("exp_0042").runs:
+        ctx.backend._pruned.setdefault(("exp_0042", run.attempt), set()).add("final")
+    dialog = CandidateDialog(ctx)
+    qtbot.addWidget(dialog)
+
+    assert "exp_0042" not in dialog.experiments
+
+
+def test_failed_add_does_not_leave_a_new_inference_config(qtbot):
+    ctx = make_context()
+    dialog = CandidateDialog(ctx, preset={"experiment_id": "exp_0042"})
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.use_new.setChecked(True)
+    dialog.fields["box_score_thresh"].setValue(0.11)
+    before = len(ctx.backend.list_inference_configs())
+    for run in ctx.backend.get_experiment("exp_0042").runs:
+        ctx.backend._pruned.setdefault(("exp_0042", run.attempt), set()).add("final")
+
+    QTest.mouseClick(dialog.ok_button, Qt.MouseButton.LeftButton)
+
+    assert len(ctx.backend.list_inference_configs()) == before
+    assert dialog.error.isVisible()
+
+
+def test_evaluation_failure_is_shown_with_japanese_reason(qtbot):
+    from foam_cell_analysis.services.models import EvaluationOutcome
+
+    ctx = make_context()
+    page = CandidatesPage(ctx)
+    qtbot.addWidget(page)
+    page.show()
+
+    ctx.evaluation_runner.ended.emit(
+        EvaluationOutcome(
+            "RC-003",
+            None,
+            "failed",
+            "評価の準備に失敗しました。作業フォルダのパスが長すぎる可能性があります。",
+            "prepare_failed",
+        )
+    )
+    assert page.failure_note.isVisible()
+    assert "作業フォルダのパスが長すぎる" in page.failure_note.text()
+
+    ctx.evaluation_runner.ended.emit(
+        EvaluationOutcome("RC-003", None, "failed", r"C:\work\x\y raw error", "error")
+    )
+    assert "C:" not in page.failure_note.text()
+    assert "raw error" not in page.failure_note.text()
+
+
+def test_mask_export_is_in_candidate_menu_and_context_menu(qtbot):
+    page = CandidatesPage(make_context())
+    qtbot.addWidget(page)
+    export = page.candidate_actions["export"]
+
+    assert export in page.menu_action_groups()["candidate"]
+    assert export in page.menu_action_groups()["file"]
+    assert export in page.context_menu.actions()
+
+
+def test_running_evaluation_is_counted_as_a_running_job(qtbot):
+    from PySide6.QtCore import QObject, Signal
+
+    class _Runner(QObject):
+        busy_changed = Signal(bool)
+        is_busy = False
+
+    runner = _Runner()
+    jobs = JobManager()
+    jobs.set_evaluation_runner(runner)
+    counts = []
+    jobs.jobs_changed.connect(counts.append)
+
+    runner.is_busy = True
+    runner.busy_changed.emit(True)
+
+    assert jobs.running_count == 1
+    assert counts[-1] == 1
+
+
+def test_export_done_dialog_elides_long_paths(qtbot):
+    from foam_cell_analysis.gui.modes.comparison.dialogs import MaskExportDoneDialog
+
+    folder = "C:/" + "/".join(["very_long_folder_name"] * 12)
+    dialog = MaskExportDoneDialog(
+        {
+            "folder": folder,
+            "n_candidates": 1,
+            "n_images": 2,
+            "vanished_count": 0,
+            "vanished_images": 0,
+            "split_count": 0,
+            "split_images": 0,
+        }
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    assert dialog.folder_label.toolTip() == folder
+    assert "…" in dialog.folder_label.text()
+    assert dialog.width() < 900

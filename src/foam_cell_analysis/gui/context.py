@@ -92,3 +92,5 @@ class AppContext:
             set_activity(is_active)
         if hasattr(self.jobs, "set_training_runner"):
             self.jobs.set_training_runner(self.training_runner)
+        if hasattr(self.jobs, "set_evaluation_runner"):
+            self.jobs.set_evaluation_runner(self.evaluation_runner)

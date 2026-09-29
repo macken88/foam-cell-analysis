@@ -1527,9 +1527,14 @@ class TrainingService:
     def _attempt_dirs(self, experiment_id: str) -> list[tuple[int, Path]]:
         """run_spec.json のある試行フォルダを試行番号順に返す。"""
         experiment_dir = self._experiment_dir(experiment_id)
+        # 解決前のパスでリンクを判定する（解決後は別実験への junction が通ってしまう）
+        unresolved = self.root / experiment_id
         runs_root = experiment_dir / "runs"
         result = []
-        if any(item.is_symlink() or item.is_junction() for item in (experiment_dir, runs_root)):
+        if any(
+            item.is_symlink() or item.is_junction()
+            for item in (unresolved, unresolved / "runs", experiment_dir, runs_root)
+        ):
             return result
         for path in sorted(runs_root.glob("attempt_*")):
             match = re.fullmatch(r"attempt_(\d+)", path.name)

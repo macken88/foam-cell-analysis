@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from pathlib import Path
@@ -17,6 +18,27 @@ from ..jobs.protocol import read_json
 from ..services.models import EvaluationOutcome, JobExit, PreparedRun
 from .compute_coordinator import ComputeCoordinator, Ticket
 from .process_job import HELLO_TIMEOUT_MS, ProcessJob, ProcessJobInfo
+
+logger = logging.getLogger(__name__)
+
+PREPARE_FAILED_TEXT = "評価の準備に失敗しました。作業フォルダのパスが長すぎる可能性があります。"
+UNEXPECTED_FAILED_TEXT = "評価を開始できませんでした。ログを確認してください。"
+
+
+def user_failure_message(error: BaseException) -> str:
+    """例外を、画面に出してよい日本語の理由へ置き換える（詳細はログにだけ残す）。
+
+    ValueError は最初の「: 」より前（パスや内部の詳細は後ろに入る）、
+    OSError はパス長などの準備失敗の文、それ以外は汎用の文にする。
+    """
+    if isinstance(error, OSError):
+        return PREPARE_FAILED_TEXT
+    if isinstance(error, ValueError):
+        text = str(error).split(": ", 1)[0].strip()
+        if text:
+            return text
+    return UNEXPECTED_FAILED_TEXT
+
 
 OWNER = "evaluation"
 APP_EXIT_TIMEOUT_MS = 10_000
@@ -286,7 +308,8 @@ class EvaluationRunner(QObject):
             job.finished.connect(self._job_finished)
             job.start()
         except Exception as error:
-            self._conclude(JobExit(start_failed=True, message=str(error)))
+            logger.warning("評価を開始できません (%s): %s", candidate_id, error, exc_info=True)
+            self._conclude(JobExit(start_failed=True, message=user_failure_message(error)))
 
     # ---- 実行中 ----
 
@@ -338,11 +361,12 @@ class EvaluationRunner(QObject):
                 )
         except Exception as error:
             saved = False
+            logger.error("評価の終了状態を保存できません (%s): %s", candidate_id, error)
             outcome = EvaluationOutcome(
                 candidate_id,
                 evaluation_id,
                 "failed",
-                str(error),
+                user_failure_message(error),
                 "conclusion_failed",
                 version,
             )

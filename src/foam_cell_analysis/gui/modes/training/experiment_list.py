@@ -48,6 +48,7 @@ from ...widgets.table import (
     mark_primary,
     setup_table,
 )
+from ..comparison.dialogs import FINAL_PRUNED_REASON, usable_attempts
 from .cleanup_dialog import ArtifactCleanupDialog, cleanup_status_message
 from .dialogs import ExperimentCompareDialog, SendToCandidatesDialog, flatten_config
 
@@ -731,21 +732,15 @@ class ExperimentListPage(BasePage):
         current = self._current_experiment()
         self.set_menu_action_enabled(self.action_map["compare"], len(selected) >= 2)
         self.set_menu_action_enabled(self.action_map["copy"], current is not None)
-        self.set_menu_action_enabled(
-            self.action_map["send"],
-            current is not None and current.status == "completed" and bool(current.checkpoints),
-        )
+        send_reason = self._send_block_reason(current)
+        self.set_menu_action_enabled(self.action_map["send"], not send_reason)
         self.action_map["compare"].setToolTip(
             "実験を 2 つ以上選ぶと使えます" if len(selected) < 2 else ""
         )
         self.action_map["copy"].setToolTip(
             "複製する実験を選ぶと使えます" if current is None else ""
         )
-        self.action_map["send"].setToolTip(
-            "完了した実験と途中保存モデルを選ぶと使えます"
-            if current is None or current.status != "completed" or not current.checkpoints
-            else ""
-        )
+        self.action_map["send"].setToolTip(send_reason)
         self.set_menu_action_enabled(
             self.action_map["result"], current is not None and current.status == "completed"
         )
@@ -794,11 +789,7 @@ class ExperimentListPage(BasePage):
         self.action_map["copy"].setToolTip(
             "複製する実験を 1 つ選んでください" if current is None else ""
         )
-        self.action_map["send"].setToolTip(
-            "完了した実験と途中保存モデルを選ぶと使えます"
-            if current is None or current.status != "completed" or not current.checkpoints
-            else ""
-        )
+        self.action_map["send"].setToolTip(send_reason)
         if hasattr(self, "yaml_menu_action"):
             self.set_menu_action_enabled(self.yaml_menu_action, current is not None)
             self.yaml_menu_action.setToolTip(
@@ -808,6 +799,14 @@ class ExperimentListPage(BasePage):
         self.action_map["queue_copy"].setToolTip(
             "複製する実験をチェックしてください" if not selected else ""
         )
+
+    def _send_block_reason(self, current: Experiment | None) -> str:
+        """「モデル比較へ送る」を押せない理由。押せるなら空文字。"""
+        if current is None or current.status != "completed" or not current.checkpoints:
+            return "完了した実験と途中保存モデルを選ぶと使えます"
+        if not usable_attempts(self.ctx.backend, current):
+            return FINAL_PRUNED_REASON
+        return ""
 
     def _pruned_paths(self, experiment: Experiment) -> set[str]:
         """最新の試行で、成果物の整理により削除済みのファイル（run_dir 相対）を返す。"""
@@ -1072,9 +1071,11 @@ class ExperimentListPage(BasePage):
 
     def send_selected(self) -> SendToCandidatesDialog | None:
         experiment = self._current_experiment()
-        if not experiment or experiment.status != "completed" or not experiment.checkpoints:
+        if not experiment or self._send_block_reason(experiment):
             return None
-        dialog = SendToCandidatesDialog(experiment, self)
+        dialog = SendToCandidatesDialog(
+            experiment, self, usable_attempts(self.ctx.backend, experiment)
+        )
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.ctx.navigator.navigate(PageId.CANDIDATES, **dialog.transition_params())
         return dialog

@@ -486,14 +486,9 @@ class MockBackend:
         )
         for candidate in self.candidates.values():
             # 学習時の評価条件（既定の推論設定）と同じなら OOF AP を比べられる
-            model_type = self.inference_configs[candidate.inference_config_id].model_type
-            params = self.inference_configs[candidate.inference_config_id].params
-            defaults = self.default_inference_params(model_type)
-            if all(params.get(key) == value for key, value in defaults.items()):
-                candidate.oof_applicability = "matching"
-            else:
-                candidate.oof_applicability = "different"
-                candidate.oof_reason = "推論設定が学習時と異なります"
+            candidate.oof_applicability, candidate.oof_reason = self._oof_applicability(
+                candidate.inference_config_id
+            )
             source = self.experiments[candidate.experiment_id]
             candidate.source_attempt_number = len(source.runs)
             candidate.checkpoint_reference = (
@@ -2101,6 +2096,19 @@ class MockBackend:
         self.inference_configs[config.config_id] = config
         return config
 
+    def _oof_applicability(self, inference_config_id: str) -> tuple[str, str]:
+        """推論設定と学習時の評価条件（既定値）を比べ、OOF の比較可否と理由を返す。"""
+        config = self.inference_configs.get(inference_config_id)
+        if config is None:
+            return "unknown", "学習時の評価条件を確認できません"
+        try:
+            defaults = self.default_inference_params(config.model_type)
+        except ValueError:
+            return "unknown", "学習時の評価条件を確認できません"
+        if all(config.params.get(key) == value for key, value in defaults.items()):
+            return "matching", ""
+        return "different", "推論設定が学習時と異なります"
+
     def add_candidate(
         self,
         experiment_id: str,
@@ -2129,7 +2137,13 @@ class MockBackend:
             ):
                 raise ValueError(f"既に {candidate.candidate_id} として登録済みです")
         number = max((int(key[-3:]) for key in self.candidates), default=0) + 1
-        oof = self._candidate_oof_evaluation(experiment, inference_config_id)
+        base_score = (
+            experiment.oof_evaluation.overall_map
+            if experiment.oof_evaluation
+            else max((point.map or 0 for point in experiment.oof_history), default=0.0)
+        )
+        oof = self._oof_evaluation(experiment, base_score)
+        applicability, reason = self._oof_applicability(inference_config_id)
         candidate = Candidate(
             f"RC-{number:03d}",
             experiment_id,
@@ -2141,7 +2155,8 @@ class MockBackend:
             comment=comment,
             source_attempt_number=attempt,
             checkpoint_reference=f"試行 {attempt}/final.pt",
-            oof_applicability="matching",
+            oof_applicability=applicability,
+            oof_reason=reason,
         )
         self.candidates[candidate.candidate_id] = candidate
         return candidate

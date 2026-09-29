@@ -401,3 +401,21 @@ def test_mock_export_counts_images_and_can_be_cancelled():
         backend.export_particle_masks(
             {**params, "selections": [("RC-003", "eval_001")]}, lambda *_: None, lambda: False
         )
+
+
+def test_mock_add_candidate_keeps_training_oof_and_judges_applicability():
+    backend = MockBackend()
+    experiment = backend.get_experiment("exp_0042")
+    default = backend.create_inference_config("mask_rcnn", {})
+    changed = backend.create_inference_config("mask_rcnn", {"box_score_thresh": 0.3})
+
+    same = backend.add_candidate("exp_0042", 1, default.config_id)
+    other = backend.add_candidate("exp_0042", 1, changed.config_id)
+
+    assert same.oof_applicability == "matching"
+    assert other.oof_applicability == "different"
+    assert other.oof_reason
+    assert same.oof_evaluation.overall_map == other.oof_evaluation.overall_map
+    assert experiment.oof_evaluation is None or (
+        same.oof_evaluation.overall_map == experiment.oof_evaluation.overall_map
+    )

@@ -399,7 +399,7 @@ class ReleasedModelsPage(BasePage):
             ("コメント", model.comment or "なし"),
         ]
         rows.extend(self._flatten_detail("前処理設定", model.preprocessing_config))
-        rows.extend(self._flatten_detail("推論設定", model.inference_config))
+        rows.extend(self._inference_rows(model.inference_config, "推論設定 / "))
         evaluation = model.evaluation_result
         rows.append(("評価結果 / 全体 AP", format_score(evaluation.overall_map)))
         rows.extend(
@@ -493,8 +493,31 @@ class ReleasedModelsPage(BasePage):
     @classmethod
     def _inference_summary(cls, params: dict) -> str:
         """推論設定を「検出スコア閾値 0.5」の形で 1 行ずつ並べる。"""
-        rows = cls._flatten_detail("", params or {})
-        return "\n".join(f"{label.removeprefix(' / ')} {value}" for label, value in rows) or "—"
+        rows = cls._inference_rows(params)
+        return "\n".join(f"{label} {value}" for label, value in rows) or "—"
+
+    # 推論設定の表示名。利用者が変える項目を先に、固定の項目を後に並べる。
+    # ここにない内部の項目（channel_axis・normalize・bsize など）は表示しない。
+    _INFERENCE_PARAM_LABELS = {
+        "box_score_thresh": "検出スコア閾値",
+        "box_nms_thresh": "Box NMS閾値",
+        "box_detections_per_img": "最大検出数",
+        "cellprob_threshold": "セル確率閾値",
+        "flow_threshold": "フロー閾値",
+        "mask_thresh": "マスク閾値",
+        "min_size": "最小サイズ（画素）",
+        "max_size_fraction": "最大サイズの割合",
+    }
+
+    @classmethod
+    def _inference_rows(cls, params: dict, prefix: str = "") -> list[tuple[str, str]]:
+        """推論設定を（表示名, 値）の行にする。表示名のない内部の項目は除く。"""
+        params = params or {}
+        return [
+            (f"{prefix}{label}", cls._display_detail_value(params[key]))
+            for key, label in cls._INFERENCE_PARAM_LABELS.items()
+            if key in params
+        ]
 
     def select_model(self, model_id: str) -> bool:
         """モデルIDの行を選択する。"""

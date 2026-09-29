@@ -1119,3 +1119,21 @@ def test_recovery_does_not_resume_pruning_through_linked_attempt_dir(tmp_path):
     assert victim.read_bytes() == b"outside"
     states = json.loads((outside_dir / "pruned.json").read_text("utf-8"))["entries"]
     assert states[0]["state"] == "deleting"
+
+
+def test_experiment_folder_that_is_a_junction_to_another_experiment_is_ignored(tmp_path):
+    service, experiment = _completed_service(tmp_path)
+    expid = experiment.experiment_id
+    target = tmp_path / "experiments" / expid
+    link = tmp_path / "experiments" / "exp_9999"
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        _winapi = pytest.importorskip("_winapi")
+        try:
+            _winapi.CreateJunction(str(target), str(link))
+        except OSError:
+            pytest.skip("リンクを作れない環境です")
+
+    assert service._attempt_dirs(expid)
+    assert service._attempt_dirs("exp_9999") == []

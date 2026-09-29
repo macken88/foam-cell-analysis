@@ -245,3 +245,21 @@ def test_experiment_queue_copy_refreshes_open_training_identifier(shell, monkeyp
     assert queued.experiment_id == stale
     assert training.experiment_id.text() != queued.experiment_id
     assert training.experiment_id.text() == shell.ctx.backend.next_experiment_id()
+
+
+def test_send_is_disabled_when_final_model_was_pruned(shell):
+    backend = shell.ctx.backend
+    experiment = backend.get_experiment("exp_0042")
+    for run in experiment.runs:
+        backend._pruned.setdefault(("exp_0042", run.attempt), set()).add("final")
+    shell.navigate(PageId.EXPERIMENTS)
+    page = shell.page(PageId.EXPERIMENTS)
+    target_row = next(
+        row for row in range(page.table.rowCount()) if page.table.item(row, 1).text() == "exp_0042"
+    )
+    rect = page.table.visualItemRect(page.table.item(target_row, 1))
+    QTest.mouseClick(page.table.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
+
+    assert not page.button_map["send"].isEnabled()
+    assert page.action_map["send"].toolTip() == "最終学習モデルは成果物の整理で削除されています"
+    assert page.send_selected() is None

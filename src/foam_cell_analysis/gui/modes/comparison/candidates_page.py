@@ -1,6 +1,7 @@
 """モデル比較・リリース候補一覧（比較・推論設計 16.2）。"""
 
 import logging
+import re
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QColor
@@ -18,9 +19,10 @@ from PySide6.QtWidgets import (
 )
 
 from ....services.models import EvaluationRecord
+from ...evaluation_runner import PREPARE_FAILED_TEXT
 from ...labels import candidate_status_label, format_score, model_type_label
 from ...navigation import PageId
-from ...theme import Color, numeric_font
+from ...theme import Color, numeric_font, set_style
 from ...widgets.marks import STATUS_MARKS, TagDelegate
 from ...widgets.page_base import BasePage
 from ...widgets.table import (
@@ -154,15 +156,12 @@ class CandidatesPage(BasePage):
         self.candidate_actions["stop"].triggered.connect(self._stop_evaluation)
         self.candidate_actions["export"].triggered.connect(self._export_masks)
         self.candidate_actions["reject"].triggered.connect(self._reject)
-        self.more_button = QPushButton("その他 ▾")
-        self.more_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        self.more_menu = QMenu(self.more_button)
-        self.menu_actions = {}
-        for key in ("export", "reject"):
-            action = self.candidate_actions[key]
-            self.menu_actions[key] = action
-        self.more_button.setMenu(self.more_menu)
         self.content_layout.addLayout(row)
+        self.failure_note = QLabel()
+        self.failure_note.setWordWrap(True)
+        set_style(self.failure_note, state="error")
+        self.failure_note.hide()
+        self.content_layout.addWidget(self.failure_note)
         self.content_layout.addWidget(self.table, 1)
         row.addWidget(self.buttons["release"])
         self.validation.currentTextChanged.connect(self.refresh)
@@ -175,7 +174,7 @@ class CandidatesPage(BasePage):
         self.candidate_actions["compare"].triggered.connect(self._compare)
         self.candidate_actions["release"].triggered.connect(self._release)
         self.context_menu = QMenu(self)
-        for key in ("add", "evaluate", "stop", "detail", "compare", "reject", "release"):
+        for key in ("add", "evaluate", "stop", "detail", "compare", "export", "reject", "release"):
             self.context_menu.addAction(self.candidate_actions[key])
 
         def select_candidate_for_context(row_index):
@@ -210,7 +209,7 @@ class CandidatesPage(BasePage):
             "view": [self.validation_menu.menuAction(), self.state_menu.menuAction(), None],
             "candidate": [
                 self.candidate_actions[key]
-                for key in ("add", "evaluate", "stop", "detail", "compare")
+                for key in ("add", "evaluate", "stop", "detail", "compare", "export")
             ]
             + [None, self.candidate_actions["reject"], self.candidate_actions["release"]],
         }
@@ -319,6 +318,20 @@ class CandidatesPage(BasePage):
         self.table.blockSignals(False)
         fit_table_columns(self.table)
 
+    @staticmethod
+    def _failure_reason(outcome) -> str:
+        """失敗の理由を、画面に出してよい日本語にする。生のパスや英語の文は出さない。"""
+        text = str(outcome.message or "").strip()
+        readable = (
+            re.search(r"[\u3040-\u30ff\u4e00-\u9fff]", text) is not None
+            and re.search(r"[A-Za-z]:[\\/]|\\|/[\w.-]+/|Traceback", text) is None
+        )
+        if readable:
+            return text.rstrip("。") + "。"
+        if outcome.reason in {"prepare_failed", "start_failed"}:
+            return PREPARE_FAILED_TEXT
+        return "詳しくはログを確認してください。"
+
     def _evaluation_ended(self, outcome) -> None:
         candidate_id = outcome.candidate_id
         if outcome.status == "completed":
@@ -328,6 +341,8 @@ class CandidatesPage(BasePage):
         else:
             logger.warning("%s の評価に失敗しました: %s", candidate_id, outcome.message)
             message = f"{candidate_id} の評価に失敗しました"
+            self.failure_note.setText(f"{message}。{self._failure_reason(outcome)}")
+            self.failure_note.show()
         self.ctx.status.show_message(message)
         self.refresh()
 
@@ -605,6 +620,7 @@ class CandidatesPage(BasePage):
         version = self.validation.currentText()
         if runner is None or not ids or not version:
             return
+        self.failure_note.hide()
         try:
             runner.start(ids, version)
         except ValueError as error:

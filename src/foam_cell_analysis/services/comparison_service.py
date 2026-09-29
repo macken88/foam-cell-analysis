@@ -255,7 +255,7 @@ def _evaluation_from_summary(overall: Any, per_class: Any) -> Evaluation | None:
 
     対象なしの AP（null）は None のまま渡す（表示側は None を「—」にする）。
     """
-    if not isinstance(overall, dict):
+    if not isinstance(overall, dict) or not (per_class is None or isinstance(per_class, dict)):
         return None
     classes: dict[str, tuple[float, int]] = {}
     for name, value in (per_class or {}).items():
@@ -928,7 +928,7 @@ class ComparisonService:
             contamination = result.get("contamination")
             record.contamination = dict(contamination) if isinstance(contamination, dict) else {}
             record.completed_at = result.get("completed_at")
-        except (OSError, ValueError, TypeError):
+        except (OSError, ValueError, TypeError, AttributeError):
             record.broken = True
             return record
         record.broken = record.evaluation is None or not validate_evaluation_result(run_dir)
@@ -1156,9 +1156,13 @@ class ComparisonService:
         validate_run_spec(spec, final_dir)
         preparing = root / f".preparing_{uuid.uuid4()}"
         preparing.mkdir()
-        _write_json(preparing / "run_spec.json", spec)
-        # ここで初めて評価として数える
-        os.replace(preparing, final_dir)
+        try:
+            _write_json(preparing / "run_spec.json", spec)
+            # ここで初めて評価として数える
+            os.replace(preparing, final_dir)
+        except BaseException:
+            shutil.rmtree(preparing, ignore_errors=True)
+            raise
         run_dir = str(final_dir.resolve())
         return PreparedRun(
             run_id,
