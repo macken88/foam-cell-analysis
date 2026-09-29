@@ -38,6 +38,9 @@ class TrainingRunner(QObject):
         self._event_failure = None
         self.experiment_id = experiment_id
         self.queue_id = queue_id
+        # 前回の試行番号が残っていると、準備に失敗したとき前回の試行を終端処理してしまう
+        self.attempt = None
+        self.job = None
         try:
             prepared = self.backend.prepare_training_run(experiment_id, queue_id, retry)
             self.attempt = int(prepared.run_id.rsplit("/attempt_", 1)[1])
@@ -105,8 +108,8 @@ class TrainingRunner(QObject):
                     job_exit.message,
                 )
                 if self.queue_id:
+                    # 試行が作られず実験一覧に記録が残らないため、キューの行は「失敗」のまま残す
                     self.backend.finish_training_queue_item(self.queue_id, "failed")
-                    self.backend.clear_finished_training_queue_items()
         except Exception as error:
             outcome = TrainingOutcome(
                 self.experiment_id or "",

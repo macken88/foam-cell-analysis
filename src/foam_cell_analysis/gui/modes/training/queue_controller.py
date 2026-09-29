@@ -204,4 +204,10 @@ class TrainingQueueController(QObject):
             QTimer.singleShot(0, lambda: self.ctx.status.show_message(message))
             self.changed.emit()
             return
+        if outcome.reason == "prepare_failed":
+            message = (
+                f"{outcome.experiment_id} の学習を開始できませんでした"
+                f"（キューの行は「失敗」として残しています）: {outcome.message}"
+            )
+            QTimer.singleShot(0, lambda: self.ctx.status.show_message(message))
         QTimer.singleShot(0, self._next)

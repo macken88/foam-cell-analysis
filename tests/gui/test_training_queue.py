@@ -373,3 +373,51 @@ def test_queue_context_menu_removes_finished_rows_and_keeps_experiments(shell, q
     assert [row.experiment_id for row in backend.list_training_queue()] == [waiting.experiment_id]
     assert backend.get_experiment(finished.experiment_id).status == "stopped"
     window.hide()
+
+
+def test_failed_retry_preparation_does_not_conclude_previous_attempt(shell, monkeypatch):
+    """完了後の再学習が準備で失敗しても、前回の試行を「完了」として扱い直さない。"""
+    backend = shell.ctx.backend
+    training = shell.page(PageId.TRAINING)
+    config = training._collect_config()
+    config["training"]["epochs"] = 1
+    config["data"]["cv"]["n_folds"] = 2
+    experiment = backend.add_training_queue_item(config)
+    shell.navigate(PageId.TRAINING_QUEUE)
+    queue = shell.page(PageId.TRAINING_QUEUE)
+    QTest.mouseClick(queue.run_button, Qt.MouseButton.LeftButton)
+    for _ in range(200):
+        if backend.get_experiment(experiment.experiment_id).status == "completed":
+            break
+        QTest.qWait(20)
+    for _ in range(100):
+        if not shell.ctx.queue_controller.executing and not shell.ctx.training_runner.is_busy:
+            break
+        QTest.qWait(10)
+    assert backend.get_experiment(experiment.experiment_id).status == "completed"
+
+    concluded = []
+    original_conclude = backend.conclude_training_run
+    monkeypatch.setattr(
+        backend,
+        "conclude_training_run",
+        lambda *args, **kwargs: concluded.append(args) or original_conclude(*args, **kwargs),
+    )
+
+    def fail_prepare(*_args, **_kwargs):
+        raise ValueError("データセットが初回試行と異なります")
+
+    monkeypatch.setattr(backend, "prepare_training_run", fail_prepare)
+    outcomes = []
+    shell.ctx.training_runner.ended.connect(outcomes.append)
+    reservation = backend.add_training_retry_reservation(experiment.experiment_id)
+    shell.ctx.training_runner.start(experiment.experiment_id, reservation.queue_id, retry=True)
+
+    assert concluded == []
+    assert [(item.status, item.reason) for item in outcomes] == [("failed", "prepare_failed")]
+    assert backend.get_experiment(experiment.experiment_id).status == "completed"
+    queue.refresh()
+    assert any(
+        entry.queue_id == reservation.queue_id and entry.status == "failed"
+        for entry in backend.list_training_queue()
+    )
