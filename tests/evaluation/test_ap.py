@@ -54,3 +54,31 @@ def test_match_counts_handles_noncontiguous_labels_and_empty_rules():
     assert not tp.any() and not fp.any() and not fn.any()
     tp, fp, fn = match_counts(np.zeros((2, 2), dtype=np.uint16), np.ones((2, 2), dtype=np.uint16))
     assert not tp.any() and fp.tolist() == [1] * len(THRESHOLDS) and not fn.any()
+
+
+def test_instance_table_overlap_noncontiguous_labels_and_empty():
+    from foam_cell_analysis.evaluation.ap import instance_table
+
+    truth = np.zeros((4, 4), dtype=np.int32)
+    truth[0:2, 0:2] = 10  # 面積 4
+    truth[3, 3] = 30  # 面積 1（予測なし）
+    pred = np.zeros((4, 4), dtype=np.int32)
+    pred[0:2, 0:1] = 7  # 面積 2、10 と交差 2 / 和 4 = 0.5
+    pred[2, 0] = 8  # 面積 1、重なりなし
+    rows = {(r["side"], r["label"]): r for r in instance_table(truth, pred)}
+    assert len(rows) == 4
+    assert rows[("true", 10)] == {
+        "side": "true",
+        "label": 10,
+        "area": 4,
+        "best_iou": 0.5,
+        "best_label": 7,
+    }
+    assert rows[("true", 30)]["best_iou"] == 0.0 and rows[("true", 30)]["best_label"] is None
+    assert rows[("pred", 7)]["best_label"] == 10 and rows[("pred", 7)]["area"] == 2
+    assert rows[("pred", 8)]["best_label"] is None
+    assert instance_table(np.zeros((3, 3)), np.zeros((3, 3))) == []
+    only_pred = instance_table(np.zeros((2, 2), int), np.array([[0, 4], [4, 0]]))
+    assert only_pred == [
+        {"side": "pred", "label": 4, "area": 2, "best_iou": 0.0, "best_label": None}
+    ]

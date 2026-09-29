@@ -5,6 +5,8 @@ from enum import StrEnum
 import numpy as np
 from PySide6.QtGui import QImage, QPixmap
 
+from foam_cell_analysis.inference.particle_split import binary_mask
+
 
 class DisplayMode(StrEnum):
     """画像表示形式。"""
@@ -16,24 +18,8 @@ class DisplayMode(StrEnum):
 
 
 def to_binary_separated(labels: np.ndarray) -> np.ndarray:
-    """異なるラベルが8近傍で接する両側ピクセルを背景化する。"""
-    values = np.asarray(labels)
-    if values.ndim != 2:
-        raise ValueError("ラベル画像は2次元である必要があります")
-    boundary = np.zeros(values.shape, dtype=bool)
-    height, width = values.shape
-    for dy in (-1, 0, 1):
-        for dx in (-1, 0, 1):
-            if dy == 0 and dx == 0:
-                continue
-            y0, y1 = max(0, -dy), min(height, height - dy)
-            x0, x1 = max(0, -dx), min(width, width - dx)
-            a = values[y0:y1, x0:x1]
-            b = values[y0 + dy : y1 + dy, x0 + dx : x1 + dx]
-            touching = (a > 0) & (b > 0) & (a != b)
-            boundary[y0:y1, x0:x1] |= touching
-            boundary[y0 + dy : y1 + dy, x0 + dx : x1 + dx] |= touching
-    return ((values > 0) & ~boundary).astype(np.uint8)
+    """粒子分離後の前景を 1、背景を 0 とする uint8 画像を返す（定義は inference 側）。"""
+    return (binary_mask(labels) > 0).astype(np.uint8)
 
 
 def _label_color(value: int) -> tuple[int, int, int]:

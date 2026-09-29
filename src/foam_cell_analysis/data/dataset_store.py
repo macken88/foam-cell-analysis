@@ -32,8 +32,8 @@ class DatasetStore:
         """画像と外部キャッシュを合わせた使用量を返す。"""
         return self._cache.size
 
-    def list_versions(self) -> list[str]:
-        """読み込み可能な学習用 RELEASED 版を版名順に返す。"""
+    def list_versions(self, purpose: str = "train") -> list[str]:
+        """読み込み可能な指定用途（既定は学習）の RELEASED 版を版名順に返す。"""
         versions = []
         if not self.datasets_root.exists():
             return versions
@@ -42,19 +42,32 @@ class DatasetStore:
                 continue
             try:
                 info = json.loads((folder / "dataset_info.json").read_text(encoding="utf-8"))
-                if info.get("purpose") == "train" and info.get("status") == "RELEASED":
+                if info.get("purpose") == purpose and info.get("status") == "RELEASED":
                     self._read_items(folder)
                     versions.append(str(info.get("dataset_version", folder.name)))
             except (OSError, ValueError, KeyError, csv.Error) as error:
-                logger.warning("学習データセットを読み飛ばしました (%s): %s", folder, error)
+                logger.warning("データセットを一覧から除外しました (%s): %s", folder, error)
         return versions
 
-    def get_items(self, version: str) -> list[DataItem]:
-        """メタデータと manifest を item_id で結合して返す。"""
+    def get_items(self, version: str, *, expected_purpose: str | None = None) -> list[DataItem]:
+        """メタデータと manifest を item_id で結合して返す。
+
+        expected_purpose を省略すると従来どおり学習用 RELEASED 版だけを受け付ける。
+        """
+        purpose = expected_purpose or "train"
+        return self._released_items(version, purpose)
+
+    def select_evaluation_items(self, version: str) -> list[DataItem]:
+        """検証版の全画像を item_id 昇順で返す（分類・品質・usage では絞らない）。"""
+        return sorted(self._released_items(version, "val"), key=lambda item: item.item_id)
+
+    def _released_items(self, version: str, purpose: str | None) -> list[DataItem]:
+        """RELEASED 版の項目を返す。purpose が None なら用途を問わない。"""
         folder = self.datasets_root / version
         info = json.loads((folder / "dataset_info.json").read_text(encoding="utf-8"))
-        if info.get("purpose") != "train" or info.get("status") != "RELEASED":
-            raise ValueError(f"学習用 RELEASED データセットではありません: {version}")
+        if info.get("status") != "RELEASED" or (purpose and info.get("purpose") != purpose):
+            label = {"train": "学習用", "val": "検証用"}.get(purpose or "", "")
+            raise ValueError(f"{label} RELEASED データセットではありません: {version}")
         return self._read_items(folder)
 
     @staticmethod
@@ -63,9 +76,21 @@ class DatasetStore:
             rows = csv.DictReader(stream)
             if not rows.fieldnames or "item_id" not in rows.fieldnames:
                 raise ValueError(f"item_id 列がありません: {path}")
-            return {row["item_id"]: row for row in rows if row.get("item_id")}
+            result: dict[str, dict[str, str]] = {}
+            for row in rows:
+                if not row.get("item_id"):
+                    continue
+                if row["item_id"] in result:
+                    raise ValueError(f"item_id が重複しています ({row['item_id']}): {path}")
+                result[row["item_id"]] = row
+            return result
 
     def _read_items(self, folder: Path) -> list[DataItem]:
+        info = json.loads((folder / "dataset_info.json").read_text(encoding="utf-8"))
+        if info.get("dataset_version", folder.name) != folder.name:
+            raise ValueError(
+                f"版名とフォルダ名が一致しません: {info.get('dataset_version')} / {folder.name}"
+            )
         metadata = self._read_csv(folder / "metadata.csv")
         manifest = self._read_csv(folder / "manifest.csv")
         if metadata.keys() != manifest.keys():
@@ -112,7 +137,9 @@ class DatasetStore:
 
     def get_image(self, version: str, item_id: str, channel: str | None = None) -> np.ndarray:
         """画像を必要時に読み込む。現行形式のチャンネルは 1 つ。"""
-        item = next((item for item in self.get_items(version) if item.item_id == item_id), None)
+        item = next(
+            (item for item in self._released_items(version, None) if item.item_id == item_id), None
+        )
         if item is None:
             raise KeyError(item_id)
         if channel is not None and channel not in item.channels:
@@ -124,7 +151,9 @@ class DatasetStore:
 
     def get_mask(self, version: str, item_id: str, revision: str | None = None) -> np.ndarray:
         """整数ラベルのマスクを必要時に読み込む。"""
-        item = next((item for item in self.get_items(version) if item.item_id == item_id), None)
+        item = next(
+            (item for item in self._released_items(version, None) if item.item_id == item_id), None
+        )
         if item is None:
             raise KeyError(item_id)
         if revision is not None and revision != item.selected_mask_revision:
@@ -144,7 +173,11 @@ class DatasetStore:
         channels = data.get("input_channels", [])
         if len(channels) != 1:
             raise ValueError("現行データ形式では input_channels は 1 つ必要です")
-        selected = [item for item in self.get_items(version) if item.usage == "train"]
+        selected = [
+            item
+            for item in self.get_items(version, expected_purpose="train")
+            if item.usage == "train"
+        ]
         classification = data.get("classification", "all")
         if classification != "all":
             selected = [item for item in selected if item.classification == classification]

@@ -137,3 +137,47 @@ def test_train_v000_like_metadata_counts_and_groups(tmp_path):
         }
     }
     assert len(store.select_training_items(config)) == 10
+
+
+def _clone_as(root, source, target, purpose, usage):
+    import shutil
+
+    src, dst = root / "datasets" / source, root / "datasets" / target
+    shutil.copytree(src, dst)
+    info = json.loads((dst / "dataset_info.json").read_text(encoding="utf-8"))
+    info.update(purpose=purpose, dataset_version=target)
+    (dst / "dataset_info.json").write_text(json.dumps(info), encoding="utf-8")
+    text = (dst / "metadata.csv").read_text(encoding="utf-8").replace(",train,", f",{usage},")
+    (dst / "metadata.csv").write_text(text, encoding="utf-8")
+    return dst
+
+
+def test_val_version_listing_purpose_and_evaluation_items(tmp_path):
+    _write_dataset(tmp_path)
+    _clone_as(tmp_path, "train_v000", "val_v000", "val", "val")
+    store = DatasetStore(tmp_path)
+    assert store.list_versions() == ["train_v000"]
+    assert store.list_versions("val") == ["val_v000"]
+    assert [item.item_id for item in store.select_evaluation_items("val_v000")] == ["a", "z"]
+    assert store.get_items("val_v000", expected_purpose="val")[0].usage == "val"
+    assert store.get_image("val_v000", "z").dtype == np.uint8
+    assert store.get_mask("val_v000", "z").shape == (4, 5)
+    with pytest.raises(ValueError):
+        store.get_items("val_v000", expected_purpose="train")
+    with pytest.raises(ValueError):
+        store.get_items("train_v000", expected_purpose="val")
+    with pytest.raises(ValueError):
+        store.select_evaluation_items("train_v000")
+
+
+def test_duplicate_item_id_or_name_mismatch_version_is_excluded(tmp_path):
+    _write_dataset(tmp_path)
+    dup = _clone_as(tmp_path, "train_v000", "val_v001", "val", "val")
+    with (dup / "manifest.csv").open("a", newline="", encoding="utf-8") as stream:
+        stream.write("z,images/z.png,masks/z.png\n")
+    _clone_as(tmp_path, "train_v000", "val_v002", "val", "val")
+    info_path = tmp_path / "datasets" / "val_v002" / "dataset_info.json"
+    info = json.loads(info_path.read_text(encoding="utf-8"))
+    info["dataset_version"] = "val_v999"
+    info_path.write_text(json.dumps(info), encoding="utf-8")
+    assert DatasetStore(tmp_path).list_versions("val") == []

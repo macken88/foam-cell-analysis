@@ -1,4 +1,4 @@
-"""学習デバッグ用 train_v000 を生成する（アプリへの登録は別途行う）。"""
+"""学習・検証デバッグ用の合成データセット（train_v000 / val_v000 など）を生成する。"""
 
 import argparse
 import csv
@@ -54,8 +54,11 @@ def write_csv(path: Path, rows: list[dict]) -> None:
         writer.writerows(rows)
 
 
-def generate(output: Path, seed: int = 42) -> None:
+def generate(
+    output: Path, seed: int = 42, purpose: str = "train", version: str | None = None
+) -> None:
     """既存の保存先を上書きせず、12組の画像とメタデータを保存する。"""
+    version = version or f"{purpose}_v000"
     output.mkdir(parents=True, exist_ok=False)
     (output / "images").mkdir()
     (output / "masks").mkdir()
@@ -75,7 +78,7 @@ def generate(output: Path, seed: int = 42) -> None:
                 "source_relpath": f"synthetic/{group}/{filename}",
                 "group_id": group,
                 "channel": "A",
-                "usage": "train",
+                "usage": purpose,
                 "classification": classification,
                 "quality": quality,
                 "n_instances": n_instances,
@@ -98,8 +101,8 @@ def generate(output: Path, seed: int = 42) -> None:
     write_csv(output / "manifest.csv", manifest)
     info = {
         "schema_version": 1,
-        "dataset_version": "train_v000",
-        "purpose": "train",
+        "dataset_version": version,
+        "purpose": purpose,
         "parent_version": None,
         "base_validation_version": None,
         "created_at": datetime.now(UTC).isoformat(),
@@ -107,7 +110,11 @@ def generate(output: Path, seed: int = 42) -> None:
         "application_version": "0.1.0",
         "status": "RELEASED",
         "is_dummy": True,
-        "comment": "学習処理のデバッグ用合成データ。実データの精度評価には使用しない。",
+        "comment": (
+            "学習処理のデバッグ用合成データ。実データの精度評価には使用しない。"
+            if purpose == "train"
+            else "評価処理のデバッグ用合成データ。実データの精度評価には使用しない。"
+        ),
         "generator": "scripts/generate_dummy_dataset.py",
         "generator_version": 2,
         "seed": seed,
@@ -128,17 +135,18 @@ def generate(output: Path, seed: int = 42) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=Path(__file__).resolve().parents[1] / "workspace/datasets/train_v000",
-    )
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--purpose", choices=["train", "val"], default="train")
+    parser.add_argument("--version", default=None, help="版名（既定: <purpose>_v000）")
+    parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument("--seed", type=int, default=None, help="既定: train=42, val=1042")
     args = parser.parse_args()
-    if args.output.exists():
-        parser.error(f"保存先が既に存在します。別の --output を指定してください: {args.output}")
-    generate(args.output, args.seed)
-    print(f"Created train_v000: {args.output.resolve()} ({len(SAMPLES)} images + masks)")
+    version = args.version or f"{args.purpose}_v000"
+    seed = args.seed if args.seed is not None else (42 if args.purpose == "train" else 1042)
+    output = args.output or Path(__file__).resolve().parents[1] / "workspace/datasets" / version
+    if output.exists():
+        parser.error(f"保存先が既に存在します。別の --output を指定してください: {output}")
+    generate(output, seed, args.purpose, version)
+    print(f"Created {version}: {output.resolve()} ({len(SAMPLES)} images + masks)")
 
 
 if __name__ == "__main__":

@@ -63,6 +63,33 @@ class CandidateSnapshot:
     checkpoint_path: str
     oof_evaluation: dict[str, Any] = field(default_factory=dict)
     experiment_config: dict[str, Any] = field(default_factory=dict)
+    weights_size: int | None = None
+    weights_sha256: str | None = None
+    training_eval_params: dict[str, Any] = field(default_factory=dict)
+    preprocessing: dict[str, Any] = field(default_factory=dict)
+    training_dataset: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ArtifactGroup:
+    """成果物の整理で扱う、試行ごと・種類ごとのファイルのまとまり。"""
+
+    experiment_id: str
+    attempt: int
+    category: str
+    n_files: int
+    size_bytes: int
+    deletable: bool
+    reason: str = ""
+
+
+@dataclass
+class PruneResult:
+    """成果物の整理の結果。条件を満たさず消さなかったまとまりは skipped に入る。"""
+
+    freed_bytes: int
+    n_files: int
+    skipped: list[ArtifactGroup] = field(default_factory=list)
 
 
 @dataclass
