@@ -24,7 +24,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...labels import config_key_label, format_datetime, format_score, model_type_label
+from ...labels import (
+    OOF_NOTE,
+    config_key_label,
+    format_datetime,
+    format_score,
+    model_type_label,
+)
 from ...navigation import PageId
 from ...theme import Color, numeric_font, set_style
 from ...widgets.form import FormSection
@@ -39,6 +45,45 @@ from ...widgets.table import (
 )
 
 logger = logging.getLogger(__name__)
+
+OOF_REFERENCE_LABEL = "学習時 OOF AP（参考）"
+OOF_DIFFERENT_TEXT = "推論設定が学習時と異なります"
+OOF_UNKNOWN_TEXT = "学習時の評価条件を確認できません"
+OOF_NOT_APPLICABLE = "対象外"
+
+
+def oof_condition(model) -> str:
+    """学習時 OOF AP を適用できない理由。適用できるとき（matching）は空文字。
+
+    適用可否が記録にない旧形式のデータは、根拠なく適用可とせず「確認できません」とする。
+    """
+    if model.oof_applicability == "matching":
+        return ""
+    if model.oof_applicability == "different":
+        return model.oof_reason or OOF_DIFFERENT_TEXT
+    return model.oof_reason or OOF_UNKNOWN_TEXT
+
+
+def oof_list_text(model) -> str:
+    """一覧の OOF AP 列。適用できるときだけ数値を出す（候補一覧と同じ規則）。"""
+    if model.oof_evaluation is None:
+        return "—"
+    if oof_condition(model):
+        return OOF_NOT_APPLICABLE
+    return format_score(model.oof_evaluation.overall_map)
+
+
+def oof_detail_text(model) -> str:
+    """詳細の学習時 OOF AP（参考）。数値は残し、条件と final.pt の評価でないことを添える。"""
+    if model.oof_evaluation is None:
+        return "—"
+    lines = [format_score(model.oof_evaluation.overall_map)]
+    condition = oof_condition(model)
+    if condition:
+        lines.append(condition)
+    lines.append(OOF_NOTE)
+    return "\n".join(lines)
+
 
 ROUTING_CONFLICT_TEXT = "振り分けが別の操作で変更されました。画面を開き直してください"
 ROUTING_FAILED_TEXT = (
@@ -132,7 +177,7 @@ class ReleasedModelsPage(BasePage):
         for label in (
             "実験・途中保存モデル",
             "検証 AP",
-            "OOF AP",
+            OOF_REFERENCE_LABEL,
             "推論設定",
             "検証用データセット",
             "リリース日時",
@@ -309,7 +354,7 @@ class ReleasedModelsPage(BasePage):
                 model.checkpoint,
                 model.validation_dataset,
                 format_score(model.evaluation_result.overall_map),
-                format_score(model.oof_evaluation.overall_map) if model.oof_evaluation else "—",
+                oof_list_text(model),
                 model.inference_config_id or "—",
                 format_datetime(model.released_at),
                 ", ".join(assignments[model.model_id]) or "なし",
@@ -323,6 +368,8 @@ class ReleasedModelsPage(BasePage):
                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
                     )
                 item.setData(Qt.ItemDataRole.UserRole, model.model_id)
+                if column == 7 and oof_condition(model) and model.oof_evaluation:
+                    item.setToolTip(oof_condition(model))
                 self.model_table.setItem(row, column, item)
         fit_table_columns(self.model_table)
         model_rows = {
@@ -360,9 +407,7 @@ class ReleasedModelsPage(BasePage):
             ),
             "検証 AP": f"全体 {format_score(evaluation.overall_map)}"
             + (f"\n{per_class}" if per_class else ""),
-            "OOF AP": format_score(model.oof_evaluation.overall_map)
-            if model.oof_evaluation
-            else "—",
+            OOF_REFERENCE_LABEL: oof_detail_text(model),
             "推論設定": self._inference_summary(model.inference_config),
             "検証用データセット": model.validation_dataset,
             "リリース日時": format_datetime(model.released_at),
@@ -391,10 +436,7 @@ class ReleasedModelsPage(BasePage):
             ("実験識別子", model.experiment_id),
             ("途中保存モデル", f"試行 {model.source_attempt_number}/{model.checkpoint}"),
             ("検証用データセット", model.validation_dataset),
-            (
-                "OOF AP",
-                format_score(model.oof_evaluation.overall_map) if model.oof_evaluation else "—",
-            ),
+            (OOF_REFERENCE_LABEL, oof_detail_text(model)),
             ("リリース日時", format_datetime(model.released_at)),
             ("コメント", model.comment or "なし"),
         ]
@@ -411,13 +453,15 @@ class ReleasedModelsPage(BasePage):
             for classification, (_score, count) in evaluation.per_class.items()
         )
         if model.oof_evaluation:
-            rows.append(("OOF / 全体 AP", format_score(model.oof_evaluation.overall_map)))
+            rows.append(
+                ("学習時 OOF（参考） / 全体 AP", format_score(model.oof_evaluation.overall_map))
+            )
             rows.extend(
-                (f"OOF / {classification} AP", format_score(score))
+                (f"学習時 OOF（参考） / {classification} AP", format_score(score))
                 for classification, (score, _count) in model.oof_evaluation.per_class.items()
             )
             rows.extend(
-                (f"OOF / {classification} 件数", str(count))
+                (f"学習時 OOF（参考） / {classification} 件数", str(count))
                 for classification, (_score, count) in model.oof_evaluation.per_class.items()
             )
         dialog = QDialog(self)

@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
 )
 
-from ....services.models import EvaluationRecord
+from ....services.models import Candidate, EvaluationRecord
 from ...evaluation_runner import PREPARE_FAILED_TEXT
 from ...labels import candidate_status_label, format_score, model_type_label
 from ...navigation import PageId
@@ -72,6 +72,13 @@ class CandidatesPage(BasePage):
             show_heading=show_heading,
         )
         self._records: dict[str, EvaluationRecord | None] = {}
+        # 状態列の再描画に使う候補情報（一覧を読み込んだときの値。進捗通知では読み直さない）
+        self._row_candidates: dict[str, Candidate] = {}
+        # 占有の変化は runner の状態が確定してから（イベントループに戻ってから）状態列へ反映する
+        self._status_timer = QTimer(self)
+        self._status_timer.setSingleShot(True)
+        self._status_timer.setInterval(0)
+        self._status_timer.timeout.connect(lambda: self._update_status_cells())
         self.validation = QComboBox()
         versions = [v.version for v in ctx.backend.list_validation_versions()]
         self.validation.addItems(versions)
@@ -193,10 +200,10 @@ class CandidatesPage(BasePage):
         self._pending_action = None
         runner = self.runner
         if runner is not None:
-            runner.progressed.connect(self._update_status_cells)
+            runner.progressed.connect(self._on_progressed)
             runner.ended.connect(self._evaluation_ended)
             runner.busy_changed.connect(lambda _busy: self.refresh())
-        self.ctx.compute.changed.connect(self._update_buttons)
+        self.ctx.compute.changed.connect(self._on_compute_changed)
         self.refresh()
 
     @property
@@ -300,23 +307,45 @@ class CandidatesPage(BasePage):
             return self.ctx.compute.wait_message("evaluation") or "前の候補の評価を待っています"
         return ""
 
-    def _update_status_cells(self, _candidate_id: str = "") -> None:
-        """進捗イベントでは状態列だけを書き換える（毎回ファイルを読み直さない）。"""
+    def _on_progressed(self, candidate_id: str) -> None:
+        """進捗イベントでは通知された候補の行だけを書き換える。"""
+        self._update_status_cells({candidate_id})
+
+    def _on_compute_changed(self) -> None:
+        """占有の開始・待機・返却では、評価待ち⇔評価中が複数行で変わりうる。"""
+        self._status_timer.start()
+        self._update_buttons()
+
+    def _update_status_cells(self, candidate_ids: set[str] | None = None) -> None:
+        """状態列だけを書き換える（None なら全行）。
+
+        候補・データセット・評価成果物のファイルは読み直さない。候補の状態は一覧読込み時の
+        値を使い、評価中・評価待ちと進捗は runner とメモリ上の進捗から作る。
+        """
+        changed = False
         self.table.blockSignals(True)
-        for row in range(self.table.rowCount()):
-            id_item = self.table.item(row, 1)
-            status_item = self.table.item(row, COLUMN_STATUS)
-            if id_item is None or status_item is None:
-                continue
-            try:
-                candidate = self.ctx.backend.get_candidate(id_item.text())
-            except (KeyError, ValueError):
-                continue
-            text = self._status_text(candidate)
-            status_item.setText(text)
-            status_item.setToolTip(self._status_tooltip(text))
-        self.table.blockSignals(False)
-        fit_table_columns(self.table)
+        try:
+            for row in range(self.table.rowCount()):
+                id_item = self.table.item(row, 1)
+                status_item = self.table.item(row, COLUMN_STATUS)
+                if id_item is None or status_item is None:
+                    continue
+                candidate_id = id_item.text()
+                if candidate_ids is not None and candidate_id not in candidate_ids:
+                    continue
+                candidate = self._row_candidates.get(candidate_id)
+                if candidate is None:
+                    continue
+                text = self._status_text(candidate)
+                # 待機の理由（ツールチップ）は文字が同じでも変わりうる
+                status_item.setToolTip(self._status_tooltip(text))
+                if status_item.text() != text:
+                    status_item.setText(text)
+                    changed = True
+        finally:
+            self.table.blockSignals(False)
+        if changed:
+            fit_table_columns(self.table)
 
     @staticmethod
     def _failure_reason(outcome) -> str:
@@ -385,6 +414,7 @@ class CandidatesPage(BasePage):
         self.table.blockSignals(True)
         self.table.setRowCount(0)
         candidates = self.ctx.backend.list_candidates()
+        self._row_candidates = {candidate.candidate_id: candidate for candidate in candidates}
         self._records = {
             candidate.candidate_id: self._load_record(candidate.candidate_id, version)
             for candidate in candidates

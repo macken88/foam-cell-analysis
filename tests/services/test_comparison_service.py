@@ -4,14 +4,17 @@ import copy
 import csv
 import hashlib
 import json
+import shutil
 
 import numpy as np
 import pytest
 from PIL import Image
 
 from foam_cell_analysis.data.dataset_store import DatasetStore
+from foam_cell_analysis.services import comparison_service
 from foam_cell_analysis.services.comparison_service import (
     ComparisonService,
+    is_recovered_release,
     resolve_recorded_path,
     validate_evaluation_result,
 )
@@ -477,3 +480,154 @@ def test_invalid_result_summary_is_broken_and_not_releasable(env, mutate):
         service.release_candidate(cid, "eval_001")
     assert service.get_candidate_evaluation(cid, "val_v000").broken
     assert "val_v000" not in service.get_candidate(cid).evaluations
+
+
+def _fail_candidate_release_save_once(monkeypatch):
+    """公開後の candidate.json（released への更新）の保存を 1 回だけ PermissionError にする。"""
+    original = comparison_service._write_json
+    state = {"failed": False}
+
+    def flaky(path, value):
+        if (
+            path.name == "candidate.json"
+            and value.get("status") == "released"
+            and not state["failed"]
+        ):
+            state["failed"] = True
+            raise PermissionError("locked")
+        return original(path, value)
+
+    monkeypatch.setattr(comparison_service, "_write_json", flaky)
+    return state
+
+
+def _published(service):
+    return sorted(path.name for path in service.releases_root.glob("model_*"))
+
+
+def test_release_retry_after_candidate_save_failure_reuses_published(env, monkeypatch):
+    service, _training = env
+    cid = service.add_candidate("exp_0001", 1, _default_config(service).config_id).candidate_id
+    _write_evaluation(service, cid, "eval_001")
+    state = _fail_candidate_release_save_once(monkeypatch)
+    with pytest.raises(ValueError, match="model_001 としてリリースしました"):
+        service.release_candidate(cid, "eval_001", "初回")
+    assert state["failed"]
+    assert _published(service) == ["model_001"]
+    assert service.get_candidate(cid).status == "candidate"
+    model = service.release_candidate(cid, "eval_001", "再試行")
+    assert model.model_id == "model_001" and is_recovered_release(model)
+    assert _published(service) == ["model_001"]
+    candidate = service.get_candidate(cid)
+    assert candidate.status == "released" and candidate.released_model_id == "model_001"
+    # 公開済みの記録（コメント）は再試行で書き換えない
+    assert service.get_release_record("model_001")["comment"] == "初回"
+    assert not list(service.releases_root.glob(".preparing_*"))
+
+
+def test_release_retry_with_other_evaluation_is_refused(env, monkeypatch):
+    service, _training = env
+    cid = service.add_candidate("exp_0001", 1, _default_config(service).config_id).candidate_id
+    _write_evaluation(service, cid, "eval_001")
+    _write_evaluation(service, cid, "eval_002")
+    _fail_candidate_release_save_once(monkeypatch)
+    with pytest.raises(ValueError):
+        service.release_candidate(cid, "eval_001")
+    with pytest.raises(ValueError, match="別の評価"):
+        service.release_candidate(cid, "eval_002")
+    assert _published(service) == ["model_001"]
+    assert service.get_candidate(cid).status == "candidate"
+    # 起動時の復旧は同じ規則で公開済みのリリースへ修復する
+    fresh = ComparisonService(service.workspace_root, service.training_service)
+    assert fresh.recover() == [cid]
+    assert fresh.get_candidate(cid).released_model_id == "model_001"
+
+
+def test_release_refuses_inconsistent_references_without_changes(env):
+    service, training = env
+    config = _default_config(service)
+    cid = service.add_candidate("exp_0001", 1, config.config_id).candidate_id
+    _write_evaluation(service, cid, "eval_001")
+    service.release_candidate(cid, "eval_001")
+    path = service.candidates_root / cid / "candidate.json"
+    # 同じ候補のリリースが 2 件ある状態（旧版の二重登録）を作る
+    shutil.copytree(service.releases_root / "model_001", service.releases_root / "model_002")
+    duplicate = service.releases_root / "model_002" / "release.json"
+    value = json.loads(duplicate.read_text("utf-8"))
+    value["model_id"] = "model_002"
+    duplicate.write_text(json.dumps(value), "utf-8")
+    record = json.loads(path.read_text("utf-8"))
+    record["status"] = "candidate"
+    record.pop("released_model_id")
+    path.write_text(json.dumps(record), "utf-8")
+    with pytest.raises(ValueError, match="食い違い"):
+        service.release_candidate(cid, "eval_001")
+    assert _published(service) == ["model_001", "model_002"]
+    fresh = ComparisonService(service.workspace_root, service.training_service)
+    assert fresh.recover() == []
+    assert _published(fresh) == ["model_001", "model_002"]
+    assert fresh.get_candidate(cid).status == "candidate"
+    # 候補が参照するリリースが見つからない
+    shutil.rmtree(service.releases_root / "model_002")
+    record["released_model_id"] = "model_009"
+    path.write_text(json.dumps(record), "utf-8")
+    with pytest.raises(ValueError, match="食い違い"):
+        service.release_candidate(cid, "eval_001")
+    assert _published(service) == ["model_001"]
+    # 別の候補（同じ試行・別の推論設定）のリリースとは混同しない
+    training.add_attempt("exp_0002", 1, weights=b"weights-2")
+    other = service.add_candidate("exp_0002", 1, config.config_id).candidate_id
+    _write_evaluation(service, other, "eval_001")
+    assert service.release_candidate(other, "eval_001").model_id == "model_002"
+
+
+def test_release_failure_before_publish_removes_own_preparing(env, monkeypatch):
+    service, _training = env
+    cid = service.add_candidate("exp_0001", 1, _default_config(service).config_id).candidate_id
+    _write_evaluation(service, cid, "eval_001")
+
+    def broken_copy(_reader, writer, _length):
+        writer.write(b"partial")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(comparison_service.shutil, "copyfileobj", broken_copy)
+    with pytest.raises(OSError, match="disk full"):
+        service.release_candidate(cid, "eval_001")
+    assert not list(service.releases_root.iterdir())
+    assert service.get_candidate(cid).status == "candidate"
+    monkeypatch.undo()
+    model = service.release_candidate(cid, "eval_001")
+    assert model.model_id == "model_001" and not is_recovered_release(model)
+
+
+@pytest.mark.parametrize(
+    ("params", "expected"),
+    [
+        (None, ("matching", "")),
+        ({"box_score_thresh": 0.9}, ("different", "推論設定が学習時と異なります")),
+    ],
+)
+def test_released_model_carries_oof_applicability(env, params, expected):
+    service, _training = env
+    config = service.create_inference_config(
+        "mask_rcnn", params or service.default_inference_params("mask_rcnn")
+    )
+    cid = service.add_candidate("exp_0001", 1, config.config_id).candidate_id
+    _write_evaluation(service, cid, "eval_001")
+    service.release_candidate(cid, "eval_001")
+    model = service.list_released_models()[0]
+    assert (model.oof_applicability, model.oof_reason) == expected
+    assert model.oof_evaluation.overall_map == pytest.approx(0.8)
+
+
+def test_released_model_without_recorded_applicability_is_not_matching(env):
+    service, _training = env
+    cid = service.add_candidate("exp_0001", 1, _default_config(service).config_id).candidate_id
+    _write_evaluation(service, cid, "eval_001")
+    service.release_candidate(cid, "eval_001")
+    path = service.releases_root / "model_001" / "release.json"
+    record = json.loads(path.read_text("utf-8"))
+    record["oof"].pop("applicability")
+    record["oof"].pop("reason")
+    path.write_text(json.dumps(record), "utf-8")
+    assert service.list_released_models()[0].oof_applicability == ""

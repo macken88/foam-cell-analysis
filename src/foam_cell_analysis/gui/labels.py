@@ -315,3 +315,6 @@ def training_elapsed_text(experiment, now: datetime | None = None) -> str:
     if minutes < 60:
         return f"経過 {minutes} 分"
     return f"経過 {minutes // 60} 時間 {minutes % 60} 分"
+
+
+OOF_NOTE = "OOF AP は交差検証の各 fold モデルによる評価で、final.pt 自身の評価ではありません。"

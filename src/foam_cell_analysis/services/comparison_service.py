@@ -58,6 +58,8 @@ SCHEMA = 1
 METRIC_ID = "cellpose_ap_iou50_95_image_mean_v1"
 PARTICLE_SPLIT_ID = "particle_split_symmetric8_v1"
 RELEASE_SPACE_MARGIN = 100 * 1024**2
+# release_candidate が公開済みリリースを再利用したときに、返すモデルへ付ける属性名
+RECOVERED_RELEASE_ATTR = "recovered_release"
 BROKEN_MESSAGE = "評価結果のファイルが壊れています。再評価してください"
 
 # ユーザーが変更できる推論設定の項目（5.1）: キー → (最小, 最大, 整数か, 画面の名前)
@@ -413,6 +415,11 @@ def _within_any(path: Path, dirs: list[Path]) -> bool:
     return any(path == item or item in path.parents for item in dirs)
 
 
+def is_recovered_release(model: Any) -> bool:
+    """release_candidate の戻り値が、前回の登録で公開済みだったリリースの再利用なら True。"""
+    return bool(getattr(model, RECOVERED_RELEASE_ATTR, False))
+
+
 class ComparisonService:
     """推論設定・比較候補・評価の読み取り・外部解析・リリース・振り分けの窓口。"""
 
@@ -469,17 +476,19 @@ class ComparisonService:
         for path in self.releases_root.glob(".preparing_*"):
             self._remove(path)
         repaired = []
-        for model_id, release in self._release_records():
-            candidate_id = (release.get("candidate") or {}).get("candidate_id")
+        releases = self._release_records()
+        candidate_ids = dict.fromkeys(
+            (release.get("candidate") or {}).get("candidate_id") for _model_id, release in releases
+        )
+        for candidate_id in candidate_ids:
             try:
                 record = self._read_candidate(candidate_id)
+                published = self._published_release(record, releases)
             except (KeyError, ValueError, OSError) as error:
-                logger.warning("リリース %s の候補を読めません: %s", model_id, error)
+                # 食い違いは自動では直さない（公開済みフォルダも消さない）
+                logger.warning("候補 %s のリリースを修復できません: %s", candidate_id, error)
                 continue
-            if record.get("status") != "released" or record.get("released_model_id") != model_id:
-                record["status"] = "released"
-                record["released_model_id"] = model_id
-                self._write_candidate(record)
+            if published is not None and self._mark_released(record, published[0]):
                 repaired.append(candidate_id)
         return repaired
 
@@ -1468,7 +1477,8 @@ class ComparisonService:
         """release.json だけから ReleasedModel を作る（13.4。実験は引かない）。"""
         source = value.get("source") or {}
         evaluation = value.get("evaluation") or {}
-        oof = (value.get("oof") or {}).get("evaluation") or {}
+        oof_record = value.get("oof") or {}
+        oof = oof_record.get("evaluation") or {}
         return ReleasedModel(
             model_id=value["model_id"],
             candidate_id=str((value.get("candidate") or {}).get("candidate_id", "")),
@@ -1487,6 +1497,8 @@ class ComparisonService:
             source_attempt_number=int(source.get("attempt") or 1),
             model_type=str(value.get("model_type") or ""),
             inference_config_id=str(value.get("inference_config_id") or ""),
+            oof_applicability=str(oof_record.get("applicability") or ""),
+            oof_reason=str(oof_record.get("reason") or ""),
         )
 
     def list_released_models(self) -> list[ReleasedModel]:
@@ -1513,6 +1525,97 @@ class ComparisonService:
             raise ValueError(f"リリース {model_id} のモデルファイルがありません")
         return value
 
+    def _published_release(
+        self,
+        record: dict[str, Any],
+        releases: list[tuple[str, dict[str, Any]]] | None = None,
+    ) -> tuple[str, dict[str, Any]] | None:
+        """候補を参照する公開済みリリースを 1 件返す（13.3）。なければ None。
+
+        リリース登録の再試行と起動時の復旧が同じ規則で判定する。次の場合は ValueError:
+        同じ候補のリリースが複数ある、候補の released_model_id が見つからないか別の候補を指す、
+        リリースの候補 fingerprint・重み（sha256・バイト数）が候補の記録と一致しない。
+        """
+        candidate_id = record.get("candidate_id")
+        if releases is None:
+            releases = self._release_records()
+        matches = [
+            (model_id, release)
+            for model_id, release in releases
+            if (release.get("candidate") or {}).get("candidate_id") == candidate_id
+        ]
+        referenced = record.get("released_model_id")
+        if referenced is not None and referenced not in [model_id for model_id, _ in matches]:
+            raise ValueError(
+                f"候補 {candidate_id} が参照するリリース {referenced} が見つからないか、"
+                "別の候補のリリースです"
+            )
+        if len(matches) > 1:
+            names = "、".join(model_id for model_id, _release in matches)
+            raise ValueError(f"候補 {candidate_id} のリリースが複数あります（{names}）")
+        if not matches:
+            return None
+        model_id, release = matches[0]
+        weights = (record.get("source") or {}).get("weights") or {}
+        published = release.get("weights") or {}
+        if (
+            (release.get("candidate") or {}).get("fingerprint") != record.get("fingerprint")
+            or published.get("sha256") != weights.get("sha256")
+            or published.get("size") != weights.get("size")
+        ):
+            raise ValueError(f"リリース {model_id} の記録が候補 {candidate_id} と一致しません")
+        return model_id, release
+
+    def _mark_released(self, record: dict[str, Any], model_id: str) -> bool:
+        """候補を released・released_model_id=model_id にする。書き換えたら True。"""
+        if record.get("status") == "released" and record.get("released_model_id") == model_id:
+            return False
+        record["status"] = "released"
+        record["released_model_id"] = model_id
+        self._write_candidate(record)
+        return True
+
+    def _reuse_published_release(
+        self, record: dict[str, Any], evaluation_id: str
+    ) -> ReleasedModel | None:
+        """前回の登録で公開済みなら候補を修復してそのリリースを返す（再試行の二重登録を防ぐ）。
+
+        公開済みの記録（コメントを含む）は書き換えない。返すモデルには
+        recovered_release=True を付ける（is_recovered_release で判定できる）。
+        別の評価で公開済み、または参照が食い違う場合は何も作らずに ValueError。
+        """
+        candidate_id = record["candidate_id"]
+        try:
+            published = self._published_release(record)
+        except ValueError as error:
+            raise ValueError(
+                "この候補のリリース記録に食い違いがあるため登録できません。"
+                f"リリースと候補の記録を確認してください: {error}"
+            ) from error
+        if published is None:
+            return None
+        model_id, release = published
+        published_evaluation = (release.get("evaluation") or {}).get("evaluation_id")
+        if published_evaluation != evaluation_id:
+            raise ValueError(
+                f"この候補は別の評価（{published_evaluation}）で {model_id} として"
+                "リリース済みです。新しいリリースは作成していません。"
+                "アプリを再起動すると候補の状態が修復されます"
+            )
+        # モデルファイルの有無と大きさを確かめる（読めなければ ValueError）
+        self.get_release_record(model_id)
+        try:
+            self._mark_released(record, model_id)
+        except OSError as error:
+            raise ValueError(
+                f"{model_id} はリリース済みですが、候補の状態を保存できませんでした。"
+                f"もう一度登録すると状態を修復します: {error}"
+            ) from error
+        logger.info("候補 %s の公開済みリリース %s を再利用しました", candidate_id, model_id)
+        model = self._released_model(release)
+        setattr(model, RECOVERED_RELEASE_ATTR, True)
+        return model
+
     def release_candidate(
         self,
         candidate_id: str,
@@ -1521,13 +1624,21 @@ class ComparisonService:
         *,
         is_evaluation_active: Callable[[str], bool] | None = None,
     ) -> ReleasedModel:
-        """候補を指定した評価でリリースする（13.1・13.2）。重みは独立したコピーを持つ。"""
+        """候補を指定した評価でリリースする（13.1・13.2）。重みは独立したコピーを持つ。
+
+        公開（改名）の後の候補保存だけが失敗していた場合の再試行では、新しいリリースを作らず
+        公開済みのリリースを返す（is_recovered_release が True）。
+        """
         record = self._read_candidate(candidate_id)
         if record.get("status") != "candidate":
             raise ValueError("候補状態のモデルだけリリースできます")
         active = is_evaluation_active or self.is_evaluation_active
         if active(candidate_id):
             raise ValueError("評価中または評価待ちの候補はリリースできません")
+        # 採番・重みのコピーより前に、前回の登録で公開済みのリリースを探す
+        reused = self._reuse_published_release(record, evaluation_id)
+        if reused is not None:
+            return reused
         version, run_dir = self._locate_evaluation(candidate_id, evaluation_id)
         evaluation = self._read_record(candidate_id, version, run_dir)
         if evaluation.status != "completed":
@@ -1615,9 +1726,14 @@ class ComparisonService:
             # 自分が作った準備フォルダだけは、失敗したその場で片付ける（大きな重みを残さない）
             self._remove(preparing)
             raise
-        record["status"] = "released"
-        record["released_model_id"] = model_id
-        self._write_candidate(record)
+        try:
+            self._mark_released(record, model_id)
+        except OSError as error:
+            # 公開済みのフォルダは消さない。同じ登録の再試行で候補の状態を修復する
+            raise ValueError(
+                f"{model_id} としてリリースしましたが、候補の状態を保存できませんでした。"
+                f"もう一度登録すると状態を修復します: {error}"
+            ) from error
         return self._released_model(release)
 
     # ---- 振り分け（14 章） ----

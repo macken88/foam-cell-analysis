@@ -165,3 +165,49 @@ def test_inference_summary_uses_specific_names_and_hides_internal_keys(qapp, moc
     ]
     summary = page._inference_summary({"min_size": 15, "bsize": 256, "unknown_key": 1})
     assert summary == "最小サイズ（画素） 15"
+
+
+def _oof_texts(page, model_id):
+    row = next(
+        row
+        for row in range(page.model_table.rowCount())
+        if page.model_table.item(row, 0).text() == model_id
+    )
+    return page.model_table.item(row, 7).text(), page.model_table.item(row, 7).toolTip(), row
+
+
+def test_release_list_shows_oof_only_when_it_applies(qapp, mock_backend):
+    """適用できない学習時 OOF AP を、リリース一覧で通常の数値として見せない。"""
+    released = mock_backend.list_released_models()
+    released[0].oof_applicability = "matching"
+    released[1].oof_applicability = "different"
+    released[1].oof_reason = "推論設定が学習時と異なります"
+    page = make_page(mock_backend)
+    page.on_enter({})
+
+    text, _tip, _row = _oof_texts(page, released[0].model_id)
+    assert text != "対象外" and text != "—"
+    text, tip, row = _oof_texts(page, released[1].model_id)
+    assert text == "対象外" and tip == "推論設定が学習時と異なります"
+
+    page.select_model(released[1].model_id)
+    detail = page.detail_values["学習時 OOF AP（参考）"].text()
+    assert "推論設定が学習時と異なります" in detail
+    assert "final.pt 自身の評価ではありません" in detail
+
+
+def test_release_list_treats_unknown_and_missing_applicability_as_not_applicable(
+    qapp, mock_backend
+):
+    released = mock_backend.list_released_models()
+    released[0].oof_applicability = "unknown"
+    released[0].oof_reason = "学習時の評価条件を確認できません"
+    released[1].oof_applicability = ""
+    released[1].oof_reason = ""
+    page = make_page(mock_backend)
+    page.on_enter({})
+
+    for model in released[:2]:
+        text, tip, _row = _oof_texts(page, model.model_id)
+        assert text == "対象外"
+        assert tip == "学習時の評価条件を確認できません"

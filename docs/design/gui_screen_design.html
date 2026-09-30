@@ -1338,7 +1338,7 @@ table.rev{font-size:.92rem}
 <tr><td class="num">model_012</td><td>Cellpose</td><td class="num">RC-010</td><td class="num">val_v002</td><td class="n">0.871</td><td class="n">0.862</td><td class="num">2026-08-28 09:05</td><td>分類B</td></tr>
 </tbody></table></div>
 <div class="panel" style="font-size:.8rem;line-height:1.8"><p class="ptitle">model_008 の詳細</p>
-実験 <span class="num">exp_0042</span> ・ <span class="num">final.pt</span><br>検証 AP <span class="num">0.913</span> ・ OOF AP <span class="num">0.901</span>（A <span class="num">0.93</span> / B <span class="num">0.85</span> / C <span class="num">0.90</span>）<br>コメント 分類A 本番用モデル<br>
+実験 <span class="num">exp_0042</span> ・ <span class="num">final.pt</span><br>検証 AP <span class="num">0.913</span> ・ 学習時 OOF AP（参考） <span class="num">0.901</span>（A <span class="num">0.93</span> / B <span class="num">0.85</span> / C <span class="num">0.90</span>）<br>コメント 分類A 本番用モデル<br>
 <span class="small">「設定を変えて新しいリリースを作る」は「リリース」メニューまたは右クリックから実行</span></div>
 </div>
 <p class="ptitle" style="margin-top:10px;border-bottom:1px solid var(--rule);padding-bottom:2px">モデル振り分け</p>
@@ -1357,7 +1357,8 @@ table.rev{font-size:.92rem}
 <p><strong>上: リリース済みモデル一覧</strong>（読み取り専用）
 - 列: モデルID、モデル、候補、実験、途中保存モデル、検証用データセット、検証 AP、OOF AP、リリース日時、割り当て中の分類、コメント。
 - 一覧と詳細はリリースの記録（release.json）だけから作り、実験や候補は引かない（実験が消えても表示できる）。モデル種類は記録の前処理設定・推論設定から判断する。
-- 選択すると右に詳細（実験・途中保存モデル、検証 AP と分類別の値、OOF AP、推論設定の値、検証用データセット、リリース日時、コメント）。「リリースの詳細を表示…」で前処理設定・推論設定・評価結果の全項目を表で出す。
+- OOF AP 列は候補一覧と同じ規則で、学習時の評価条件と一致する（適用可否が matching の）ときだけ値を出し、推論設定が異なる・条件を確認できない・記録がないときは「対象外」と出す（理由はツールチップ）。
+- 選択すると右に詳細（実験・途中保存モデル、検証 AP と分類別の値、学習時 OOF AP（参考）、推論設定の値、検証用データセット、リリース日時、コメント）。学習時 OOF AP（参考）は数値を残し、条件（推論設定が学習時と異なります / 学習時の評価条件を確認できません）と、final.pt 自身の評価ではないことを併記する。「リリースの詳細を表示…」で前処理設定・推論設定・評価結果の全項目を表で出す。
 - [設定を変えて新しいリリースを作る]: 「リリース」メニューまたは右クリックから元の実験・final.ptで候補追加へ遷移する（上書きしない原則の導線）。</p>
 <p><strong>下: モデル振り分け</strong>
 - 表: 画像分類 | 現在の有効モデル | 変更後（コンボ: リリース済みモデル + 未割り当て）。行は、確定済みの全データセット版（学習・検証）に現れる分類と、振り分けにすでにある分類。

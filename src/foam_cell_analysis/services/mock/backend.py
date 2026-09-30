@@ -516,6 +516,8 @@ class MockBackend:
                 source_attempt_number=candidate.source_attempt_number,
                 model_type=inference.model_type,
                 inference_config_id=inference.config_id,
+                oof_applicability=candidate.oof_applicability,
+                oof_reason=candidate.oof_reason,
             )
             candidate.status = "released"
             candidate.released_model_id = model_id
@@ -2531,6 +2533,8 @@ class MockBackend:
             source_attempt_number=candidate.source_attempt_number,
             model_type=inference.model_type,
             inference_config_id=inference.config_id,
+            oof_applicability=candidate.oof_applicability,
+            oof_reason=candidate.oof_reason,
         )
         self.released[model.model_id] = model
         candidate.status = "released"

@@ -525,3 +525,147 @@ def test_export_done_dialog_elides_long_paths(qtbot):
     assert dialog.folder_label.toolTip() == folder
     assert "…" in dialog.folder_label.text()
     assert dialog.width() < 900
+
+
+def test_progress_updates_do_not_reread_candidate_files(qapp, qtbot, tmp_path, monkeypatch):
+    """hybrid の実ファイル: 進捗通知では候補・データセット・評価のファイルを読み直さない。
+
+    完了評価を持つ 2 候補を評価し、対象行の進捗・評価待ちを正しく出し、終了後は AP・壊れ表示・
+    操作可否を新しい状態にする。
+    """
+    import builtins
+    import io
+    import json
+
+    from foam_cell_analysis.gui.modes.comparison.candidates_page import BROKEN_TEXT
+    from foam_cell_analysis.services.hybrid_backend import HybridBackend
+    from foam_cell_analysis.services.models import (
+        EvaluationOutcome,
+        EvaluationProgress,
+        PreparedRun,
+    )
+    from tests.gui.test_stage_f_acceptance import _make_shell
+    from tests.services.test_comparison_service import FakeTraining, _dataset, _write_evaluation
+
+    _dataset(tmp_path, "train_v000", "train", ["分類A", "分類B"], "val_v000")
+    _dataset(tmp_path, "val_v000", "val", ["分類A", "分類C"])
+    fake = FakeTraining(tmp_path)
+    fake.add_attempt("exp_0001", 1)
+    fake.add_attempt("exp_0001", 2, weights=b"weights-2")
+    backend = HybridBackend(tmp_path, process_alive=lambda _record: False)
+    backend.training.create_candidate_snapshot = fake.create_candidate_snapshot
+    config = backend.create_inference_config(
+        "mask_rcnn", backend.default_inference_params("mask_rcnn")
+    )
+    first, second = (
+        backend.add_candidate("exp_0001", attempt, config.config_id, "").candidate_id
+        for attempt in (1, 2)
+    )
+    for candidate_id in (first, second):
+        _write_evaluation(backend.comparison, candidate_id, "eval_001")
+
+    # 評価プロセスの代わりに偽の評価ジョブを使う（進捗はメモリ上に持つ）
+    progress: dict[str, EvaluationProgress] = {}
+
+    def prepare(candidate_id, version):
+        run_dir = tmp_path / "fake_runs" / candidate_id
+        run_dir.mkdir(parents=True)
+        return PreparedRun(f"{candidate_id}/{version}/eval_002", str(run_dir), "", [], {}, True)
+
+    def apply_event(candidate_id, evaluation_id, event):
+        if event["type"] == "image_done":
+            progress[candidate_id] = EvaluationProgress(
+                candidate_id, evaluation_id, "val_v000", event["completed"], event["total"]
+            )
+
+    def conclude(candidate_id, evaluation_id, _job_exit):
+        progress.pop(candidate_id, None)
+        run_dir = _write_evaluation(backend.comparison, candidate_id, evaluation_id)
+        result = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
+        if candidate_id == first:
+            result["overall"]["ap"] = 1.5  # 壊れた評価結果
+        else:
+            result["overall"]["ap"] = 0.9
+        (run_dir / "result.json").write_text(json.dumps(result), encoding="utf-8")
+        return EvaluationOutcome(candidate_id, evaluation_id, "completed")
+
+    monkeypatch.setattr(backend, "prepare_evaluation_run", prepare)
+    monkeypatch.setattr(backend, "apply_evaluation_event", apply_event)
+    monkeypatch.setattr(backend, "conclude_evaluation_run", conclude)
+    monkeypatch.setattr(backend, "get_evaluation_progress", progress.get)
+
+    context, manager, home = _make_shell(qapp, tmp_path, backend)
+    runner = context.evaluation_runner
+    # 画面より前と後に接続し、画面の progressed 処理の間だけファイルのオープンを記録する
+    recording = []
+    opened: list[str] = []
+    snapshots: list[dict[str, str]] = []
+    runner.progressed.connect(lambda _cid: recording.append(True))
+    context.navigator.navigate(PageId.CANDIDATES)
+    window = manager.window(ModeId.COMPARISON)
+    window.resize(1400, 900)
+    page = manager.page(PageId.CANDIDATES)
+    page.validation.setCurrentText("val_v000")
+    assert [page.table.item(row, 6).text() for row in range(2)] == ["0.600", "0.600"]
+
+    def stop_recording(_cid):
+        recording.clear()
+        snapshots.append(
+            {cid: page.table.item(_row(page, cid), 8).text() for cid in (first, second)}
+        )
+
+    runner.progressed.connect(stop_recording)
+    original_builtin_open, original_io_open = builtins.open, io.open
+
+    def recorder(original):
+        def record(file, *args, **kwargs):
+            if recording:
+                opened.append(str(file))
+            return original(file, *args, **kwargs)
+
+        return record
+
+    monkeypatch.setattr(builtins, "open", recorder(original_builtin_open))
+    monkeypatch.setattr(io, "open", recorder(original_io_open))
+
+    _click_checkbox(page, first)
+    _click_checkbox(page, second)
+    _click_menu_item(window, "候補", "評価を実行")
+    qtbot.waitUntil(lambda: not runner.is_busy, timeout=5000)
+    qtbot.waitUntil(lambda: page.table.item(_row(page, first), 6).text() == BROKEN_TEXT)
+
+    assert snapshots
+    assert opened == []
+    assert {first: "評価中 1 / 2", second: "評価待ち"} in snapshots
+    assert {first: "候補", second: "評価中 2 / 2"} in snapshots
+    assert page.table.item(_row(page, second), 6).text() == "0.900"
+    assert page.table.item(_row(page, second), 8).text() == "候補"
+    assert not page.candidate_actions["stop"].isEnabled()
+    _click_checkbox(page, second)
+    assert page.table.item(_row(page, first), 0).checkState() == Qt.CheckState.Checked
+    assert not page.candidate_actions["release"].isEnabled()
+    home.hide()
+    for mode_window in manager._windows.values():
+        mode_window.close()
+
+
+def test_release_dialog_tells_when_previous_release_was_reused(qtbot, monkeypatch):
+    ctx = make_context()
+    record = ctx.backend.get_candidate_evaluation("RC-001", "val_v003")
+    model = ctx.backend.list_released_models()[0]
+    model.recovered_release = True
+    monkeypatch.setattr(ctx.backend, "release_candidate", lambda *_args: model)
+    messages = []
+    monkeypatch.setattr(
+        QMessageBox, "information", lambda _parent, _title, text: messages.append(text)
+    )
+    dialog = ReleaseDialog(ctx, ctx.backend.get_candidate("RC-001"), record)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    QTest.mouseClick(dialog.ok_button, Qt.MouseButton.LeftButton)
+    qtbot.waitUntil(lambda: dialog.model is not None, timeout=5000)
+    assert messages == [
+        f"前回の登録で {model.model_id} として公開済みでした。"
+        "候補の状態を修復しました。コメントは前回の登録内容のままです。"
+    ]
+    assert dialog.result() == QDialog.DialogCode.Accepted

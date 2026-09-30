@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
@@ -34,10 +35,16 @@ from PySide6.QtWidgets import (
 )
 
 from ....services.backend import MaskExportParams
-from ....services.comparison_service import INFERENCE_PARAM_SPECS
+from ....services.comparison_service import INFERENCE_PARAM_SPECS, is_recovered_release
 from ....services.models import Candidate, EvaluationRecord, Experiment, ExternalResult
 from ...context import AppContext
-from ...labels import config_key_label, contamination_label, format_score, model_type_label
+from ...labels import (
+    OOF_NOTE,
+    config_key_label,
+    contamination_label,
+    format_score,
+    model_type_label,
+)
 from ...theme import numeric_font, set_style
 from ...widgets.table import fit_table_columns, mark_primary, setup_table
 
@@ -46,7 +53,6 @@ logger = logging.getLogger(__name__)
 # 完了した試行の状態（TrainingService は completed、モックの初期データは 完走）
 _COMPLETED_RESULTS = {"completed", "完走"}
 AP_NOTE = "AP は Cellpose 方式（TP / (TP + FP + FN)、IoU 0.50–0.95 の平均、画像平均）"
-OOF_NOTE = "OOF AP は交差検証の各 fold モデルによる評価で、final.pt 自身の評価ではありません。"
 BASE_MISMATCH_NOTE = "⚠ 基準とは別の検証用データセットで評価しています"
 
 
@@ -794,6 +800,14 @@ class ReleaseDialog(QDialog):
         self.comment.setEnabled(True)
         if ok:
             self.model = job.result
+            if is_recovered_release(self.model):
+                QMessageBox.information(
+                    self,
+                    "リリース済みモデル登録",
+                    f"前回の登録で {self.model.model_id} として公開済みでした。"
+                    "候補の状態を修復しました。"
+                    "コメントは前回の登録内容のままです。",
+                )
             self.accept()
             return
         self.ok_button.setEnabled(True)

@@ -407,6 +407,9 @@ class ReleasedModel:
     source_attempt_number: int = 1
     model_type: str = ""
     inference_config_id: str = ""
+    # 学習時 OOF AP の適用可否（matching / different / unknown。空は記録なし）
+    oof_applicability: str = ""
+    oof_reason: str = ""
 
 
 @dataclass
