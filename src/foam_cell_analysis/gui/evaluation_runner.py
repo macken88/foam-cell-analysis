@@ -135,7 +135,6 @@ class FakeEvaluationJob(QObject):
                 "type": "preflight",
                 "n_images": total,
                 "per_class_counts": {},
-                "contamination": {"status": "none", "pairs": [], "reason": None},
                 "required_bytes": 0,
                 "free_bytes": 0,
             },
@@ -197,8 +196,10 @@ class EvaluationRunner(QObject):
         self.backend = backend
         self.hello_timeout_ms = hello_timeout_ms
         self.compute = compute if compute is not None else ComputeCoordinator(self)
-        self._queue: list[tuple[str, str]] = []
-        self._current: tuple[str, str] | None = None
+        # 待ち行列は候補 ID だけ。評価先の検証用の版は候補に固定されている（準備で決まる）
+        self._queue: list[str] = []
+        self._current: str | None = None
+        self._current_version = ""
         self._ticket: Ticket | None = None
         self._waiting_ticket: Ticket | None = None
         self.job = None
@@ -218,11 +219,12 @@ class EvaluationRunner(QObject):
     @property
     def candidate_id(self) -> str | None:
         """実行中（または占有を待っている）候補。"""
-        return self._current[0] if self._current else None
+        return self._current
 
     @property
     def validation_version(self) -> str | None:
-        return self._current[1] if self._current else None
+        """実行中の評価の検証用の版（準備の後に決まる）。"""
+        return self._current_version or None if self._current else None
 
     @property
     def waiting_for_compute(self) -> bool:
@@ -232,7 +234,7 @@ class EvaluationRunner(QObject):
     @property
     def queued_candidate_ids(self) -> list[str]:
         """まだ占有を求めていない待機中の候補（先着順）。"""
-        return [candidate_id for candidate_id, _version in self._queue]
+        return list(self._queue)
 
     def is_evaluation_active(self, candidate_id: str) -> bool:
         """候補が評価中または評価待ちか（ComparisonService.is_evaluation_active に渡せる）。"""
@@ -250,17 +252,16 @@ class EvaluationRunner(QObject):
 
     # ---- 開始 ----
 
-    def start(self, candidate_ids: list[str], validation_version: str) -> None:
+    def start(self, candidate_ids: list[str]) -> None:
         """候補を待ち行列に入れ、空いていれば先頭から評価を始める。
 
-        すでに評価中・評価待ちの候補は重ねて入れない。終端状態の保存失敗で計算処理が
-        止まっているときは、この開始操作で解除する（15.1）。
+        評価先は候補ごとに固定された検証用の版（利用者は選ばない）。すでに評価中・評価待ちの
+        候補は重ねて入れない。終端状態の保存失敗で計算処理が止まっているときは、この開始操作で
+        解除する（15.1）。
         """
-        if not validation_version:
-            raise ValueError("検証用データセットを選択してください")
         for candidate_id in candidate_ids:
-            if not self.is_evaluation_active(candidate_id):
-                self._queue.append((candidate_id, validation_version))
+            if not self.is_evaluation_active(candidate_id) and candidate_id not in self._queue:
+                self._queue.append(candidate_id)
         self._update_busy()
         if self.compute.is_blocked:
             self.compute.unblock()
@@ -272,7 +273,8 @@ class EvaluationRunner(QObject):
             self._update_busy()
             return
         self._current = self._queue.pop(0)
-        candidate_id, version = self._current
+        self._current_version = ""
+        candidate_id = self._current
         self._concluded = False
         self._skip_conclude = False
         self._event_failure = None
@@ -281,12 +283,12 @@ class EvaluationRunner(QObject):
         ticket = self.compute.request(
             OWNER, f"評価 {candidate_id}", lambda: self._begin_with_active_ticket(candidate_id)
         )
-        if ticket.state == "waiting" and self._current == (candidate_id, version):
+        if ticket.state == "waiting" and self._current == candidate_id:
             self._waiting_ticket = ticket
         self._update_busy()
 
     def _begin_with_active_ticket(self, candidate_id: str) -> None:
-        if self._current is None or self._current[0] != candidate_id:
+        if self._current is None or self._current != candidate_id:
             # 取り消し済みの要求。占有だけ返す
             self.compute.release(self.compute.active)
             return
@@ -295,10 +297,10 @@ class EvaluationRunner(QObject):
         self._begin()
 
     def _begin(self) -> None:
-        candidate_id, version = self._current
+        candidate_id = self._current
         try:
-            prepared = self.backend.prepare_evaluation_run(candidate_id, version)
-            _candidate, _version, self.evaluation_id = _parse_run_id(prepared.run_id)
+            prepared = self.backend.prepare_evaluation_run(candidate_id)
+            _candidate, self._current_version, self.evaluation_id = _parse_run_id(prepared.run_id)
             if prepared.fake:
                 job = FakeEvaluationJob(prepared, parent=self)
             else:
@@ -342,7 +344,7 @@ class EvaluationRunner(QObject):
         if self._concluded or self._current is None:
             return
         self._concluded = True
-        candidate_id, version = self._current
+        candidate_id, version = self._current, self._current_version
         evaluation_id = self.evaluation_id
         saved = True
         try:
@@ -390,24 +392,22 @@ class EvaluationRunner(QObject):
         queued, self._queue = self._queue, []
         self._emit_cancelled(queued)
 
-    def _emit_cancelled(self, queued: list[tuple[str, str]]) -> None:
-        for candidate_id, version in queued:
+    def _emit_cancelled(self, queued: list[str]) -> None:
+        for candidate_id in queued:
             self.ended.emit(
                 EvaluationOutcome(
-                    candidate_id, None, "stopped", "開始前に取り消しました", "cancelled", version
+                    candidate_id, None, "stopped", "開始前に取り消しました", "cancelled"
                 )
             )
 
     def _cancel_waiting(self) -> None:
         ticket, self._waiting_ticket = self._waiting_ticket, None
-        candidate_id, version = self._current
+        candidate_id = self._current
         self._current = None
         self._concluded = True
         self.compute.cancel(ticket)
         self.ended.emit(
-            EvaluationOutcome(
-                candidate_id, None, "stopped", "開始前に取り消しました", "cancelled", version
-            )
+            EvaluationOutcome(candidate_id, None, "stopped", "開始前に取り消しました", "cancelled")
         )
 
     def request_stop(self, reason: str = "user_stop", timeout_ms: int | None = None) -> bool:

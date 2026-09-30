@@ -38,8 +38,12 @@ def write_dataset(
     samples: dict[str, tuple[np.ndarray, np.ndarray, str | None]],
     *,
     channel: str = "A",
+    base_validation_version: str | None = None,
 ) -> Path:
-    """確定済みデータセット（dataset_info・metadata・manifest・画像・マスク）を書く。"""
+    """確定済みデータセット（dataset_info・metadata・manifest・画像・マスク）を書く。
+
+    学習用の版には、組になる検証用の版（base_validation_version）を渡す。
+    """
     folder = root / "datasets" / version
     (folder / "images").mkdir(parents=True)
     (folder / "masks").mkdir()
@@ -86,6 +90,8 @@ def write_dataset(
             writer.writeheader()
             writer.writerows(rows)
     info = {"purpose": purpose, "status": "RELEASED", "dataset_version": version}
+    if base_validation_version is not None:
+        info["base_validation_version"] = base_validation_version
     (folder / "dataset_info.json").write_text(json.dumps(info), encoding="utf-8")
     return folder
 
@@ -128,8 +134,12 @@ class EvaluationEnv:
             process_terminator=self._terminate,
         )
 
-    def write_dataset(self, version: str, purpose: str, samples: dict) -> Path:
-        return write_dataset(self.root, version, purpose, samples)
+    def write_dataset(
+        self, version: str, purpose: str, samples: dict, base_validation_version: str | None = None
+    ) -> Path:
+        return write_dataset(
+            self.root, version, purpose, samples, base_validation_version=base_validation_version
+        )
 
     def _terminate(self, process: dict) -> None:
         self.terminated.append(process)
@@ -144,8 +154,12 @@ class EvaluationEnv:
         weights: bytes = b"fake-weights",
         used_item_ids: list[str] | None = None,
         training_version: str = "train_v000",
+        validation_version: str | None = "val_v000",
     ) -> dict:
-        """fake_numpy の比較候補を candidate.json として直接置く（add_candidate と同じ形）。"""
+        """fake_numpy の比較候補を candidate.json として直接置く（add_candidate と同じ形）。
+
+        validation_version=None は、組の記録がない旧形式の候補。
+        """
         run_dir = self.root / "experiments" / experiment_id / "runs" / "attempt_001"
         (run_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
         (run_dir / "checkpoints" / "final.pt").write_bytes(weights)
@@ -208,6 +222,14 @@ class EvaluationEnv:
                 weights_sha, "fake_numpy", model_config, {}, effective
             ),
         }
+        if validation_version is not None:
+            record["validation_version"] = validation_version
+            record["dataset_pair"] = {
+                "training_version": training_version,
+                "validation_version": validation_version,
+                "method": "created",
+                "recorded_at": "2026-09-30T10:00:00+09:00",
+            }
         folder = self.service.candidates_root / candidate_id
         folder.mkdir(parents=True, exist_ok=True)
         (folder / "candidate.json").write_text(
@@ -218,7 +240,8 @@ class EvaluationEnv:
 
 @pytest.fixture
 def evaluation_env(tmp_path) -> EvaluationEnv:
-    """検証版 val_v000（3 枚）と学習版 train_v000、fake_numpy の候補 RC-001 を持つ workspace。"""
+    """検証版 val_v000（3 枚）と、それと組の学習版 train_v000、fake_numpy の候補 RC-001 を
+    持つ workspace。"""
     write_dataset(tmp_path, "val_v000", "val", validation_samples())
     other, other_mask = _blobs((6, 6))
     write_dataset(
@@ -226,6 +249,7 @@ def evaluation_env(tmp_path) -> EvaluationEnv:
         "train_v000",
         "train",
         {"train_1": (other, other_mask, "分類A"), "train_2": (*_blobs((1, 10)), "分類B")},
+        base_validation_version="val_v000",
     )
     env = EvaluationEnv(tmp_path)
     env.add_candidate()

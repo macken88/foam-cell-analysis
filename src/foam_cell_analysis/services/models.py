@@ -387,6 +387,16 @@ class Candidate:
     oof_applicability: str = ""
     oof_reason: str = ""
     released_model_id: str | None = None
+    # 候補に固定した検証用データセットの版（学習用の版の組。None は組を確認できていない旧候補）
+    validation_version: str | None = None
+    # validation_version が None のときの理由（評価・リリースできない理由として表示する）
+    pairing_issue: str = ""
+    # 元の試行の学習用データセットの版
+    training_version: str = ""
+    # 推論で実際に使う値の全体（比較・評価設計 5.2）
+    effective_params: dict[str, Any] = field(default_factory=dict)
+    # 採用している評価に対する最新の外部解析の集計（9.4。なければ None）
+    external_summary: dict[str, Any] | None = None
 
 
 @dataclass
@@ -410,11 +420,18 @@ class ReleasedModel:
     # 学習時 OOF AP の適用可否（matching / different / unknown。空は記録なし）
     oof_applicability: str = ""
     oof_reason: str = ""
+    # リリースに使った評価と、その評価に対する最新の外部解析の集計（なければ None）
+    evaluation_id: str = ""
+    external_summary: dict[str, Any] | None = None
 
 
 @dataclass
 class EvaluationRecord:
-    """比較候補の 1 回分の評価（eval_NNN）の読み取り結果。"""
+    """比較候補の 1 回分の評価（eval_NNN）の読み取り結果。
+
+    contamination は旧形式（schema 1）の評価にだけある学習混入の検査結果。
+    現行形式（schema 2）の評価では空。
+    """
 
     evaluation_id: str
     candidate_id: str
@@ -425,6 +442,12 @@ class EvaluationRecord:
     completed_at: str | None = None
     broken: bool = False
     input_fingerprint: str | None = None
+    schema: int | None = None
+
+    @property
+    def contamination_found(self) -> bool:
+        """旧形式の評価で、学習データと同じ画像が見つかっていたか（リリースに使えない）。"""
+        return self.contamination.get("status") == "found"
 
 
 @dataclass

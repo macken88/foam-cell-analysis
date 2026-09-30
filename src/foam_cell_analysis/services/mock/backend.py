@@ -13,10 +13,12 @@ import numpy as np
 
 from ...training.folds import assign_folds
 from ..backend import normalization_for_weights
+from ..comparison_service import DuplicateCandidateError
 from ..models import (
     ArtifactGroup,
     AugmentationProfile,
     Candidate,
+    CandidateSnapshot,
     Checkpoint,
     CheckResult,
     DataItem,
@@ -29,7 +31,6 @@ from ..models import (
     Experiment,
     ExperimentConfig,
     ExperimentDeletionInfo,
-    ExternalResult,
     ImportCandidate,
     InferenceConfig,
     JobExit,
@@ -489,6 +490,7 @@ class MockBackend:
             candidate.oof_applicability, candidate.oof_reason = self._oof_applicability(
                 candidate.inference_config_id
             )
+            self._fix_candidate_pair(candidate)
             source = self.experiments[candidate.experiment_id]
             candidate.source_attempt_number = len(source.runs)
             candidate.checkpoint_reference = (
@@ -684,7 +686,7 @@ class MockBackend:
         return self.finalize_working_dataset(comment, create_archive)
 
     def validate_all_working_items(self) -> ValidationReport:
-        """学習・検証に使う項目の必須メタデータを自動検査する。"""
+        """必須メタデータと既存の確定済み組の状態を自動検査する。"""
         dataset = self.working["all"]
         errors = [
             ValidationIssue("エラー", item.item_id, "必須メタデータ", "分類または品質が未設定です")
@@ -788,6 +790,54 @@ class MockBackend:
         if report.errors:
             raise ValueError("整合性エラーを解消してください")
         dataset = self.working["all"]
+        latest_by_purpose = {
+            purpose: next(
+                (version for version in reversed(self.versions) if version.purpose == purpose), None
+            )
+            for purpose in ("train", "val")
+        }
+        items_by_purpose = {
+            purpose: [item for item in dataset.items if item.usage == purpose]
+            for purpose in ("train", "val")
+        }
+        changed_by_purpose = {
+            purpose: [item for item in dataset.items if item.change and item.usage == purpose]
+            for purpose in ("train", "val")
+        }
+        will_create = {
+            purpose: latest_by_purpose[purpose] is None
+            or latest_by_purpose[purpose].item_ids
+            != [item.item_id for item in items_by_purpose[purpose]]
+            or bool(changed_by_purpose[purpose])
+            for purpose in ("train", "val")
+        }
+        if will_create["train"]:
+            if will_create["val"]:
+                validation_items = items_by_purpose["val"]
+            else:
+                validation = latest_by_purpose["val"]
+                if validation is None:
+                    raise ValueError("学習版と組にする確定済み検証用データセットがありません")
+                validation_items = self._items_for_version(validation.version)
+            if not validation_items:
+                raise ValueError("学習版と組にする検証用データセットが空です")
+            if any(not item.sha256 for item in validation_items):
+                raise ValueError("検証用データセットの画像ハッシュを確認できません")
+            training_items = [item for item in dataset.items if item.usage == "train"]
+            if any(not item.sha256 for item in training_items):
+                raise ValueError("学習用データセットの画像ハッシュを確認できません")
+            validation_ids = {item.item_id.casefold() for item in validation_items}
+            validation_hashes = {item.sha256 for item in validation_items}
+            duplicates = [
+                item.item_id
+                for item in training_items
+                if item.item_id.casefold() in validation_ids or item.sha256 in validation_hashes
+            ]
+            if duplicates:
+                raise ValueError(
+                    "学習用データと検証用データに識別子または画像の重複があります: "
+                    + ", ".join(duplicates[:5])
+                )
         created: list[DatasetVersion] = []
         for purpose, base in (
             ("train", dataset.base_train_version),
@@ -1191,7 +1241,9 @@ class MockBackend:
         """学習フォームで使用する選択肢を返す。"""
         return {
             "datasets": [
-                version.version for version in self.versions if version.purpose == "train"
+                version.version
+                for version in self.versions
+                if version.purpose == "train" and self._pair_or_none(version.version)
             ],
             "classifications": self.classifications.copy(),
             "qualities": ["良", "可", "不良"],
@@ -2130,14 +2182,17 @@ class MockBackend:
             raise ValueError(f"推論設定がありません: {inference_config_id}")
         if "final" in self._pruned.get((experiment_id, attempt), set()):
             raise ValueError("最終学習モデルは成果物の整理で削除されています")
+        training_version = experiment.config.values["data"]["dataset_version"]
+        self._paired_validation(training_version)
+        effective = self._effective_params(inference_config_id)
         for candidate in self.candidates.values():
             if (
                 candidate.status != "rejected"
                 and candidate.experiment_id == experiment_id
                 and candidate.source_attempt_number == attempt
-                and candidate.inference_config_id == inference_config_id
+                and candidate.effective_params == effective
             ):
-                raise ValueError(f"既に {candidate.candidate_id} として登録済みです")
+                raise DuplicateCandidateError(candidate.candidate_id)
         number = max((int(key[-3:]) for key in self.candidates), default=0) + 1
         base_score = (
             experiment.oof_evaluation.overall_map
@@ -2160,8 +2215,123 @@ class MockBackend:
             oof_applicability=applicability,
             oof_reason=reason,
         )
+        self._fix_candidate_pair(candidate)
         self.candidates[candidate.candidate_id] = candidate
         return candidate
+
+    # ---- 学習用・検証用の版の組（比較・評価設計 3.5 の模擬） ----
+
+    def create_candidate_snapshot(
+        self, experiment_id: str, *, attempt: int | None = None
+    ) -> CandidateSnapshot:
+        """モック学習の完了試行から、ダイアログ用の評価条件を返す。"""
+        experiment = self.get_experiment(experiment_id)
+        selected_attempt = attempt or max(
+            (run.attempt for run in experiment.runs if run.result in {"completed", "完走"}),
+            default=0,
+        )
+        completed_attempts = {
+            run.attempt for run in experiment.runs if run.result in {"completed", "完走"}
+        }
+        if selected_attempt < 1 or selected_attempt not in completed_attempts:
+            raise ValueError("完了した試行がありません")
+        from ..comparison_service import LEGACY_TRAINING_EVAL_PARAMS
+
+        return CandidateSnapshot(
+            experiment_id=experiment_id,
+            attempt=selected_attempt,
+            selected_epoch=experiment.selected_epoch or 0,
+            run_id=f"{experiment_id}/attempt_{selected_attempt:03d}",
+            checkpoint_path="checkpoints/final.pt",
+            oof_evaluation=copy.deepcopy(experiment.oof_evaluation),
+            experiment_config=copy.deepcopy(experiment.config.values),
+            weights_size=0,
+            weights_sha256="",
+            training_eval_params=copy.deepcopy(
+                LEGACY_TRAINING_EVAL_PARAMS.get(experiment.model_type, {})
+            ),
+            training_dataset={
+                "version": experiment.config.values.get("data", {}).get("dataset_version")
+            },
+        )
+
+    def _paired_validation(self, train_version: str | None) -> str:
+        """学習用の版と組になる検証用の版。正しくなければ理由付きの ValueError。"""
+        record = next(
+            (
+                item
+                for item in self.versions
+                if item.version == train_version and item.purpose == "train"
+            ),
+            None,
+        )
+        if record is None:
+            raise ValueError(f"学習用データセット {train_version} がありません")
+        base = record.base_validation_version
+        if not base:
+            raise ValueError(
+                f"学習用データセット {train_version} に組になる検証用データセットが"
+                "記録されていません"
+            )
+        if not any(item.version == base and item.purpose == "val" for item in self.versions):
+            raise ValueError(
+                f"学習用データセット {train_version} の組になる検証用データセット {base} が"
+                "ありません"
+            )
+        return base
+
+    def _pair_or_none(self, train_version: str | None) -> str | None:
+        try:
+            return self._paired_validation(train_version)
+        except ValueError:
+            return None
+
+    def _effective_params(self, inference_config_id: str) -> dict[str, Any]:
+        """学習時の評価パラメータ（既定値）に推論設定を上書きした実効値（5.2）。"""
+        from ..comparison_service import LEGACY_TRAINING_EVAL_PARAMS
+
+        config = self.inference_configs[inference_config_id]
+        return {
+            **copy.deepcopy(LEGACY_TRAINING_EVAL_PARAMS.get(config.model_type, {})),
+            **copy.deepcopy(config.params),
+        }
+
+    def _fix_candidate_pair(self, candidate: Candidate) -> None:
+        """候補に学習用の版・組の検証用の版・実効値を固定する（作成時に 1 回だけ）。"""
+        experiment = self.experiments[candidate.experiment_id]
+        candidate.training_version = experiment.config.values["data"]["dataset_version"]
+        candidate.validation_version = self._paired_validation(candidate.training_version)
+        candidate.effective_params = self._effective_params(candidate.inference_config_id)
+        if candidate.snapshot is None:
+            candidate.snapshot = CandidateSnapshot(
+                experiment_id=candidate.experiment_id,
+                attempt=candidate.source_attempt_number,
+                selected_epoch=experiment.selected_epoch or 0,
+                run_id=f"{candidate.experiment_id}/attempt_{candidate.source_attempt_number:03d}",
+                checkpoint_path="checkpoints/final.pt",
+                experiment_config=copy.deepcopy(experiment.config.values),
+                training_eval_params=self._effective_params_defaults(experiment.model_type),
+            )
+
+    @staticmethod
+    def _effective_params_defaults(model_type: str) -> dict[str, Any]:
+        from ..comparison_service import LEGACY_TRAINING_EVAL_PARAMS
+
+        return copy.deepcopy(LEGACY_TRAINING_EVAL_PARAMS.get(model_type, {}))
+
+    def _fixed_version(self, candidate: Candidate) -> str:
+        """評価開始・リリースの前に、候補の固定値を組の記録と照合する。"""
+        if not candidate.validation_version:
+            from ..comparison_service import UNPAIRED_MESSAGE
+
+            raise ValueError(candidate.pairing_issue or UNPAIRED_MESSAGE)
+        current = self._paired_validation(candidate.training_version)
+        if current != candidate.validation_version:
+            raise ValueError(
+                f"学習用データセット {candidate.training_version} の組（{current}）が"
+                f"候補の記録（{candidate.validation_version}）と一致しません"
+            )
+        return candidate.validation_version
 
     def _candidate_oof_evaluation(
         self, experiment: Experiment, inference_config_id: str
@@ -2220,9 +2390,9 @@ class MockBackend:
             version,
             "completed",
             evaluation=evaluation,
-            contamination={"status": "none", "pairs": [], "reason": None},
             completed_at=self._now().isoformat(timespec="seconds"),
             input_fingerprint=self._digest(f"{candidate_id}:{version}"),
+            schema=2,
         )
         self.evaluation_records.setdefault(candidate_id, []).append(record)
         return record
@@ -2233,13 +2403,14 @@ class MockBackend:
                 return record
         raise ValueError(f"評価がありません: {candidate_id}/{evaluation_id}")
 
-    def prepare_evaluation_run(self, candidate_id: str, validation_version: str) -> PreparedRun:
-        """評価を 1 回分準備する。模擬なので fake=True の PreparedRun を返す（7.1）。"""
+    def prepare_evaluation_run(self, candidate_id: str) -> PreparedRun:
+        """候補に固定した検証用の版で評価を準備する。模擬なので fake=True（7.1）。"""
         candidate = self.candidates.get(candidate_id)
         if candidate is None:
             raise ValueError(f"比較候補がありません: {candidate_id}")
         if candidate.status != "candidate":
             raise ValueError("候補状態のモデルだけ評価できます")
+        validation_version = self._fixed_version(candidate)
         if validation_version not in {item.version for item in self.list_validation_versions()}:
             raise ValueError(f"検証用データセット {validation_version} がありません")
         if not self._items_for_version(validation_version):
@@ -2251,6 +2422,7 @@ class MockBackend:
             validation_version,
             "running",
             input_fingerprint=self._digest(f"{candidate_id}:{validation_version}"),
+            schema=2,
         )
         self.evaluation_records.setdefault(candidate_id, []).append(record)
         self._evaluation_progress[candidate_id] = EvaluationProgress(
@@ -2329,7 +2501,6 @@ class MockBackend:
             items = self._items_for_version(version)
             record.evaluation = self._evaluation_for_items(self._mock_score(candidate_id), items)
             record.evaluation.n_images = len(items)
-            record.contamination = {"status": "none", "pairs": [], "reason": None}
             record.completed_at = self._now().isoformat(timespec="seconds")
             self.candidates[candidate_id].evaluations[version] = record.evaluation
         if progress and progress.evaluation_id == evaluation_id:
@@ -2342,51 +2513,30 @@ class MockBackend:
         return copy.copy(progress) if progress is not None else None
 
     def list_candidate_evaluations(
-        self, candidate_id: str, validation_version: str
+        self, candidate_id: str, validation_version: str | None = None
     ) -> list[EvaluationRecord]:
-        """その候補・検証版の全評価を番号順に返す。"""
+        """その候補・検証版の全評価を番号順に返す。版を省くと全ての版の履歴を返す。"""
         if candidate_id not in self.candidates:
             raise KeyError(candidate_id)
         return [
             copy.copy(record)
             for record in self.evaluation_records.get(candidate_id, [])
-            if record.validation_version == validation_version
+            if validation_version is None or record.validation_version == validation_version
         ]
 
     def get_candidate_evaluation(
-        self, candidate_id: str, validation_version: str
+        self, candidate_id: str, validation_version: str | None = None
     ) -> EvaluationRecord | None:
-        """その候補・検証版で最も新しい完了済みの評価を返す（7.7）。"""
+        """最も新しい完了済みの評価を返す（7.7）。版を省くと候補に固定した版を使う。"""
+        version = validation_version or self.candidates[candidate_id].validation_version
+        if not version:
+            return None
         completed = [
             record
-            for record in self.list_candidate_evaluations(candidate_id, validation_version)
+            for record in self.list_candidate_evaluations(candidate_id, version)
             if record.status == "completed"
         ]
         return completed[-1] if completed else None
-
-    def base_validation_version_for(self, candidate_id: str) -> str | None:
-        """候補の学習用の版が参照する基準検証版を返す。"""
-        candidate = self.candidates[candidate_id]
-        if candidate.snapshot is not None:
-            data = candidate.snapshot.experiment_config.get("data", {})
-        else:
-            experiment = self.experiments.get(candidate.experiment_id)
-            data = experiment.config.values.get("data", {}) if experiment else {}
-        train_version = data.get("dataset_version")
-        record = next((item for item in self.versions if item.version == train_version), None)
-        return record.base_validation_version if record is not None else None
-
-    def default_validation_version(self) -> str | None:
-        """最も新しい候補の基準検証版。なければ最も新しい検証版（3.5）。"""
-        versions = [item.version for item in self.list_validation_versions()]
-        if not versions:
-            return None
-        if self.candidates:
-            latest = max(self.candidates, key=lambda key: int(key[-3:]))
-            base = self.base_validation_version_for(latest)
-            if base in versions:
-                return base
-        return versions[-1]
 
     # ---- 外部解析（9.4） ----
 
@@ -2396,53 +2546,68 @@ class MockBackend:
             raise KeyError(candidate_id)
         return copy.deepcopy(self.external_records.get(candidate_id, []))
 
-    def save_external_results(
+    def save_external_analysis(
         self,
         candidate_id: str,
         evaluation_id: str,
-        results: list[ExternalResult | dict[str, Any]],
+        values: dict[str, float | None],
         *,
+        unit: str = "µm",
         software: str = "",
         software_version: str = "",
         analyzed_on: str = "",
-        scope: str = "全体",
-        export_id: str | None = None,
         comment: str | None = None,
     ) -> Candidate:
-        """外部解析値を評価 ID 付きで保存する。"""
+        """外部解析の値を評価 ID 付きで検証・集計し、新しい記録として追記する。"""
+        from ..comparison_service import (
+            EXTERNAL_FORMAT,
+            EXTERNAL_METRIC,
+            build_external_analysis,
+        )
+
         candidate = self.candidates[candidate_id]
         if candidate.status == "released":
             raise ValueError("リリース済みの候補の外部解析結果は変更できません")
-        self._find_evaluation(candidate_id, evaluation_id)
-        values = [
-            result if isinstance(result, ExternalResult) else ExternalResult(**result)
-            for result in results
-        ]
+        record = self._find_evaluation(candidate_id, evaluation_id)
+        if record.validation_version != candidate.validation_version:
+            raise ValueError("候補に固定した検証用データセットと異なる過去の評価は編集できません")
+        if record.status != "completed":
+            raise ValueError("完了した評価にだけ外部解析結果を保存できます")
+        classifications = {
+            item.item_id: item.classification
+            for item in self._items_for_version(record.validation_version)
+        }
+        cleaned, summary = build_external_analysis(values, classifications, unit=unit)
         records = self.external_records.setdefault(candidate_id, [])
-        records.append(
-            {
-                "record_id": f"ext_{len(records) + 1:03d}",
-                "evaluation_id": evaluation_id,
-                "export_id": export_id,
-                "scope": scope,
-                "software": software,
-                "software_version": software_version,
-                "analyzed_on": analyzed_on,
-                "results": [
-                    {"name": item.name, "value": item.value, "unit": item.unit} for item in values
-                ],
-                "comment": comment or "",
-                "saved_at": self._now().isoformat(timespec="seconds"),
-            }
-        )
-        candidate.external_results = values
+        entry = {
+            "record_id": f"ext_{len(records) + 1:03d}",
+            "format": EXTERNAL_FORMAT,
+            "evaluation_id": evaluation_id,
+            "validation_version": record.validation_version,
+            "metric": EXTERNAL_METRIC,
+            "unit": unit,
+            "software": software,
+            "software_version": software_version,
+            "analyzed_on": analyzed_on,
+            "values": cleaned,
+            "summary": summary,
+            "comment": comment or "",
+            "saved_at": self._now().isoformat(timespec="seconds"),
+        }
+        records.append(entry)
+        candidate.external_summary = {
+            **copy.deepcopy(summary),
+            "unit": unit,
+            "evaluation_id": evaluation_id,
+            "record_id": entry["record_id"],
+        }
         candidate.external_software = software
         candidate.external_date = analyzed_on
         if comment is not None:
             candidate.comment = comment
         return candidate
 
-    # ---- マスク出力（12 章の模擬。ファイルは作らない） ----
+    # ---- 抽出結果出力（12 章の模擬。ファイルは作らない） ----
 
     def export_particle_masks(
         self,
@@ -2456,7 +2621,7 @@ class MockBackend:
 
         params = MaskExportParams.from_value(request)
         if not params.contents or not params.contents <= {"label", "binary"}:
-            raise ValueError("出力内容にはラベル画像・二値マスクのいずれかを選んでください")
+            raise ValueError("出力内容を 1 つ以上選んでください")
         if params.file_format not in {"png", "tiff"}:
             raise ValueError("出力形式は PNG または TIFF を選んでください")
         if not params.selections:
@@ -2497,17 +2662,25 @@ class MockBackend:
         comment: str = "",
     ) -> ReleasedModel:
         """指定した評価で候補を変更不可のリリースとして登録する（13.1）。"""
+        from ..comparison_service import CONTAMINATION_FOUND_MESSAGE
+
         candidate = self.candidates[candidate_id]
-        record = self._find_evaluation(candidate_id, evaluation_id)
-        if record.status != "completed" or record.evaluation is None:
-            raise ValueError("完了した評価でだけリリースできます")
-        if record.contamination.get("status") == "found":
-            raise ValueError("学習データと同じ画像が検証用データセットにあるためリリースできません")
-        version, evaluation = record.validation_version, record.evaluation
         if candidate.status != "candidate":
             raise ValueError("候補状態のモデルだけリリースできます")
         if self._is_evaluation_active(candidate_id):
             raise ValueError("評価中または評価待ちの候補はリリースできません")
+        fixed_version = self._fixed_version(candidate)
+        record = self._find_evaluation(candidate_id, evaluation_id)
+        if record.validation_version != fixed_version:
+            raise ValueError(
+                f"この評価は候補の検証用データセット（{fixed_version}）ではなく "
+                f"{record.validation_version} で行われたため、リリースに使えません"
+            )
+        if record.status != "completed" or record.evaluation is None:
+            raise ValueError("完了した評価でだけリリースできます")
+        if record.contamination_found:
+            raise ValueError(CONTAMINATION_FOUND_MESSAGE)
+        version, evaluation = record.validation_version, record.evaluation
         number = max((int(key[-3:]) for key in self.released), default=0) + 1
         experiment = (
             None if candidate.snapshot is not None else self.get_experiment(candidate.experiment_id)
@@ -2535,6 +2708,13 @@ class MockBackend:
             inference_config_id=inference.config_id,
             oof_applicability=candidate.oof_applicability,
             oof_reason=candidate.oof_reason,
+            evaluation_id=evaluation_id,
+            external_summary=(
+                copy.deepcopy(candidate.external_summary)
+                if candidate.external_summary
+                and candidate.external_summary.get("evaluation_id") == evaluation_id
+                else None
+            ),
         )
         self.released[model.model_id] = model
         candidate.status = "released"
@@ -2542,13 +2722,12 @@ class MockBackend:
         return model
 
     def list_validation_items(
-        self, validation_version: str | None = None, classification: str | None = None
+        self, validation_version: str, classification: str | None = None
     ) -> list[DataItem]:
         """検証用版の画像を分類条件付きで返す。"""
-        version = validation_version or self.default_validation_version()
-        if version is None:
+        if not validation_version:
             return []
-        items = self._items_for_version(version)
+        items = self._items_for_version(validation_version)
         return [
             item
             for item in items

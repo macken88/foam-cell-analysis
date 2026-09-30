@@ -36,8 +36,8 @@ def _run(prepared, **kwargs) -> tuple[int, list[dict]]:
     return code, lines
 
 
-def _evaluate(env, candidate_id="RC-001", version="val_v000"):
-    prepared = env.service.prepare_evaluation_run(candidate_id, version)
+def _evaluate(env, candidate_id="RC-001"):
+    prepared = env.service.prepare_evaluation_run(candidate_id)
     code, lines = _run(prepared)
     return prepared, code, lines
 
@@ -57,10 +57,23 @@ def test_evaluation_completes_and_writes_valid_result(evaluation_env):
     assert types[0] == "hello"
     assert types[1:3] == ["started", "preflight"]
     assert types.count("image_done") == 3 and types[-1] == "completed"
-    assert [event["type"] for event in read_events(run_dir / "events.jsonl")] == types[1:]
+    events = read_events(run_dir / "events.jsonl", schema=2)
+    assert [event["type"] for event in events] == types[1:]
     assert validate_evaluation_result(run_dir)
 
+    # 現行形式: 候補に固定した組を記録し、学習混入の項目は run_spec・結果・イベントに出さない
+    spec = read_json(run_dir / "run_spec.json")
+    assert spec["schema"] == 2
+    assert spec["dataset_pair"] == {
+        "training_version": "train_v000",
+        "validation_version": "val_v000",
+    }
+    assert "contamination_source" not in spec
+    preflight = next(event for event in events if event["type"] == "preflight")
+    assert "contamination" not in preflight
+    assert "contamination" not in read_json(run_dir / "resolved_data.json")
     result = read_json(run_dir / "result.json")
+    assert result["schema"] == 2 and "contamination" not in result
     assert result["evaluation_id"] == "eval_001"
     assert result["validation_version"] == "val_v000"
     assert result["overall"]["n_images"] == 3
@@ -68,7 +81,6 @@ def test_evaluation_completes_and_writes_valid_result(evaluation_env):
     assert result["overall"]["ap"] == pytest.approx((1.0 + 0.5 + 1.0) / 3)
     assert result["per_class"]["分類B"] == {"ap": 0.5, "n_images": 1}
     assert result["per_class"]["未分類"] == {"ap": 1.0, "n_images": 1}
-    assert result["contamination"]["status"] == "none"
     assert result["device"] == "cpu"
     assert set(result["predictions"]) == {"val_a", "val_b", "val_c"}
     entry = result["predictions"]["val_a"]
@@ -130,13 +142,12 @@ def test_progress_follows_events_and_replays_gaps(evaluation_env):
 def test_prepare_errors(evaluation_env):
     env = evaluation_env
     service = env.service
-    with pytest.raises(ValueError, match="検証用データセット val_v009 がありません"):
-        service.prepare_evaluation_run("RC-001", "val_v009")
     with pytest.raises(ValueError, match="比較候補がありません"):
-        service.prepare_evaluation_run("RC-009", "val_v000")
+        service.prepare_evaluation_run("RC-009")
     env.add_candidate("RC-002", experiment_id="exp_0002", input_channels=("B",))
     with pytest.raises(ValueError, match="モデルが使うチャンネル B がない画像があります"):
-        service.prepare_evaluation_run("RC-002", "val_v000")
+        service.prepare_evaluation_run("RC-002")
+    # 組の検証用の版に画像がない
     empty = env.root / "datasets" / "val_v001"
     shutil.copytree(env.root / "datasets" / "val_v000", empty)
     for name in ("metadata.csv", "manifest.csv"):
@@ -146,15 +157,67 @@ def test_prepare_errors(evaluation_env):
     (empty / "dataset_info.json").write_text(
         json.dumps({**info, "dataset_version": "val_v001"}), encoding="utf-8"
     )
+    train = env.root / "datasets" / "train_v001"
+    shutil.copytree(env.root / "datasets" / "train_v000", train)
+    info = json.loads((train / "dataset_info.json").read_text("utf-8"))
+    (train / "dataset_info.json").write_text(
+        json.dumps(
+            {**info, "dataset_version": "train_v001", "base_validation_version": "val_v001"}
+        ),
+        encoding="utf-8",
+    )
+    env.add_candidate(
+        "RC-003",
+        experiment_id="exp_0003",
+        training_version="train_v001",
+        validation_version="val_v001",
+    )
     with pytest.raises(ValueError, match="画像がありません"):
-        service.prepare_evaluation_run("RC-001", "val_v001")
+        service.prepare_evaluation_run("RC-003")
     record = service.get_candidate_record("RC-001")
     service.reject_candidate("RC-001")
     with pytest.raises(ValueError, match="候補状態"):
-        service.prepare_evaluation_run("RC-001", "val_v000")
+        service.prepare_evaluation_run("RC-001")
     assert record["status"] == "candidate"
     # 失敗した準備は評価として数えない
-    assert not list((service.candidates_root / "RC-001").glob("evaluations/*/eval_*"))
+    assert not list(service.candidates_root.glob("*/evaluations/*/eval_*"))
+
+
+def test_evaluation_uses_only_the_fixed_validation_version(evaluation_env):
+    """評価先は候補に固定した版だけ。組の記録と食い違う・組がない候補は評価しない。"""
+    env = evaluation_env
+    service = env.service
+    # 学習用の版の組の記録が候補の固定値と食い違う（黙って別の版へ切り替えない）
+    other = env.root / "datasets" / "val_v001"
+    shutil.copytree(env.root / "datasets" / "val_v000", other)
+    info = json.loads((other / "dataset_info.json").read_text("utf-8"))
+    (other / "dataset_info.json").write_text(
+        json.dumps({**info, "dataset_version": "val_v001"}), encoding="utf-8"
+    )
+    train_info = env.root / "datasets" / "train_v000" / "dataset_info.json"
+    original = train_info.read_text("utf-8")
+    train_info.write_text(
+        json.dumps({**json.loads(original), "base_validation_version": "val_v001"}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="候補の記録（val_v000）と一致しません"):
+        service.prepare_evaluation_run("RC-001")
+    # 組の記録がない学習用の版
+    train_info.write_text(
+        json.dumps(
+            {k: v for k, v in json.loads(original).items() if k != "base_validation_version"}
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="組になる検証用データセットが記録されていません"):
+        service.prepare_evaluation_run("RC-001")
+    train_info.write_text(original, encoding="utf-8")
+    # 組の記録がない旧候補（起動時の補完ができていない）は評価しない
+    env.add_candidate("RC-002", experiment_id="exp_0002", validation_version=None)
+    with pytest.raises(ValueError, match="組を確認できていない"):
+        service.prepare_evaluation_run("RC-002")
+    assert not list(service.candidates_root.glob("*/evaluations/*/eval_*"))
+    assert service.prepare_evaluation_run("RC-001").run_id == "RC-001/val_v000/eval_001"
 
 
 def _tamper_image(env, run_dir):
@@ -184,7 +247,7 @@ def _tamper_weights(env, run_dir):
 )
 def test_preflight_failures_make_evaluation_failed(evaluation_env, tamper, message):
     env = evaluation_env
-    prepared = env.service.prepare_evaluation_run("RC-001", "val_v000")
+    prepared = env.service.prepare_evaluation_run("RC-001")
     tamper(env, Path(prepared.run_dir))
     code, lines = _run(prepared)
     run_dir = Path(prepared.run_dir)
@@ -212,55 +275,118 @@ def test_preflight_rejects_mask_with_other_shape(evaluation_env):
         ",".join(row.split(",")[:4] + [digest]) if row.startswith("val_c,") else row for row in rows
     ]
     (folder / "manifest.csv").write_text("\n".join(rows) + "\n", encoding="utf-8")
-    prepared = env.service.prepare_evaluation_run("RC-001", "val_v000")
+    prepared = env.service.prepare_evaluation_run("RC-001")
     code, _lines = _run(prepared)
     assert code == 1
     assert "大きさが一致しません" in read_json(Path(prepared.run_dir) / "error.json")["message"]
 
 
 def test_capacity_shortage_fails(evaluation_env):
-    prepared = evaluation_env.service.prepare_evaluation_run("RC-001", "val_v000")
+    prepared = evaluation_env.service.prepare_evaluation_run("RC-001")
     code, _lines = _run(prepared, free_bytes_fn=lambda _path: 10)
     assert code == 1
     assert "空き容量" in read_json(Path(prepared.run_dir) / "error.json")["message"]
 
 
-def test_contamination_found_continues_with_warning(evaluation_env):
-    env = evaluation_env
-    image, mask = (
-        np.asarray(Image.open(env.root / "datasets/val_v000/images/val_a.png")),
-        np.asarray(Image.open(env.root / "datasets/val_v000/masks/val_a.png")),
-    )
-    env.write_dataset("train_v001", "train", {"dup": (image, mask, "分類A")})
-    env.add_candidate(
-        "RC-002", experiment_id="exp_0002", used_item_ids=["dup"], training_version="train_v001"
-    )
-    prepared, code, lines = _evaluate(env, "RC-002")
+def _legacy_spec(spec: dict) -> dict:
+    """現行の run_spec を旧形式（schema 1、学習混入の項目あり）へ戻す。"""
+    legacy = {key: value for key, value in spec.items() if key != "dataset_pair"}
+    legacy["schema"] = 1
+    legacy["contamination_source"] = {
+        "run_id": "exp_0001/attempt_001",
+        "dataset_version": "train_v000",
+        "dataset_sha256": None,
+        "used_item_ids": ["train_1"],
+    }
+    return legacy
 
+
+def test_legacy_and_current_record_formats_are_told_apart(evaluation_env):
+    """旧形式（学習混入の項目あり）と現行形式（なし）を run_spec の schema で見分ける。
+
+    どちらの形式も読めるが、形式に合わない項目の混ざった記録は壊れた記録として扱う。
+    """
+    from foam_cell_analysis.inference.protocol import validate_event, validate_run_spec
+
+    env = evaluation_env
+    prepared, code, lines = _evaluate(env)
     assert code == 0
-    result = read_json(Path(prepared.run_dir) / "result.json")
-    assert result["contamination"]["status"] == "found"
-    assert result["contamination"]["pairs"] == [
-        {"validation_item_id": "val_a", "training_item_id": "dup"}
-    ]
-    warnings = [line for line in lines if line["type"] == "warning"]
-    assert any("リリースできません" in line["message"] for line in warnings)
+    run_dir = Path(prepared.run_dir)
+    spec = read_json(run_dir / "run_spec.json")
+    result = read_json(run_dir / "result.json")
     preflight = next(line for line in lines if line["type"] == "preflight")
-    assert preflight["contamination"]["status"] == "found"
+    contamination = {"status": "found", "pairs": [], "reason": None}
+
+    # 現行形式に学習混入の項目が混ざったもの
+    with pytest.raises(ValueError, match="形式に合わない"):
+        validate_run_spec({**spec, "contamination_source": {}}, run_dir)
+    with pytest.raises(ValueError, match="形式に合わない"):
+        validate_event({**preflight, "contamination": contamination}, schema=2)
+    (run_dir / "result.json").write_text(
+        json.dumps({**result, "contamination": contamination}), encoding="utf-8"
+    )
+    assert not validate_evaluation_result(run_dir)
+
+    # 旧形式: 学習混入の項目が必須で、揃っていれば読める
+    legacy = _legacy_spec(spec)
+    validate_run_spec(legacy, run_dir)
+    with pytest.raises(ValueError, match="必須項目"):
+        validate_event(preflight, schema=1)
+    validate_event({**preflight, "contamination": contamination}, schema=1)
+    (run_dir / "run_spec.json").write_text(json.dumps(legacy), encoding="utf-8")
+    (run_dir / "result.json").write_text(
+        json.dumps({**result, "schema": 1, "contamination": contamination}), encoding="utf-8"
+    )
+    assert validate_evaluation_result(run_dir)
+    (run_dir / "result.json").write_text(json.dumps({**result, "schema": 1}), encoding="utf-8")
+    assert not validate_evaluation_result(run_dir)
 
 
-def test_contamination_unknown_when_training_dataset_missing(evaluation_env):
+def test_legacy_events_replay_and_legacy_spec_is_not_executed(evaluation_env):
+    """旧形式の評価の events.jsonl（preflight に contamination）を復旧・再生で読める。
+
+    旧形式の run_spec は評価プロセスでは実行しない（新しく評価をやり直す）。
+    """
     env = evaluation_env
-    shutil.rmtree(env.root / "datasets" / "train_v000")
-    prepared, code, _lines = _evaluate(env)
+    service = env.service
+    prepared, code, lines = _evaluate(env)
     assert code == 0
-    contamination = read_json(Path(prepared.run_dir) / "result.json")["contamination"]
-    assert contamination["status"] == "unknown"
-    assert "見つかりません" in contamination["reason"]
+    run_dir = Path(prepared.run_dir)
+    spec = read_json(run_dir / "run_spec.json")
+    (run_dir / "run_spec.json").write_text(json.dumps(_legacy_spec(spec)), encoding="utf-8")
+    events = [line for line in lines if line["type"] != "hello"]
+    legacy_events = [
+        {**event, "contamination": {"status": "none", "pairs": [], "reason": None}}
+        if event["type"] == "preflight"
+        else event
+        for event in events
+    ]
+    (run_dir / "events.jsonl").write_text(
+        "".join(json.dumps(event, ensure_ascii=False) + "\n" for event in legacy_events),
+        encoding="utf-8",
+    )
+    assert [event["type"] for event in read_events(run_dir / "events.jsonl", schema=1)] == [
+        event["type"] for event in legacy_events
+    ]
+    # 途中のイベントから始めても、旧形式の events.jsonl から埋める
+    progress = service.apply_evaluation_event("RC-001", "eval_001", legacy_events[4])
+    assert (progress.completed, progress.total) == (3, 3)
+    with pytest.raises(ValueError, match="形式に合わない|必須項目"):
+        service.apply_evaluation_event(
+            "RC-001", "eval_001", {**events[1], "seq": legacy_events[-1]["seq"] + 1}
+        )
+
+    second = service.prepare_evaluation_run("RC-001")
+    second_dir = Path(second.run_dir)
+    legacy = _legacy_spec(read_json(second_dir / "run_spec.json"))
+    (second_dir / "run_spec.json").write_text(json.dumps(legacy), encoding="utf-8")
+    code, _lines = _run(second)
+    assert code == 1
+    assert "旧形式" in read_json(second_dir / "error.json")["message"]
 
 
 def test_invalid_run_spec_exits_with_code_two_without_hello(evaluation_env):
-    prepared = evaluation_env.service.prepare_evaluation_run("RC-001", "val_v000")
+    prepared = evaluation_env.service.prepare_evaluation_run("RC-001")
     spec_path = Path(prepared.run_dir) / "run_spec.json"
     spec = read_json(spec_path)
     spec["validation"]["item_ids"] = ["../escape"]
@@ -271,7 +397,7 @@ def test_invalid_run_spec_exits_with_code_two_without_hello(evaluation_env):
 
 
 def test_eof_before_go_exits_with_code_three(evaluation_env):
-    prepared = evaluation_env.service.prepare_evaluation_run("RC-001", "val_v000")
+    prepared = evaluation_env.service.prepare_evaluation_run("RC-001")
     stdout = io.StringIO()
     code = run_job(prepared.run_dir, stdin=io.StringIO(""), stdout=stdout, start_watchdog=False)
     assert code == 3
@@ -296,7 +422,7 @@ def test_conclusion_priorities(evaluation_env):
         service.request_evaluation_stop("RC-001", "eval_001", "other")
 
     # 起動失敗
-    service.prepare_evaluation_run("RC-001", "val_v000")
+    service.prepare_evaluation_run("RC-001")
     failed = service.conclude_evaluation_run(
         "RC-001", "eval_002", JobExit(start_failed=True, message="起動できません")
     )
@@ -306,7 +432,7 @@ def test_conclusion_priorities(evaluation_env):
         "起動できません",
     )
     # プロトコルエラー（error.json なし）は failed
-    service.prepare_evaluation_run("RC-001", "val_v000")
+    service.prepare_evaluation_run("RC-001")
     protocol = service.conclude_evaluation_run(
         "RC-001", "eval_003", JobExit(returncode=-1, protocol_error=True, message="欠けたイベント")
     )
@@ -316,7 +442,7 @@ def test_conclusion_priorities(evaluation_env):
         "欠けたイベント",
     )
     # プロセスが生きている間は確定しない
-    run_dir = Path(service.prepare_evaluation_run("RC-001", "val_v000").run_dir)
+    run_dir = Path(service.prepare_evaluation_run("RC-001").run_dir)
     service.record_evaluation_process("RC-001", "eval_004", 4242, 1000.0)
     env.alive[4242] = True
     assert service.conclude_evaluation_run("RC-001", "eval_004").status == "running"
@@ -335,16 +461,12 @@ def test_reevaluation_keeps_previous_and_numbers_per_candidate(evaluation_env):
     before = {
         path.name: path.read_bytes() for path in Path(first.run_dir).rglob("*") if path.is_file()
     }
-    other = env.root / "datasets" / "val_v001"
-    shutil.copytree(env.root / "datasets" / "val_v000", other)
-    info = json.loads((other / "dataset_info.json").read_text("utf-8"))
-    (other / "dataset_info.json").write_text(
-        json.dumps({**info, "dataset_version": "val_v001"}), encoding="utf-8"
-    )
-    second = service.prepare_evaluation_run("RC-001", "val_v001")
-    third = service.prepare_evaluation_run("RC-001", "val_v000")
+    # 別の検証用の版で行った旧評価（履歴）があっても、番号は候補ごとの通し番号
+    history = service.candidates_root / "RC-001" / "evaluations" / "val_v001" / "eval_002"
+    history.mkdir(parents=True)
+    (history / "run_spec.json").write_text("{}", encoding="utf-8")
+    third = service.prepare_evaluation_run("RC-001")
 
-    assert second.run_id == "RC-001/val_v001/eval_002"
     assert third.run_id == "RC-001/val_v000/eval_003"
     after = {
         path.name: path.read_bytes() for path in Path(first.run_dir).rglob("*") if path.is_file()
@@ -352,17 +474,19 @@ def test_reevaluation_keeps_previous_and_numbers_per_candidate(evaluation_env):
     assert after == before
     # 新しい評価が失敗しても、前回の成功した評価が採用される
     service.conclude_evaluation_run("RC-001", "eval_003", JobExit(start_failed=True, message="x"))
-    assert service.get_candidate_evaluation("RC-001", "val_v000").evaluation_id == "eval_001"
+    assert service.get_candidate_evaluation("RC-001").evaluation_id == "eval_001"
+    history_ids = [item.evaluation_id for item in service.list_candidate_evaluations("RC-001")]
+    assert history_ids == ["eval_001", "eval_002", "eval_003"]
     # 別の候補は 1 から数える
     env.add_candidate("RC-002", experiment_id="exp_0002")
-    assert service.prepare_evaluation_run("RC-002", "val_v000").run_id.endswith("eval_001")
+    assert service.prepare_evaluation_run("RC-002").run_id.endswith("eval_001")
 
 
 def test_recovery_concludes_crashed_evaluations_and_cleans_temporaries(evaluation_env):
     env = evaluation_env
     service = env.service
     # 1. プロセスが落ち、status.json がない → stopped/interrupted
-    crashed = Path(service.prepare_evaluation_run("RC-001", "val_v000").run_dir)
+    crashed = Path(service.prepare_evaluation_run("RC-001").run_dir)
     service.record_evaluation_process("RC-001", "eval_001", 1111, 1000.0)
     (crashed / "predictions").mkdir()
     (crashed / "predictions" / "val_a.png.tmp").write_bytes(b"partial")
@@ -370,7 +494,7 @@ def test_recovery_concludes_crashed_evaluations_and_cleans_temporaries(evaluatio
     done, code, _lines = _evaluate(env)
     assert code == 0
     # 3. まだ生きているプロセス → 終了させてから確定する
-    alive = Path(service.prepare_evaluation_run("RC-001", "val_v000").run_dir)
+    alive = Path(service.prepare_evaluation_run("RC-001").run_dir)
     service.record_evaluation_process("RC-001", "eval_003", 3333, 1000.0)
     env.alive[3333] = True
     preparing = crashed.parent / ".preparing_leftover"
@@ -401,7 +525,7 @@ def test_recovery_blocks_when_live_process_cannot_be_terminated(evaluation_env, 
 
     env = evaluation_env
     service = env.service
-    stuck = Path(service.prepare_evaluation_run("RC-001", "val_v000").run_dir)
+    stuck = Path(service.prepare_evaluation_run("RC-001").run_dir)
     service.record_evaluation_process("RC-001", "eval_001", 4444, 1000.0)
     env.alive[4444] = True
     (stuck / "predictions").mkdir()
@@ -431,7 +555,7 @@ def test_evaluation_fails_when_image_changes_after_preflight(evaluation_env):
     from foam_cell_analysis.inference.adapters import build_inference_adapter
 
     env = evaluation_env
-    prepared = env.service.prepare_evaluation_run("RC-001", "val_v000")
+    prepared = env.service.prepare_evaluation_run("RC-001")
 
     def factory(**kwargs):
         adapter = build_inference_adapter(**kwargs)
@@ -454,5 +578,5 @@ def test_prepare_failure_removes_preparing_folder(evaluation_env, monkeypatch):
 
     monkeypatch.setattr("foam_cell_analysis.services.comparison_service.os.replace", fail_replace)
     with pytest.raises(OSError):
-        service.prepare_evaluation_run("RC-001", "val_v000")
+        service.prepare_evaluation_run("RC-001")
     assert not list((service.candidates_root / "RC-001").glob("evaluations/*/.preparing_*"))

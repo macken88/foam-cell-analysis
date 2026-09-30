@@ -133,7 +133,7 @@ def test_tab_tools_inactive_action_reason_and_candidate_release_reason(shell):
 
     shell.navigate(PageId.CANDIDATES)
     comparison_window = shell.manager.window(ModeId.COMPARISON)
-    release = _find_action(_menu(comparison_window, "候補"), "選択候補をリリース…")
+    release = _find_action(_menu(comparison_window, "候補"), "選択候補リリース")
     candidates = shell.page(PageId.CANDIDATES)
     assert not release.isEnabled()
     assert candidates.release_reason.text() == "評価済みの候補を 1 つ選ぶとリリースできます"

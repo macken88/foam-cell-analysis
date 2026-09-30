@@ -61,7 +61,7 @@ pre{background:#111827;color:#f9fafb;padding:18px;border-radius:10px;overflow-x:
     ↓
 複数候補を選択
     ↓
-同一画像でマスク比較
+同一画像で抽出結果を比較
     ↓
 必要に応じて粒子解析用マスク出力
     ↓
@@ -135,12 +135,11 @@ pre{background:#111827;color:#f9fafb;padding:18px;border-radius:10px;overflow-x:
 val_v001
 val_v002
 val_v003</pre>
-<p>学習用データセット側は、基準とする検証用データセットを参照情報として保持する。</p>
+<p>学習用データセットは確定時に、対となる RELEASED 検証用データセットをちょうど 1 つ固定して保持する。学習版を確定する時点で item ID と画像 SHA-256 の重複を検査し、候補作成時は保存済みの組を確認して候補へ同じ検証版を永続化する。</p>
 <pre>Training Dataset : train_v008
 Base Training    : train_v007
 Validation Set   : val_v003</pre>
-<p>学習用データセット確定時には、検証用データセットとの重複をチェックし、検証データの学習混入を防止する。</p>
-<p>加えて、評価の実行時にも、候補の学習に使った画像と検証画像の内容ハッシュを照合する。重複が見つかった評価は比較には使えるが、その評価でリリースすることはできない。</p>
+<p>学習版を確定するときに、同時に作成する検証版または既存の確定済み検証版との item ID と画像 SHA-256 の重複を検査する。検証版を変更しても既存学習版の組は変更しない。旧形式の <code>found</code> 混入記録は履歴として閲覧できるが、新規リリースには使用しない。旧形式の <code>none</code>/<code>unknown</code> は、候補固定版など他の条件を満たせば利用できる。</p>
 </section>
 <section class="card">
 <h2>8. 検証データの保存情報</h2>
@@ -158,14 +157,14 @@ Validation Set   : val_v003</pre>
 </table>
 <div class="note">相対パスは「どこから来たデータか」、ハッシュは「その時点の中身が何だったか」を示す。</div>
 </section>
-<section class="card"><h2>9. 評価指標</h2><p>検証用データセットAPと学習段階で算出したOOF APを並べる。いずれも全体・画像分類別の値と対象件数を保持する。</p><table><thead><tr><th>指標</th><th>全体</th><th>分類A</th><th>分類B</th><th>分類C</th></tr></thead><tbody><tr><td>検証用データセットAP</td><td>...</td><td>...</td><td>...</td><td>...</td></tr><tr><td>検証用対象件数</td><td>233</td><td>120</td><td>18</td><td>95</td></tr><tr><td>OOF AP</td><td>...</td><td>...</td><td>...</td><td>...</td></tr><tr><td>OOF対象件数</td><td>412</td><td>200</td><td>80</td><td>132</td></tr></tbody></table><h3>9.1 外部粒子解析結果</h3><p>粒子径などの解析は外部ソフトウェアで実施し、必要に応じて結果とコメントを比較候補へ手入力する。外部粒子解析結果は補助評価とし、アプリ内では自動算出しない。</p></section>
+<section class="card"><h2>9. 評価指標</h2><p>検証用データセットAPと学習段階で算出したOOF APを並べる。いずれも全体・画像分類別の値と対象件数を保持する。外部粒子解析は候補に固定した検証版の全画像を表にし、円相当径中央値を µm または px で入力する。平均・分類別平均・入力済み/全画像数を画面で更新し、評価 ID に結び付けたスナップショットを追記する。</p><table><thead><tr><th>指標</th><th>全体</th><th>分類A</th><th>分類B</th><th>分類C</th></tr></thead><tbody><tr><td>検証用データセットAP</td><td>...</td><td>...</td><td>...</td><td>...</td></tr><tr><td>検証用対象件数</td><td>233</td><td>120</td><td>18</td><td>95</td></tr><tr><td>OOF AP</td><td>...</td><td>...</td><td>...</td><td>...</td></tr><tr><td>OOF対象件数</td><td>412</td><td>200</td><td>80</td><td>132</td></tr></tbody></table><h3>9.1 外部粒子解析結果</h3><p>旧自由形式の外部解析記録は読み取り専用で保持する。新しい入力は item ID または一意な元ファイル名と数値を受け付ける。曖昧名、重複行、非数値、NaN/Inf、負値は拒否し、空欄は入力値の削除として扱う。</p></section>
 <section class="card">
-<h2>10. マスク比較</h2>
+<h2>10. 抽出結果比較</h2>
 <ul>
 <li>候補一覧から複数候補を選択して比較画面を開く。</li>
 <li>同一画像に対する各候補の結果を横並び表示する。</li>
 <li>画像分類による絞り込みを可能にする。</li>
-<li>表示形式をオーバーレイ / インスタンスラベル / 粒子解析用二値マスクから切り替える。</li>
+<li>表示形式をオーバーレイ / インスタンスラベル / 粒子解析用の白黒画像から切り替える。</li>
 <li>ズーム・パンを候補間で同期する。</li>
 </ul>
 </section>
@@ -201,29 +200,30 @@ Type C → model_007</pre>
 <div class="title">モデル比較・リリース</div>
 <div class="body">
 <table>
-<thead><tr><th>選択</th><th>候補識別子</th><th>モデル</th><th>実験</th><th>最終学習モデル</th><th>検証AP</th><th>OOF AP</th><th>状態</th></tr></thead>
+<thead><tr><th>選択</th><th>候補ID</th><th>モデル</th><th>実験</th><th>学習モデル</th><th>推論設定</th><th>検証版</th><th>検証 AP</th><th>OOF AP</th><th>状態</th><th>外部解析</th><th>コメント</th></tr></thead>
 <tbody>
-<tr><td>☑</td><td>RC-001</td><td>Mask R-CNN</td><td>exp_0042</td><td>final.pt</td><td>0.91</td><td>0.89</td><td>0.87</td><td>候補</td></tr>
-<tr><td>☑</td><td>RC-002</td><td>Cellpose</td><td>exp_0051</td><td>final.pt</td><td>0.89</td><td>0.87</td><td>候補</td></tr>
-<tr><td>☐</td><td>RC-003</td><td>Mask R-CNN</td><td>exp_0060</td><td>final.pt</td><td>未評価</td><td>0.91</td><td>候補</td></tr>
+<tr><td>☑</td><td>RC-001</td><td>Mask R-CNN</td><td>exp_0042</td><td>試行 1 / final.pt</td><td>変更あり</td><td>val_v003</td><td>0.91</td><td>対象外</td><td>記録なし</td><td>候補</td><td>—</td></tr>
+<tr><td>☑</td><td>RC-002</td><td>Cellpose</td><td>exp_0051</td><td>試行 1 / final.pt</td><td>学習時と同じ</td><td>val_v003</td><td>0.89</td><td>0.87</td><td>候補</td><td>記録なし</td><td>—</td></tr>
+<tr><td>☐</td><td>RC-003</td><td>Mask R-CNN</td><td>exp_0060</td><td>試行 1 / final.pt</td><td>確認できません</td><td>val_v003</td><td>未評価</td><td>対象外</td><td>候補</td><td>旧記録あり</td><td>—</td></tr>
 </tbody>
 </table>
 <div class="btns">
-<span class="btn">候補を追加</span><span class="btn">詳細評価を見る</span><span class="btn">マスク比較</span><span class="btn primary">選択候補をリリース</span>
+<span class="btn">候補追加</span><span class="btn">設定を変えて候補追加</span><span class="btn primary">評価実行</span><span class="btn">検証版: すべて</span><span class="btn">状態: すべて</span>
 </div>
+<div class="btns"><span class="btn">評価詳細</span><span class="btn">抽出結果比較</span><span class="btn">抽出結果出力</span><span class="btn primary">選択候補リリース</span></div>
 </div>
 </div>
 </section>
 <section class="card">
-<h2>14. 画面モック：マスク比較</h2>
+<h2>14. 画面モック：抽出結果比較</h2>
 <div class="mock">
-<div class="title">マスク比較</div>
+<div class="title">抽出結果比較</div>
 <div class="body">
 <div class="section">
 <div class="row"><div>検証データセット</div><div class="input">val_v003</div></div>
 <div class="row"><div>画像分類</div><div class="input">分類A</div></div>
 <div class="row"><div>対象画像</div><div class="input">IMG-000123</div></div>
-<div class="row"><div>表示形式</div><div class="input">オーバーレイ / インスタンスラベル / 粒子解析用二値マスク</div></div>
+<div class="row"><div>表示形式</div><div class="input">オーバーレイ / インスタンスラベル / 粒子解析用の白黒画像</div></div>
 </div>
 <div class="preview">
 <div><strong>原画像</strong><div class="box">原画像</div></div>
@@ -256,7 +256,8 @@ Type C → model_007</pre>
 </section>
 <section class="card">
 <h2>16. 設計原則まとめ</h2>
-<ol><li>比較候補は完了済み実験のfinal.ptと推論設定の組み合わせで作る。</li><li>複数候補を選択し、同一画像上でマスクを比較する。</li><li>本アプリ内の後処理は隣接気泡の分離のみとし、通常のモデル設定には含めない。</li><li>検証用データセットAPと学習段階で算出済みのOOF APを併記する。</li><li>評価は全体、画像分類別、件数を基本とする。</li><li>外部粒子解析結果は必要に応じて手入力する。</li><li>検証用データセットは学習用データセットとは別に版管理する。</li><li>学習用データセットと検証用データセットの重複混入を確認する。重複が確認された評価ではリリースできない。</li><li>正式採用時はリリース済みモデルとして固定し、後から上書きしない。</li><li>画像分類はデータ側の共通メタデータとして扱い、本番モデルの割り当てはモデル振り分けで管理する。</li></ol>
+<ol><li>比較候補は完了済み実験のfinal.ptと推論設定の組み合わせで作る。</li><li>複数候補を選択し、同一画像上で抽出結果を比較する。</li><li>本アプリ内の後処理は隣接気泡の分離のみとし、通常のモデル設定には含めない。</li><li>検証用データセットAPと学習段階で算出済みのOOF APを併記する。</li><li>評価は全体、画像分類別、件数を基本とする。</li><li>外部粒子解析結果は必要に応じて手入力する。</li><li>検証用データセットは学習用データセットとは別に版管理する。</li><li>学習用データセットを確定する時に検証版との重複を確認する。</li><li>正式採用時はリリース済みモデルとして固定し、後から上書きしない。</li><li>画像分類はデータ側の共通メタデータとして扱い、本番モデルの割り当てはモデル振り分けで管理する。</li></ol>
 </section>
 <section class="card"><h2>17. 検証用APとOOF AP</h2><p>比較候補は完了済み実験の指定した試行のfinal.ptと推論設定の組み合わせに限る。候補作成時に、その試行の選択エポックにおける学習時のOOF評価と、その評価条件（学習時の評価パラメータ）を固定して保持する。</p><p>候補の実効推論条件が学習時の評価条件と一致する場合に限り、候補一覧のOOF APとして表示する。一致しない場合は「対象外（推論設定が学習時と異なる）」、判定に必要な記録がない場合は「条件を確認できません」と表示する。学習時のOOF評価は、候補詳細とリリース記録に参考値として保持する。保存済みのOOF予測（閾値適用済みのラベル画像）から、推論設定を変えたOOF評価を再計算することはしない。fold モデルによる再推論は今回の対象外とする。OOF AP は fold モデル群の評価であり、final.pt 自身の評価ではない。</p><p>検証用APは「評価を実行」で算出する。再評価しても過去の評価結果は残し、比較・出力・リリースでは使う評価を明示して固定する。外部粒子解析結果は、どの評価に対するものかを付けて手入力する。</p><p>候補詳細・リリースには検証用データセット名、採用した評価、OOFの実験ID・試行・選択エポック、全体・画像分類別のAPと対象件数を保存する。正式リリース済みモデルにも両方の評価を引き継ぐ。</p></section>
-</div></body></html>
+</div><section class="card" id="comparison-2026-09-30"><h2>18. 2026-09-30 承認方針</h2><p>学習データセットは確定時にちょうど1つの RELEASED 検証版を記録し、候補はその組を固定して保持する。候補一覧の検証版選択は絞り込み専用で、評価先は候補ごとの固定版とする。評価・新規リリースは保存済みの組と評価版を照合する。画像の再読込や重複検査を評価ごとに繰り返さない。旧候補は元学習版を確認してから固定値を補完し、確認不能なら理由付きで評価・新規リリースを止める。</p><p>旧 schema 1 の <code>found</code> 評価は履歴閲覧に残すが、新規リリースには使用しない。schema 1 の <code>none</code>/<code>unknown</code> は候補固定版など他の条件を満たせば利用できる。旧形式 run_spec/result/preflight は読み取り互換を保ち、新 schema 2 では混入検査項目を出力しない。公開済みリリースは起動復旧時に元評価を維持し、新しいリリースを作らない。</p><p>候補一覧は検証版と状態で絞り込み、検証版を1つに絞った場合だけ検証 AP の最高値を強調する。抽出結果比較は同一検証版で評価済みの2〜4候補に限る。外部解析は画像ごとの円相当径中央値を µm または px で入力し、入力済み画像の平均と分類別平均を評価 ID とともに保存する。</p></section>
+</body></html>

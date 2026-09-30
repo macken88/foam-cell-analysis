@@ -23,8 +23,14 @@ from foam_cell_analysis.jobs.protocol import (
     validate_hello,
 )
 
-SCHEMA = 1
-RUN_SPEC_FIELDS = frozenset(
+# 評価記録（run_spec.json・result.json）の形式。run_spec の schema で見分け、
+# 同じ評価の result.json とイベントも同じ形式でなければならない（比較・評価設計 4.2）。
+# 1: 旧形式。毎回の学習混入の検査の項目（contamination_source・contamination）を持つ。
+# 2: 現行。学習混入の項目を持たず、候補に固定した学習用・検証用の版の組（dataset_pair）を持つ。
+LEGACY_SCHEMA = 1
+SCHEMA = 2
+SCHEMAS = (LEGACY_SCHEMA, SCHEMA)
+_RUN_SPEC_COMMON = frozenset(
     {
         "schema",
         "protocol",
@@ -37,7 +43,6 @@ RUN_SPEC_FIELDS = frozenset(
         "preprocessing",
         "effective_params",
         "validation",
-        "contamination_source",
         "metric",
         "device_request",
         "app_version",
@@ -45,11 +50,18 @@ RUN_SPEC_FIELDS = frozenset(
         "input_fingerprint",
     }
 )
+RUN_SPEC_FIELDS: dict[int, frozenset[str]] = {
+    LEGACY_SCHEMA: _RUN_SPEC_COMMON | {"contamination_source"},
+    SCHEMA: _RUN_SPEC_COMMON | {"dataset_pair"},
+}
+# 形式ごとに、持っていてはいけない項目（旧形式の項目が新形式に混ざった記録は壊れた記録）
+_RUN_SPEC_FORBIDDEN: dict[int, frozenset[str]] = {
+    LEGACY_SCHEMA: frozenset({"dataset_pair"}),
+    SCHEMA: frozenset({"contamination_source"}),
+}
 EVENT_FIELDS: dict[str, frozenset[str]] = {
     "started": frozenset({"device", "versions", "version_mismatches"}),
-    "preflight": frozenset(
-        {"n_images", "per_class_counts", "contamination", "required_bytes", "free_bytes"}
-    ),
+    "preflight": frozenset({"n_images", "per_class_counts", "required_bytes", "free_bytes"}),
     "image_done": frozenset({"item_id", "completed", "total"}),
     "warning": frozenset({"message"}),
     "error": frozenset({"phase", "message"}),
@@ -127,12 +139,18 @@ def validate_run_spec(spec: dict[str, Any], run_dir: str | Path | None = None) -
     """評価の run_spec.json（4.2）を検証する。不正なら ValueError。
 
     run_dir を渡すと、フォルダの位置（candidates/<候補>/evaluations/<版>/<評価>）も照合する。
+    旧形式（schema 1）も検証できるが、新しく作るのは現行形式（schema 2）だけ。
     """
-    if not isinstance(spec, dict) or not RUN_SPEC_FIELDS.issubset(spec):
-        missing = sorted(RUN_SPEC_FIELDS - set(spec or {}))
-        raise ValueError("run_spec の必須項目がありません: " + ", ".join(missing))
-    if type(spec["schema"]) is not int or spec["schema"] != SCHEMA:
+    schema = spec.get("schema") if isinstance(spec, dict) else None
+    if type(schema) is not int or schema not in SCHEMAS:
         raise ValueError("run_spec の schema が不正です")
+    required = RUN_SPEC_FIELDS[schema]
+    if not required.issubset(spec):
+        missing = sorted(required - set(spec))
+        raise ValueError("run_spec の必須項目がありません: " + ", ".join(missing))
+    extra = sorted(_RUN_SPEC_FORBIDDEN[schema] & set(spec))
+    if extra:
+        raise ValueError("run_spec の形式に合わない項目があります: " + ", ".join(extra))
     if type(spec["protocol"]) is not int or spec["protocol"] != PROTOCOL_VERSION:
         raise ValueError("run_spec の protocol が不正です")
     candidate_id, version, evaluation_id = parse_run_id(spec["run_id"])
@@ -182,21 +200,19 @@ def validate_run_spec(spec: dict[str, Any], run_dir: str | Path | None = None) -
         or len({item_id.casefold() for item_id in item_ids}) != len(item_ids)
     ):
         raise ValueError("run_spec の validation.item_ids が空または不正です")
-    source = spec["contamination_source"]
-    if not isinstance(source, dict):
-        raise ValueError("run_spec の contamination_source が不正です")
-    used = source.get("used_item_ids")
-    if used is not None and (
-        not isinstance(used, list) or not all(isinstance(item, str) for item in used)
-    ):
-        raise ValueError("contamination_source.used_item_ids が不正です")
-    dataset_version = source.get("dataset_version")
-    if dataset_version is not None and (
-        not isinstance(dataset_version, str)
-        or _VERSION.fullmatch(dataset_version) is None
-        or dataset_version in {".", ".."}
-    ):
-        raise ValueError("contamination_source.dataset_version が不正です")
+    if schema == LEGACY_SCHEMA:
+        _validate_contamination_source(spec["contamination_source"])
+    else:
+        pair = spec["dataset_pair"]
+        training_version = pair.get("training_version") if isinstance(pair, dict) else None
+        if (
+            not isinstance(pair, dict)
+            or pair.get("validation_version") != version
+            or not isinstance(training_version, str)
+            or _VERSION.fullmatch(training_version) is None
+            or training_version in {".", ".."}
+        ):
+            raise ValueError("run_spec の dataset_pair が不正です")
     metric = spec["metric"]
     if not isinstance(metric, dict) or not {
         "id",
@@ -220,6 +236,24 @@ def validate_run_spec(spec: dict[str, Any], run_dir: str | Path | None = None) -
             raise ValueError("run_spec と評価フォルダの位置が一致しません")
 
 
+def _validate_contamination_source(source: Any) -> None:
+    """旧形式（schema 1）の run_spec にある contamination_source の形を確かめる。"""
+    if not isinstance(source, dict):
+        raise ValueError("run_spec の contamination_source が不正です")
+    used = source.get("used_item_ids")
+    if used is not None and (
+        not isinstance(used, list) or not all(isinstance(item, str) for item in used)
+    ):
+        raise ValueError("contamination_source.used_item_ids が不正です")
+    dataset_version = source.get("dataset_version")
+    if dataset_version is not None and (
+        not isinstance(dataset_version, str)
+        or _VERSION.fullmatch(dataset_version) is None
+        or dataset_version in {".", ".."}
+    ):
+        raise ValueError("contamination_source.dataset_version が不正です")
+
+
 def workspace_of(run_dir: str | Path) -> Path:
     """評価フォルダから workspace を返す。
 
@@ -234,8 +268,14 @@ def workspace_of(run_dir: str | Path) -> Path:
 # ---- イベント ----
 
 
-def validate_event(event: dict[str, Any], *, allow_hello: bool = True) -> None:
-    """評価イベントの外形と型別の必須項目を検証する。不正なら ValueError。"""
+def validate_event(event: dict[str, Any], *, schema: int, allow_hello: bool = True) -> None:
+    """評価イベントの外形と型別の必須項目を検証する。不正なら ValueError。
+
+    schema は評価の run_spec の形式。preflight の contamination は旧形式（1）では必須、
+    現行形式（2）では持ってはいけない。
+    """
+    if schema not in SCHEMAS:
+        raise ValueError(f"評価の形式が不正です: {schema}")
     kind = event.get("type") if isinstance(event, dict) else None
     if kind == "hello" and allow_hello:
         validate_hello(event)
@@ -243,9 +283,14 @@ def validate_event(event: dict[str, Any], *, allow_hello: bool = True) -> None:
     validate_envelope(event)
     if kind not in EVENT_FIELDS:
         raise ValueError(f"未対応の評価イベントです: {kind}")
-    missing = EVENT_FIELDS[kind] - event.keys()
+    required = EVENT_FIELDS[kind]
+    if kind == "preflight" and schema == LEGACY_SCHEMA:
+        required = required | {"contamination"}
+    missing = required - event.keys()
     if missing:
         raise ValueError(f"評価イベントの必須項目がありません: {', '.join(sorted(missing))}")
+    if kind == "preflight" and schema == SCHEMA and "contamination" in event:
+        raise ValueError("評価イベントの形式に合わない項目があります: contamination")
     if kind == "image_done":
         completed, total = event["completed"], event["total"]
         if (
@@ -257,18 +302,20 @@ def validate_event(event: dict[str, Any], *, allow_hello: bool = True) -> None:
             raise ValueError("image_done の completed・total・item_id が不正です")
 
 
-def read_events(path: str | Path, *, expected_run_id: str | None = None) -> list[dict[str, Any]]:
+def read_events(
+    path: str | Path, *, schema: int, expected_run_id: str | None = None
+) -> list[dict[str, Any]]:
     """評価の events.jsonl を読む（切れた最終行は無視、seq の重複・欠落は ValueError）。"""
     return read_jsonl_events(
         path,
-        validate=lambda event: validate_event(event, allow_hello=False),
+        validate=lambda event: validate_event(event, schema=schema, allow_hello=False),
         expected_run_id=expected_run_id,
     )
 
 
-def append_event(path: str | Path, event: dict[str, Any]) -> None:
+def append_event(path: str | Path, event: dict[str, Any], *, schema: int) -> None:
     """検証済みの評価イベントを追記して flush する。"""
-    validate_event(event, allow_hello=False)
+    validate_event(event, schema=schema, allow_hello=False)
     append_jsonl(path, event)
 
 
@@ -305,7 +352,6 @@ def build_result(
     overall: dict[str, Any],
     per_class: dict[str, dict[str, Any]],
     pooled_ap: float | None,
-    contamination: dict[str, Any],
     predictions: dict[str, dict[str, Any]],
     per_image_csv: dict[str, Any],
     eval_counts: dict[str, Any],
@@ -314,9 +360,12 @@ def build_result(
     completed_at: str,
     versions: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """評価の result.json（4.2 の完成 manifest）を組み立てる。"""
-    if contamination.get("status") not in CONTAMINATION_STATUSES:
-        raise ValueError(f"学習混入の検査結果が不正です: {contamination.get('status')}")
+    """評価の result.json（4.2 の完成 manifest）を現行形式（schema 2）で組み立てる。
+
+    学習混入の項目は持たない（学習混入はデータ準備で学習用の版を確定するときに検査する）。
+    """
+    if spec.get("schema") != SCHEMA:
+        raise ValueError("旧形式の評価仕様からは結果を作れません")
     missing = [item_id for item_id in spec["validation"]["item_ids"] if item_id not in predictions]
     if missing:
         raise ValueError(f"予測がない評価対象があります: {missing[:5]}")
@@ -334,11 +383,6 @@ def build_result(
         },
         "pooled_ap": pooled_ap,
         "metric": dict(spec["metric"]),
-        "contamination": {
-            "status": contamination["status"],
-            "pairs": list(contamination.get("pairs") or []),
-            "reason": contamination.get("reason"),
-        },
         "predictions": predictions,
         "per_image_csv": per_image_csv,
         "eval_counts": eval_counts,

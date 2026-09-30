@@ -22,7 +22,7 @@ def test_real_process_evaluation_completes(qtbot, evaluation_env):
     runner.progressed.connect(progressed.append)
 
     with qtbot.waitSignal(runner.ended, timeout=30_000) as signal:
-        runner.start(["RC-001"], "val_v000")
+        runner.start(["RC-001"])
         assert runner.is_evaluation_active("RC-001")
 
     outcome = signal.args[0]
@@ -47,7 +47,7 @@ class StubBackend:
         self.fail_conclude = False
         self.fail_prepare: set[str] = set()
 
-    def prepare_evaluation_run(self, candidate_id, version):
+    def prepare_evaluation_run(self, candidate_id):
         self.calls.append(("prepare", candidate_id))
         if candidate_id in self.fail_prepare:
             raise ValueError("準備できません")
@@ -56,7 +56,7 @@ class StubBackend:
         run_dir = self.tmp_path / candidate_id / f"eval_{number:03d}"
         run_dir.mkdir(parents=True)
         return PreparedRun(
-            f"{candidate_id}/{version}/eval_{number:03d}", str(run_dir), "", [], {}, fake=True
+            f"{candidate_id}/val_v000/eval_{number:03d}", str(run_dir), "", [], {}, fake=True
         )
 
     def apply_evaluation_event(self, candidate_id, evaluation_id, event):
@@ -87,7 +87,7 @@ def test_evaluation_waits_while_training_holds_compute(qtbot, stub):
     backend, compute, runner, outcomes = stub
     training = compute.request("training", "学習 exp_0001", lambda: None)
 
-    runner.start(["RC-001"], "val_v000")
+    runner.start(["RC-001"])
 
     assert runner.waiting_for_compute and runner.is_busy
     assert runner.is_evaluation_active("RC-001")
@@ -105,7 +105,7 @@ def test_evaluation_waits_while_training_holds_compute(qtbot, stub):
 def test_each_candidate_takes_its_own_ticket_and_training_cuts_in(qtbot, stub):
     backend, compute, runner, outcomes = stub
     started = []
-    runner.start(["RC-001", "RC-002"], "val_v000")
+    runner.start(["RC-001", "RC-002"])
     assert compute.active_owner == "evaluation"
     assert runner.is_evaluation_active("RC-002") and runner.queued_candidate_ids == ["RC-002"]
     # 1 件目の評価中に来た学習は、2 件目より先に入る
@@ -125,7 +125,7 @@ def test_each_candidate_takes_its_own_ticket_and_training_cuts_in(qtbot, stub):
 def test_prepare_failure_moves_to_next_candidate(qtbot, stub):
     backend, compute, runner, outcomes = stub
     backend.fail_prepare = {"RC-001"}
-    runner.start(["RC-001", "RC-002"], "val_v000")
+    runner.start(["RC-001", "RC-002"])
     qtbot.waitUntil(lambda: len(outcomes) == 2, timeout=5000)
     assert (outcomes[0].status, outcomes[0].reason) == ("failed", "prepare_failed")
     assert outcomes[0].evaluation_id is None
@@ -136,7 +136,7 @@ def test_prepare_failure_moves_to_next_candidate(qtbot, stub):
 def test_failed_terminal_save_blocks_next_until_evaluation_start(qtbot, stub):
     backend, compute, runner, outcomes = stub
     backend.fail_conclude = True
-    runner.start(["RC-001", "RC-002"], "val_v000")
+    runner.start(["RC-001", "RC-002"])
     qtbot.waitUntil(lambda: len(outcomes) == 2, timeout=5000)
 
     assert (outcomes[0].status, outcomes[0].reason) == ("failed", "conclusion_failed")
@@ -148,14 +148,14 @@ def test_failed_terminal_save_blocks_next_until_evaluation_start(qtbot, stub):
 
     # 評価側の解除は評価の開始操作で行う（先に待っていた学習から始まる）
     backend.fail_conclude = False
-    runner.start(["RC-003"], "val_v000")
+    runner.start(["RC-003"])
     assert not compute.is_blocked and started == ["training"]
     assert runner.waiting_for_compute
 
 
 def test_request_stop_writes_stop_before_kill_and_cancels_waiting(qtbot, stub):
     backend, compute, runner, outcomes = stub
-    runner.start(["RC-001", "RC-002"], "val_v000")
+    runner.start(["RC-001", "RC-002"])
     assert runner.job is not None
 
     assert runner.request_stop("user_stop", timeout_ms=5000)
@@ -174,7 +174,7 @@ def test_request_stop_writes_stop_before_kill_and_cancels_waiting(qtbot, stub):
 def test_request_stop_while_waiting_cancels_ticket(qtbot, stub):
     backend, compute, runner, outcomes = stub
     training = compute.request("training", "学習 exp_0001", lambda: None)
-    runner.start(["RC-001"], "val_v000")
+    runner.start(["RC-001"])
     assert runner.request_stop()
     assert outcomes[0].reason == "cancelled"
     assert compute.waiting == []
@@ -184,7 +184,7 @@ def test_request_stop_while_waiting_cancels_ticket(qtbot, stub):
 
 def test_shutdown_requests_app_exit(qtbot, stub):
     backend, compute, runner, outcomes = stub
-    runner.start(["RC-001"], "val_v000")
+    runner.start(["RC-001"])
     assert runner.shutdown()
     assert ("stop", "RC-001", "app_exit") in backend.calls
     assert outcomes and not runner.is_busy

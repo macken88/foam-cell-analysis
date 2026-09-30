@@ -213,7 +213,7 @@ class DisplayToggle(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         self.raw_button = QPushButton("原画像")
-        self.alternate_button = QPushButton(preference.value)
+        self.alternate_button = QPushButton(self._display_name(preference.value))
         for button in (self.raw_button, self.alternate_button):
             button.setCheckable(True)
             set_style(button, role="segment")
@@ -246,4 +246,9 @@ class DisplayToggle(QWidget):
 
     def _preference_changed(self, name: str) -> None:
         """共有設定の変更をボタン名へ反映する。"""
-        self.alternate_button.setText(name)
+        self.alternate_button.setText(self._display_name(name))
+
+    @staticmethod
+    def _display_name(name: str) -> str:
+        """内部設定値を保ったまま、利用者向け表示名を返す。"""
+        return "二値抽出結果" if name == "二値マスク" else name

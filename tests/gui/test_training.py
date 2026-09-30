@@ -112,8 +112,8 @@ def test_qtest_training_click_finishes_cv_and_final_model(shell, qapp, monkeypat
         for row in range(candidates.table.rowCount())
         if candidates.table.item(row, 1).text() == candidate.candidate_id
     )
-    assert candidates.table.horizontalHeaderItem(6).text() == "検証 AP"
-    assert candidates.table.horizontalHeaderItem(7).text() == "OOF AP"
+    assert candidates.table.horizontalHeaderItem(7).text() == "検証 AP"
+    assert candidates.table.horizontalHeaderItem(8).text() == "OOF AP"
     assert candidates.table.item(candidate_row, 7).text() != "—"
 
 

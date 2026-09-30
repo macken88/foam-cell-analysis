@@ -16,7 +16,14 @@ def _workspace(root):
     folder = root / "datasets" / "train_v000"
     folder.mkdir(parents=True)
     (folder / "dataset_info.json").write_text(
-        json.dumps({"purpose": "train", "status": "RELEASED", "dataset_version": "train_v000"}),
+        json.dumps(
+            {
+                "purpose": "train",
+                "status": "RELEASED",
+                "dataset_version": "train_v000",
+                "base_validation_version": "val_v000",
+            }
+        ),
         encoding="utf-8",
     )
     metadata_fields = [
@@ -41,6 +48,37 @@ def _workspace(root):
                     "classification": "A" if group % 2 else "B",
                     "quality": "良",
                     "mask_revision": "r1",
+                }
+            )
+    validation = root / "datasets" / "val_v000"
+    validation.mkdir()
+    (validation / "dataset_info.json").write_text(
+        json.dumps({"purpose": "val", "status": "RELEASED", "dataset_version": "val_v000"}),
+        encoding="utf-8",
+    )
+    with (validation / "metadata.csv").open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(
+            stream, fieldnames=["item_id", "source_relpath", "channel", "classification"]
+        )
+        writer.writeheader()
+        for index in range(2):
+            writer.writerow(
+                {
+                    "item_id": f"val_v000_{index}",
+                    "source_relpath": f"val/{index}.png",
+                    "channel": "A",
+                    "classification": "A",
+                }
+            )
+    with (validation / "manifest.csv").open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=["item_id", "image_path", "image_sha256"])
+        writer.writeheader()
+        for index in range(2):
+            writer.writerow(
+                {
+                    "item_id": f"val_v000_{index}",
+                    "image_path": f"images/{index}.png",
+                    "image_sha256": f"{index + 1:064x}",
                 }
             )
     with (folder / "manifest.csv").open("w", encoding="utf-8", newline="") as stream:

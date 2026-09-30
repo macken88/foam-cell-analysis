@@ -47,9 +47,57 @@ def _workspace(
     (dataset / "images").mkdir(parents=True)
     (dataset / "masks").mkdir()
     (dataset / "dataset_info.json").write_text(
-        json.dumps({"purpose": "train", "status": "RELEASED", "dataset_version": "train_v000"}),
+        json.dumps(
+            {
+                "purpose": "train",
+                "status": "RELEASED",
+                "dataset_version": "train_v000",
+                "base_validation_version": "val_v000",
+            }
+        ),
         encoding="utf-8",
     )
+    validation = root / "datasets" / "val_v000"
+    validation.mkdir()
+    (validation / "dataset_info.json").write_text(
+        json.dumps({"purpose": "val", "status": "RELEASED", "dataset_version": "val_v000"}),
+        encoding="utf-8",
+    )
+    for filename, rows in (
+        (
+            "metadata.csv",
+            [
+                {
+                    "item_id": f"val_v000_{index}",
+                    "source_relpath": f"val/{index}.png",
+                    "channel": "A",
+                    "usage": "val",
+                    "classification": "A",
+                    "quality": "良",
+                    "mask_revision": "r1",
+                }
+                for index in range(2)
+            ],
+        ),
+        (
+            "manifest.csv",
+            [
+                {
+                    "item_id": f"val_v000_{index}",
+                    "image_path": f"images/val_{index}.png",
+                    "image_sha256": f"{index + 1:064x}",
+                    "mask_path": f"masks/val_{index}.png",
+                    "mask_sha256": f"{index + 101:064x}",
+                    "mask_revision": "r1",
+                }
+                for index in range(2)
+            ],
+        ),
+    ):
+        with (validation / filename).open("w", encoding="utf-8", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
+            writer.writeheader()
+            writer.writerows(rows)
     metadata_rows = []
     manifest_rows = []
     item_ids = [f"item_{index}" for index in range(n_items)]

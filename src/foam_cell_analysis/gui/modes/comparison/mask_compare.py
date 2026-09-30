@@ -1,4 +1,4 @@
-"""複数候補のマスクを同期表示する画面。"""
+"""複数候補の抽出結果を同期表示する画面。"""
 
 import logging
 from collections import OrderedDict
@@ -34,7 +34,7 @@ _PIXMAP_CACHE_SIZE = 48
 
 
 def comparison_block_reason(backend, validation_version: str | None, candidate_ids) -> str:
-    """マスク比較を開けない理由を返す。開けるときは空文字（比較・評価設計 11 章）。"""
+    """抽出結果比較を開けない理由を返す。開けるときは空文字（比較・評価設計 11 章）。"""
     if not candidate_ids:
         return NO_CANDIDATES_TEXT
     if not validation_version:
@@ -60,7 +60,7 @@ class MaskComparisonPage(BasePage):
     def __init__(self, ctx, parent=None, *, show_heading: bool = True) -> None:
         super().__init__(
             ctx,
-            "マスク比較",
+            "抽出結果比較",
             "候補モデルの予測結果を比較します。",
             parent,
             show_heading=show_heading,
@@ -146,16 +146,42 @@ class MaskComparisonPage(BasePage):
 
     def on_enter(self, params: dict) -> None:
         """候補ごとに採用する評価を固定してから画面を組み立てる。"""
-        self.validation = params.get("validation_version") or self._default_validation()
+        self.candidate_ids = list(params.get("candidate_ids", []))
+        supplied_version = params.get("validation_version")
+        if supplied_version:
+            self.validation = supplied_version
+        elif self.candidate_ids:
+            versions = {
+                self.ctx.backend.get_candidate(candidate_id).validation_version
+                for candidate_id in self.candidate_ids
+            }
+            self.validation = (
+                next(iter(versions)) if len(versions) == 1 else self._default_validation()
+            )
+        else:
+            self.validation = self._default_validation()
         self.validation_label.setText(f"検証用データセット: {self.validation or '—'}")
-        self.candidate_ids = list(params.get("candidate_ids", []))[:4]
         self._image_cache.clear()
         self._pixmap_cache.clear()
         self._render_signature = None
         self.index = 0
-        self.block_reason = comparison_block_reason(
-            self.ctx.backend, self.validation, self.candidate_ids
-        )
+        if not self.candidate_ids:
+            self.block_reason = NO_CANDIDATES_TEXT
+        elif not 2 <= len(self.candidate_ids) <= 4:
+            self.block_reason = (
+                "比較する候補を 2〜4 件選んでください。候補一覧へ戻って選び直してください"
+            )
+        else:
+            versions = {
+                self.ctx.backend.get_candidate(candidate_id).validation_version
+                for candidate_id in self.candidate_ids
+            }
+            if len(versions) != 1 or self.validation not in versions:
+                self.block_reason = "同じ検証用データセットで評価済みの候補を選んでください"
+            else:
+                self.block_reason = comparison_block_reason(
+                    self.ctx.backend, self.validation, self.candidate_ids
+                )
         self.evaluation_ids = {}
         if not self.block_reason:
             for candidate_id in self.candidate_ids:
@@ -165,7 +191,7 @@ class MaskComparisonPage(BasePage):
             self.candidate_ids = []
             text = self.block_reason
             if text != NO_CANDIDATES_TEXT:
-                text = f"マスク比較を開けません。\n{text}"
+                text = f"抽出結果比較を開けません。\n{text}"
             self.placeholder.setText(text)
         self.placeholder.setVisible(bool(self.block_reason))
         self._model_names = {
@@ -181,7 +207,8 @@ class MaskComparisonPage(BasePage):
 
     def _default_validation(self) -> str | None:
         try:
-            return self.ctx.backend.default_validation_version()
+            versions = self.ctx.backend.list_validation_versions()
+            return versions[-1].version if versions else None
         except (KeyError, ValueError, OSError):
             logger.exception("既定の検証用データセットを決められません")
             return None
@@ -418,7 +445,7 @@ class MaskComparisonPage(BasePage):
         return {
             "オーバーレイ": DisplayMode.OVERLAY,
             "インスタンスラベル": DisplayMode.INSTANCE_LABEL,
-            "二値マスク": DisplayMode.BINARY,
+            "二値抽出結果": DisplayMode.BINARY,
         }[self.ctx.display.value]
 
     def _toggle_display(self, _alternate: bool) -> None:

@@ -32,7 +32,9 @@ def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _dataset(root, version, purpose, classifications, base_validation_version=None):
+def _dataset(
+    root, version, purpose, classifications, base_validation_version=None, *, hash_offset=0
+):
     folder = root / "datasets" / version
     folder.mkdir(parents=True)
     info = {"purpose": purpose, "status": "RELEASED", "dataset_version": version}
@@ -48,7 +50,7 @@ def _dataset(root, version, purpose, classifications, base_validation_version=No
         writer = csv.writer(stream)
         writer.writerow(["item_id", "image_path", "image_sha256", "mask_path"])
         for index in range(len(classifications)):
-            writer.writerow([f"{version}_{index}", "i.png", f"{index:064x}", "m.png"])
+            writer.writerow([f"{version}_{index}", "i.png", f"{index + hash_offset:064x}", "m.png"])
 
 
 class FakeTraining:
@@ -115,16 +117,18 @@ def _write_evaluation(
     *,
     version="val_v000",
     status="completed",
-    contamination="none",
+    contamination=None,
     input_fingerprint=None,
 ):
+    """評価フォルダを直接書く。contamination を渡すと旧形式（schema 1）の評価になる。"""
+    schema = 2 if contamination is None else 1
     run_dir = service.candidates_root / candidate_id / "evaluations" / version / evaluation_id
     (run_dir / "predictions").mkdir(parents=True)
     item_ids = [item.item_id for item in service.dataset_store.select_evaluation_items(version)]
     fingerprint = input_fingerprint or service.evaluation_input_fingerprint(candidate_id, version)
     run_id = f"{candidate_id}/{version}/{evaluation_id}"
     spec = {
-        "schema": 1,
+        "schema": schema,
         "run_id": run_id,
         "candidate_id": candidate_id,
         "evaluation_id": evaluation_id,
@@ -161,7 +165,7 @@ def _write_evaluation(
         )
     }
     result = {
-        "schema": 1,
+        "schema": schema,
         "run_id": run_id,
         "evaluation_id": evaluation_id,
         "validation_version": version,
@@ -172,11 +176,12 @@ def _write_evaluation(
             "分類C": {"ap": None, "n_images": 0},
         },
         "metric": {"id": "cellpose_ap_iou50_95_image_mean_v1"},
-        "contamination": {"status": contamination, "pairs": []},
         "predictions": predictions,
         **artifacts,
         "completed_at": "2026-09-29T10:00:00+09:00",
     }
+    if contamination is not None:
+        result["contamination"] = {"status": contamination, "pairs": []}
     if status == "completed":
         (run_dir / "result.json").write_text(json.dumps(result), encoding="utf-8")
     (run_dir / "status.json").write_text(json.dumps({"status": status}), encoding="utf-8")
@@ -325,17 +330,21 @@ def test_release_copies_weights_independently(env):
     service, training = env
     cid = service.add_candidate("exp_0001", 1, _default_config(service).config_id).candidate_id
     _write_evaluation(service, cid, "eval_001")
-    service.save_external_results(
-        cid, "eval_001", [{"name": "平均粒子径", "value": 12.3, "unit": "µm"}], software="X"
-    )
+    service.save_external_analysis(cid, "eval_001", {"val_v000_0": 12.3}, software="X")
     model = service.release_candidate(cid, "eval_001", "初回")
     assert model.model_id == "model_001"
     assert model.validation_dataset == "val_v000"
     assert model.evaluation_result.overall_map == pytest.approx(0.6)
+    assert model.evaluation_id == "eval_001"
+    assert model.external_summary["mean"] == pytest.approx(12.3)
     released = service.releases_root / "model_001"
     release = json.loads((released / "release.json").read_text("utf-8"))
     assert release["weights"]["sha256"] == _sha(b"weights-1")
-    assert release["evaluation"]["base_validation_version"] == "val_v000"
+    assert release["dataset_pair"] == {
+        "training_version": "train_v000",
+        "validation_version": "val_v000",
+    }
+    assert "contamination" not in release["evaluation"]
     assert release["external_results"][0]["evaluation_id"] == "eval_001"
     # 元の final.pt を書き換えてもリリースは変わらない（ハードリンクではない）
     source = training.workspace_root / "experiments/exp_0001/runs/attempt_001/checkpoints/final.pt"
@@ -346,7 +355,7 @@ def test_release_copies_weights_independently(env):
     assert candidate.status == "released" and candidate.released_model_id == "model_001"
     assert [item.model_id for item in service.list_released_models()] == ["model_001"]
     with pytest.raises(ValueError, match="リリース済み"):
-        service.save_external_results(cid, "eval_001", [])
+        service.save_external_analysis(cid, "eval_001", {})
     with pytest.raises(ValueError, match="候補状態"):
         service.release_candidate(cid, "eval_001")
 
@@ -355,8 +364,10 @@ def test_release_blocked_conditions(env):
     service, training = env
     config = _default_config(service)
     cid = service.add_candidate("exp_0001", 1, config.config_id).candidate_id
+    # 旧形式で学習混入が見つかっていた評価は、閲覧はできるが新規リリースには使えない
     _write_evaluation(service, cid, "eval_001", contamination="found")
-    with pytest.raises(ValueError, match="同じ画像"):
+    assert service.get_candidate_evaluation(cid).contamination_found
+    with pytest.raises(ValueError, match="同じ画像が学習データに見つかっている"):
         service.release_candidate(cid, "eval_001")
     _write_evaluation(service, cid, "eval_002", status="failed")
     with pytest.raises(ValueError, match="完了した評価"):
@@ -440,14 +451,156 @@ def test_protection_reasons_and_reject(env):
         service.reject_candidate(cid)
 
 
-def test_validation_version_defaults(env):
-    service, _training = env
-    assert service.default_validation_version() == "val_v000"
-    _dataset(service.workspace_root, "val_v001", "val", ["分類A"])
-    assert service.default_validation_version() == "val_v001"
+def test_candidate_fixes_paired_validation_version(env):
+    """候補は作成時に学習用の版の組の検証用の版を固定し、採用する評価もその版だけ。"""
+    service, training = env
+    config = _default_config(service)
+    candidate = service.add_candidate("exp_0001", 1, config.config_id)
+    record = service.get_candidate_record(candidate.candidate_id)
+    assert candidate.validation_version == "val_v000"
+    assert candidate.training_version == "train_v000"
+    assert record["validation_version"] == "val_v000"
+    assert record["dataset_pair"]["training_version"] == "train_v000"
+    # 別の検証用の版で行った旧評価は履歴として読めるが、採用しない
+    _dataset(service.workspace_root, "val_v001", "val", ["分類A"], hash_offset=100)
+    _write_evaluation(service, candidate.candidate_id, "eval_001", version="val_v001")
+    assert service.get_candidate_evaluation(candidate.candidate_id) is None
+    assert [item.validation_version for item in service.list_candidate_evaluations("RC-001")] == [
+        "val_v001"
+    ]
+    with pytest.raises(ValueError, match="val_v001 で行われたため"):
+        service.release_candidate(candidate.candidate_id, "eval_001")
+    # 組のない学習用の版の試行は候補にできない
+    _dataset(service.workspace_root, "train_v001", "train", ["分類A"], hash_offset=200)
+    training.add_attempt("exp_0002", 1, weights=b"weights-2")
+    training.snapshots[("exp_0002", 1)].training_dataset = {"version": "train_v001"}
+    with pytest.raises(ValueError, match="組になる検証用データセットが記録されていません"):
+        service.add_candidate("exp_0002", 1, config.config_id)
+    assert [item.candidate_id for item in service.list_candidates()] == ["RC-001"]
+
+
+def _legacy_candidate(service, training, *, train_hash_offset):
+    """組の記録（validation_version）がない旧形式の候補 RC-001 を作る。"""
+    root = service.workspace_root
+    shutil.rmtree(root / "datasets" / "train_v000")
+    _dataset(
+        root, "train_v000", "train", ["分類A", "分類B"], "val_v000", hash_offset=train_hash_offset
+    )
+    snapshot = training.snapshots[("exp_0001", 1)]
+    snapshot.training_dataset = {
+        "version": "train_v000",
+        "sha256": {
+            name: _sha((root / "datasets" / "train_v000" / name).read_bytes())
+            for name in ("manifest.csv", "metadata.csv")
+        },
+    }
     cid = service.add_candidate("exp_0001", 1, _default_config(service).config_id).candidate_id
-    assert service.base_validation_version_for(cid) == "val_v000"
-    assert service.default_validation_version() == "val_v000"
+    path = service.candidates_root / cid / "candidate.json"
+    record = json.loads(path.read_text("utf-8"))
+    record.pop("validation_version")
+    record.pop("dataset_pair")
+    path.write_text(json.dumps(record, ensure_ascii=False), "utf-8")
+    return cid, path
+
+
+def test_legacy_candidate_is_paired_once_after_duplicate_check(env):
+    service, training = env
+    cid, path = _legacy_candidate(service, training, train_hash_offset=100)
+    _write_evaluation(service, cid, "eval_001")
+    # 読み取りでは補完・推測しない（評価・リリースもしない）
+    assert service.get_candidate(cid).validation_version is None
+    assert service.get_candidate_evaluation(cid) is None
+    with pytest.raises(ValueError, match="組を確認できていない"):
+        service.prepare_evaluation_run(cid)
+    assert "validation_version" not in json.loads(path.read_text("utf-8"))
+
+    fresh = ComparisonService(service.workspace_root, training)
+    fresh.recover()
+    assert fresh.migrated_candidates == [cid]
+    record = json.loads(path.read_text("utf-8"))
+    assert record["validation_version"] == "val_v000"
+    assert record["dataset_pair"]["method"] == "migrated"
+    assert record["dataset_pair"]["duplicate_check"]["same_images"] == 0
+    assert fresh.get_candidate(cid).validation_version == "val_v000"
+    assert fresh.get_candidate_evaluation(cid).evaluation_id == "eval_001"
+    # 一度補完した候補は、次の起動で書き換えない
+    before = path.read_bytes()
+    ComparisonService(service.workspace_root, training).recover()
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("problem", ["same_images", "no_pair", "changed_training"])
+def test_legacy_candidate_is_not_paired_when_unconfirmed(env, problem):
+    service, training = env
+    cid, path = _legacy_candidate(
+        service, training, train_hash_offset=0 if problem == "same_images" else 100
+    )
+    info_path = service.workspace_root / "datasets" / "train_v000" / "dataset_info.json"
+    if problem == "no_pair":
+        info = json.loads(info_path.read_text("utf-8"))
+        info.pop("base_validation_version")
+        info_path.write_text(json.dumps(info), "utf-8")
+    elif problem == "changed_training":
+        metadata = service.workspace_root / "datasets" / "train_v000" / "metadata.csv"
+        metadata.write_text(metadata.read_text("utf-8") + "\n", "utf-8")
+    before = path.read_bytes()
+    fresh = ComparisonService(service.workspace_root, training)
+    fresh.recover()
+    assert fresh.migrated_candidates == []
+    assert path.read_bytes() == before
+    reason = fresh.get_candidate(cid).pairing_issue
+    expected = {
+        "same_images": "同じ画像 2 件",
+        "no_pair": "記録されていません",
+        "changed_training": "学習時の内容と一致しません",
+    }[problem]
+    assert expected in reason
+    with pytest.raises(ValueError, match=expected):
+        fresh.prepare_evaluation_run(cid)
+
+
+def test_external_analysis_is_validated_and_saved_as_snapshots(env):
+    service, _training = env
+    cid = service.add_candidate("exp_0001", 1, _default_config(service).config_id).candidate_id
+    _write_evaluation(service, cid, "eval_001")
+    for values, unit, message in (
+        ({"other": 1.0}, "µm", "対象にない画像"),
+        ({"val_v000_0": -1.0}, "µm", "負"),
+        ({"val_v000_0": float("nan")}, "µm", "有限"),
+        ({"val_v000_0": float("inf")}, "µm", "有限"),
+        ({"val_v000_0": "12"}, "µm", "数値"),
+        ({"val_v000_0": 1.0}, "mm", "単位"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            service.save_external_analysis(cid, "eval_001", values, unit=unit)
+    assert service.list_external_results(cid) == []
+    candidate = service.save_external_analysis(
+        cid, "eval_001", {"val_v000_0": 10.0, "val_v000_1": 14.0}, unit="px", software="ImageJ"
+    )
+    assert candidate.external_summary["mean"] == pytest.approx(12.0)
+    assert candidate.external_summary["unit"] == "px"
+    assert (candidate.external_summary["n_images"], candidate.external_summary["n_total"]) == (2, 2)
+    assert candidate.external_summary["per_class"]["分類C"]["mean"] == pytest.approx(14.0)
+    # 保存のたびに全体を 1 件追加する。空欄（None）は値の削除
+    candidate = service.save_external_analysis(
+        cid, "eval_001", {"val_v000_0": 10.0, "val_v000_1": None}
+    )
+    records = service.list_external_results(cid)
+    assert [item["values"] for item in records] == [
+        {"val_v000_0": 10.0, "val_v000_1": 14.0},
+        {"val_v000_0": 10.0},
+    ]
+    assert records[-1]["evaluation_id"] == "eval_001"
+    assert records[-1]["validation_version"] == "val_v000"
+    assert candidate.external_summary["n_images"] == 1
+    assert candidate.external_summary["per_class"]["分類C"]["mean"] is None
+    # 旧形式（自由項目）の記録は残したまま読める
+    path = service.candidates_root / cid / "external.json"
+    value = json.loads(path.read_text("utf-8"))
+    value["records"].insert(0, {"record_id": "ext_000", "evaluation_id": "eval_001", "results": []})
+    path.write_text(json.dumps(value, ensure_ascii=False), "utf-8")
+    assert service.get_candidate(cid).external_summary["n_images"] == 1
+    assert len(service.list_external_results(cid)) == 3
 
 
 def _rewrite_result(run_dir, mutate):
@@ -460,8 +613,8 @@ def _rewrite_result(run_dir, mutate):
 @pytest.mark.parametrize(
     "mutate",
     [
-        lambda r: r.pop("contamination"),
-        lambda r: r["contamination"].update(status="maybe"),
+        lambda r: r.update(contamination={"status": "none", "pairs": []}),
+        lambda r: r.update(schema=1),
         lambda r: r["overall"].update(ap=1.5),
         lambda r: r["overall"].update(n_images=99),
         lambda r: r["per_class"]["分類A"].update(n_images=1),
@@ -525,22 +678,42 @@ def test_release_retry_after_candidate_save_failure_reuses_published(env, monkey
     assert not list(service.releases_root.glob(".preparing_*"))
 
 
-def test_release_retry_with_other_evaluation_is_refused(env, monkeypatch):
+def test_release_retry_with_other_evaluation_keeps_published_evaluation(env, monkeypatch):
+    """公開後に候補保存が失敗し、再評価した別の評価で再試行しても、公開済みの評価を保持する。"""
     service, _training = env
     cid = service.add_candidate("exp_0001", 1, _default_config(service).config_id).candidate_id
     _write_evaluation(service, cid, "eval_001")
+    _fail_candidate_release_save_once(monkeypatch)
+    with pytest.raises(ValueError):
+        service.release_candidate(cid, "eval_001", "初回")
     _write_evaluation(service, cid, "eval_002")
+    published = service.get_release_record("model_001")
+    model = service.release_candidate(cid, "eval_002", "再評価後")
+    assert is_recovered_release(model)
+    assert model.model_id == "model_001" and model.evaluation_id == "eval_001"
+    assert _published(service) == ["model_001"]
+    # 公開済みの記録は変えない（今回の評価に差し替えない）
+    assert service.get_release_record("model_001") == published
+    candidate = service.get_candidate(cid)
+    assert candidate.status == "released" and candidate.released_model_id == "model_001"
+
+
+def test_published_release_with_missing_evaluation_is_not_repaired(env, monkeypatch):
+    service, _training = env
+    cid = service.add_candidate("exp_0001", 1, _default_config(service).config_id).candidate_id
+    run_dir = _write_evaluation(service, cid, "eval_001")
     _fail_candidate_release_save_once(monkeypatch)
     with pytest.raises(ValueError):
         service.release_candidate(cid, "eval_001")
-    with pytest.raises(ValueError, match="別の評価"):
+    # リリースが参照する評価が消えている（参照先の欠落）は自動で直さない
+    shutil.rmtree(run_dir)
+    _write_evaluation(service, cid, "eval_002")
+    with pytest.raises(ValueError, match="食い違い"):
         service.release_candidate(cid, "eval_002")
-    assert _published(service) == ["model_001"]
-    assert service.get_candidate(cid).status == "candidate"
-    # 起動時の復旧は同じ規則で公開済みのリリースへ修復する
     fresh = ComparisonService(service.workspace_root, service.training_service)
-    assert fresh.recover() == [cid]
-    assert fresh.get_candidate(cid).released_model_id == "model_001"
+    assert fresh.recover() == []
+    assert fresh.get_candidate(cid).status == "candidate"
+    assert _published(service) == ["model_001"]
 
 
 def test_release_refuses_inconsistent_references_without_changes(env):

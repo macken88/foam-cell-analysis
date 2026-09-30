@@ -2,7 +2,7 @@
 
 委譲先（比較・評価設計 2.2）:
 - 学習系 → TrainingService
-- 推論設定・候補・評価・予測・外部解析・マスク出力・リリース・振り分け → ComparisonService
+- 推論設定・候補・評価・予測・外部解析・抽出結果出力・リリース・振り分け → ComparisonService
 - 検証版の一覧・画像 → TrainingService.dataset_store
 - 本番推論（get_inference_result）とデータ準備 → MockBackend
 
@@ -207,12 +207,11 @@ class HybridBackend:
             return self.training.dataset_store.get_items(version, expected_purpose=purpose)
         return self.mock.get_dataset_version_items(version)
 
-    def list_validation_items(self, validation_version=None, classification=None):
+    def list_validation_items(self, validation_version, classification=None):
         """検証版の全画像（item_id 昇順）を分類条件付きで返す。"""
-        version = validation_version or self.comparison.default_validation_version()
-        if not version:
+        if not validation_version:
             return []
-        items = self.training.dataset_store.select_evaluation_items(version)
+        items = self.training.dataset_store.select_evaluation_items(validation_version)
         return [
             item
             for item in items
@@ -255,8 +254,8 @@ class HybridBackend:
 
     # ---- 評価（7 章） ----
 
-    def prepare_evaluation_run(self, candidate_id, validation_version):
-        return self.comparison.prepare_evaluation_run(candidate_id, validation_version)
+    def prepare_evaluation_run(self, candidate_id):
+        return self.comparison.prepare_evaluation_run(candidate_id)
 
     def record_evaluation_process(self, candidate_id, evaluation_id, pid, creation_time):
         return self.comparison.record_evaluation_process(
@@ -275,17 +274,11 @@ class HybridBackend:
     def get_evaluation_progress(self, candidate_id):
         return self.comparison.get_evaluation_progress(candidate_id)
 
-    def get_candidate_evaluation(self, candidate_id, validation_version):
+    def get_candidate_evaluation(self, candidate_id, validation_version=None):
         return self.comparison.get_candidate_evaluation(candidate_id, validation_version)
 
-    def list_candidate_evaluations(self, candidate_id, validation_version):
+    def list_candidate_evaluations(self, candidate_id, validation_version=None):
         return self.comparison.list_candidate_evaluations(candidate_id, validation_version)
-
-    def default_validation_version(self):
-        return self.comparison.default_validation_version()
-
-    def base_validation_version_for(self, candidate_id):
-        return self.comparison.base_validation_version_for(candidate_id)
 
     def get_candidate_prediction(self, candidate_id, evaluation_id, item_id):
         """評価で保存した予測を返す。"""
@@ -296,11 +289,11 @@ class HybridBackend:
     def list_external_results(self, candidate_id):
         return self.comparison.list_external_results(candidate_id)
 
-    def save_external_results(self, candidate_id, evaluation_id, results, **kwargs):
-        """外部解析結果を評価 ID 付きで保存する。"""
-        return self.comparison.save_external_results(candidate_id, evaluation_id, results, **kwargs)
+    def save_external_analysis(self, candidate_id, evaluation_id, values, **kwargs):
+        """外部解析（画像ごとの円相当径の中央値）を評価 ID 付きで保存する。"""
+        return self.comparison.save_external_analysis(candidate_id, evaluation_id, values, **kwargs)
 
-    # ---- マスク出力（12 章） ----
+    # ---- 抽出結果出力（12 章） ----
 
     def _export_source(self, candidate_id: str, evaluation_id: str, item_ids: list[str] | None):
         """評価の記録から ExportSource を作る。未完了・破損・対象外の画像は ValueError。"""
@@ -351,7 +344,7 @@ class HybridBackend:
         )
 
     def export_particle_masks(self, request, progress, is_cancelled):
-        """採用した評価の予測から粒子解析用マスクを出力する（ワーカースレッドから呼ぶ）。"""
+        """採用した評価の予測から抽出結果を出力する（ワーカースレッドから呼ぶ）。"""
         from foam_cell_analysis.inference.mask_export import ExportRequest, run_export
 
         params = MaskExportParams.from_value(request)
@@ -495,11 +488,9 @@ COMPARISON_METHODS = (
     "get_evaluation_progress",
     "get_candidate_evaluation",
     "list_candidate_evaluations",
-    "default_validation_version",
-    "base_validation_version_for",
     "get_candidate_prediction",
     "list_external_results",
-    "save_external_results",
+    "save_external_analysis",
     "export_particle_masks",
     "release_candidate",
     "list_released_models",

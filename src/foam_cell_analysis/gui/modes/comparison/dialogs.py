@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -35,8 +36,12 @@ from PySide6.QtWidgets import (
 )
 
 from ....services.backend import MaskExportParams
-from ....services.comparison_service import INFERENCE_PARAM_SPECS, is_recovered_release
-from ....services.models import Candidate, EvaluationRecord, Experiment, ExternalResult
+from ....services.comparison_service import (
+    INFERENCE_PARAM_SPECS,
+    DuplicateCandidateError,
+    is_recovered_release,
+)
+from ....services.models import Candidate, EvaluationRecord, Experiment
 from ...context import AppContext
 from ...labels import (
     OOF_NOTE,
@@ -139,7 +144,7 @@ class _WorkerThread(QThread):
 
 
 class WorkerJob(QObject):
-    """時間のかかる処理（マスク出力・リリース登録）をワーカースレッドで動かすジョブ。
+    """時間のかかる処理（抽出結果出力・リリース登録）をワーカースレッドで動かすジョブ。
 
     JobManager に登録できる形（name・key・progress・finished・start・cancel）にしてある。
     結果は finished の後に result、例外は error に入る。
@@ -206,6 +211,7 @@ class CandidateDialog(QDialog):
         super().__init__(parent)
         self.ctx = ctx
         self.created: Candidate | None = None
+        self.duplicate_candidate_id: str | None = None
         self.setWindowTitle("リリース候補を追加")
         self.setMinimumSize(560, 620)
         self.experiment = QComboBox()
@@ -217,9 +223,11 @@ class CandidateDialog(QDialog):
         self.preprocessing.setReadOnly(True)
         self.preprocessing.setMaximumHeight(120)
         self.config = QComboBox()
-        self.use_existing = QRadioButton("既存の推論設定を使う")
-        self.use_new = QRadioButton("新しい推論設定を作る")
-        self.use_existing.setChecked(True)
+        self.use_training = QRadioButton("学習時と同じ推論設定")
+        self.use_existing = QRadioButton("登録済みの推論設定を使う")
+        self.use_new = QRadioButton("推論設定を変更する")
+        self.use_training.setChecked(True)
+        self.training_params: dict[str, Any] | None = None
         self.config_values = QPlainTextEdit()
         self.config_values.setReadOnly(True)
         self.config_values.setMaximumHeight(80)
@@ -238,6 +246,8 @@ class CandidateDialog(QDialog):
         self.fields: dict[str, QSpinBox | QDoubleSpinBox] = {}
         self.error = _note(state="error")
         self.error.hide()
+        self.info = _note()
+        self.info.hide()
         self.buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
@@ -250,12 +260,14 @@ class CandidateDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addLayout(form)
         inference_form = QFormLayout()
+        inference_form.addRow(self.use_training)
         inference_form.addRow(self.use_existing, self.config)
         inference_form.addRow("既存設定の値", self.config_values)
         inference_form.addRow(self.use_new)
         layout.addLayout(inference_form)
         layout.addWidget(self.params)
         layout.addStretch(1)
+        layout.addWidget(self.info)
         layout.addWidget(self.error)
         layout.addWidget(self.buttons)
         self.experiments = {
@@ -265,7 +277,8 @@ class CandidateDialog(QDialog):
         }
         self.experiment.addItems(list(self.experiments))
         self.experiment.currentTextChanged.connect(self._experiment_changed)
-        self.attempt.currentIndexChanged.connect(self._update_ok)
+        self.attempt.currentIndexChanged.connect(self._attempt_changed)
+        self.use_training.toggled.connect(self._toggle_config_mode)
         self.use_existing.toggled.connect(self._toggle_config_mode)
         self.config.currentTextChanged.connect(self._show_config_values)
         self.config.currentTextChanged.connect(self._update_ok)
@@ -280,6 +293,16 @@ class CandidateDialog(QDialog):
             if found >= 0:
                 self.attempt.setCurrentIndex(found)
         self.comment.setText(str(preset.get("comment", "")))
+        params = preset.get("inference_params")
+        if isinstance(params, dict):
+            for key, value in params.items():
+                widget = self.fields.get(key)
+                if widget is not None:
+                    widget.setValue(value)
+        if preset.get("prefer_new_config"):
+            self.use_new.setChecked(True)
+            self.info.setText("元候補と学習モデルは保持し、新しい候補を未評価で追加します。")
+            self.info.show()
         self._toggle_config_mode()
 
     def _experiment_changed(self, experiment_id: str) -> None:
@@ -300,6 +323,7 @@ class CandidateDialog(QDialog):
         )
         self._build_params(experiment.model_type)
         self._refresh_configs()
+        self._attempt_changed()
         self._update_ok()
 
     def _build_params(self, model_type: str) -> None:
@@ -389,10 +413,11 @@ class CandidateDialog(QDialog):
 
     def _toggle_config_mode(self, _checked: bool = False) -> None:
         existing = self.use_existing.isChecked()
+        training = self.use_training.isChecked()
         self.config.setEnabled(existing)
         self.config_values.setEnabled(existing)
         for widget in self.fields.values():
-            widget.setEnabled(not existing)
+            widget.setEnabled(not existing and not training)
         self._update_ok()
 
     def _update_ok(self, *_args) -> None:
@@ -403,6 +428,8 @@ class CandidateDialog(QDialog):
             reason = "試行を選んでください"
         elif self.use_existing.isChecked() and not self.config.currentText():
             reason = "推論設定を選んでください"
+        elif self.use_training.isChecked() and self.training_params is None:
+            reason = "学習時の推論設定を確認できないため、この選択肢は使えません"
         self.ok_button.setEnabled(not reason)
         self.ok_button.setToolTip(reason)
 
@@ -416,7 +443,21 @@ class CandidateDialog(QDialog):
         # 新しい推論設定を作る前に、この試行が使えるか確かめる（使えないのに設定だけ残さない）
         if experiment is None or attempt not in usable_attempts(self.ctx.backend, experiment):
             raise ValueError(FINAL_PRUNED_REASON)
-        if self.use_new.isChecked():
+        if self.use_training.isChecked():
+            matching = next(
+                (
+                    item
+                    for item in self.ctx.backend.list_inference_configs(self.model_type_value)
+                    if item.params == self.training_params
+                ),
+                None,
+            )
+            config_id = matching.config_id if matching is not None else ""
+            if not config_id:
+                config_id = self.ctx.backend.create_inference_config(
+                    self.model_type_value, self.training_params
+                ).config_id
+        elif self.use_new.isChecked():
             values = {key: widget.value() for key, widget in self.fields.items()}
             config = self.ctx.backend.create_inference_config(self.model_type_value, values)
             config_id = config.config_id
@@ -427,9 +468,39 @@ class CandidateDialog(QDialog):
         )
         return self.created
 
+    def _attempt_changed(self, *_args) -> None:
+        """選択試行の保存済み評価条件を既定値へ反映する。"""
+        attempt = self.attempt.currentData()
+        experiment = self.experiments.get(self.experiment.currentText())
+        self.training_params = None
+        if isinstance(attempt, int) and experiment is not None:
+            try:
+                snapshot = self.ctx.backend.create_candidate_snapshot(
+                    experiment.experiment_id, attempt=attempt
+                )
+            except (KeyError, ValueError, OSError):
+                snapshot = None
+            if snapshot is not None and snapshot.training_eval_params:
+                self.training_params = dict(snapshot.training_eval_params)
+                for key, value in self.training_params.items():
+                    widget = self.fields.get(key)
+                    if widget is not None:
+                        widget.setValue(value)
+        self.use_training.setEnabled(self.training_params is not None)
+        self.use_training.setToolTip(
+            "" if self.training_params is not None else "学習時の評価条件を確認できません"
+        )
+        if self.training_params is None and self.use_training.isChecked():
+            self.use_new.setChecked(True)
+        self._toggle_config_mode()
+
     def _submit(self) -> None:
         try:
             self.apply()
+        except DuplicateCandidateError as error:
+            self.duplicate_candidate_id = error.candidate_id
+            self.accept()
+            return
         except (ValueError, KeyError) as error:
             logger.warning("候補を追加できません: %s", error)
             self.error.setText(user_message(error, "候補を追加できませんでした"))
@@ -450,12 +521,14 @@ class EvaluationDialog(QDialog):
         candidate: Candidate,
         record: EvaluationRecord,
         parent=None,
+        *,
+        read_only: bool = False,
     ) -> None:
         super().__init__(parent)
         self.ctx, self.candidate, self.record = ctx, candidate, record
         self.evaluation_id = record.evaluation_id
-        self.read_only = candidate.status == "released"
-        self.setWindowTitle(f"詳細評価 - {candidate.candidate_id}")
+        self.read_only = read_only or candidate.status == "released"
+        self.setWindowTitle(f"評価詳細 - {candidate.candidate_id}")
         self.setMinimumSize(800, 640)
         self.resize(820, 680)
         evaluation = record.evaluation
@@ -503,18 +576,20 @@ class EvaluationDialog(QDialog):
             + 2
         )
 
-        base = ctx.backend.base_validation_version_for(candidate.candidate_id)
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(base_version_text(record.validation_version, base)))
-        self.base_warning = _note(BASE_MISMATCH_NOTE, "warning")
-        self.base_warning.setVisible(bool(base) and base != record.validation_version)
-        layout.addWidget(self.base_warning)
-        layout.addWidget(
-            QLabel(
-                f"評価日時: {format_evaluated_at(record.completed_at)} ・ "
-                f"同一画像の混入: {contamination_label(record.contamination.get('status'))}"
+        layout.addWidget(QLabel(f"検証用データセット: {record.validation_version}"))
+        if read_only and record.validation_version != candidate.validation_version:
+            history_note = _note("候補に固定した検証版と異なる過去評価のため、閲覧のみです。")
+            set_style(history_note, role="note")
+            layout.addWidget(history_note)
+        layout.addWidget(QLabel(f"評価日時: {format_evaluated_at(record.completed_at)}"))
+        if record.schema == 1:
+            layout.addWidget(
+                QLabel(
+                    "旧評価の同一画像混入記録: "
+                    f"{contamination_label(record.contamination.get('status'))}"
+                )
             )
-        )
         epoch = candidate.oof_epoch
         layout.addWidget(
             QLabel(
@@ -532,14 +607,16 @@ class EvaluationDialog(QDialog):
         self.oof_note.setVisible(bool(oof_note(candidate)))
         layout.addWidget(self.oof_note)
 
-        # ---- 外部粒子解析結果（この評価に対する手入力） ----
+        # ---- 画像別の外部解析値 ----
         saved = self._saved_record()
         layout.addSpacing(8)
-        layout.addWidget(QLabel("外部粒子解析結果（この評価に対する手入力。補助評価です）"))
-        self.scope = QComboBox()
-        self.scope.addItems(["全体", *(evaluation.per_class if evaluation else {})])
-        if saved and self.scope.findText(str(saved.get("scope", ""))) >= 0:
-            self.scope.setCurrentText(str(saved.get("scope")))
+        layout.addWidget(
+            QLabel("画像ごとの円相当径中央値を入力します。集計は入力済み画像の平均です。")
+        )
+        self.unit = QComboBox()
+        self.unit.addItems(["µm", "px"])
+        if saved and saved.get("unit") in {"µm", "px"}:
+            self.unit.setCurrentText(saved["unit"])
         self.software = QLineEdit(str(saved.get("software", "")) if saved else "")
         self.software_version = QLineEdit(str(saved.get("software_version", "")) if saved else "")
         self.software_version.setMaximumWidth(90)
@@ -548,7 +625,7 @@ class EvaluationDialog(QDialog):
         self.date.setMaximumWidth(110)
         meta = QHBoxLayout()
         for label, widget in (
-            ("対象範囲", self.scope),
+            ("単位", self.unit),
             ("解析ソフト名", self.software),
             ("版", self.software_version),
             ("解析日", self.date),
@@ -557,18 +634,48 @@ class EvaluationDialog(QDialog):
             meta.addWidget(widget)
         layout.addLayout(meta)
         self.results = QTableWidget(0, 3)
-        self.results.setHorizontalHeaderLabels(["項目名", "値", "単位"])
-        setup_table(self.results, stretch_column=0)
-        self.add_row = QPushButton("行を追加")
-        self.remove_row = QPushButton("選択行を削除")
+        self.results.setHorizontalHeaderLabels(["画像 ID", "元ファイル名", "円相当径中央値"])
+        setup_table(self.results, stretch_column=1)
+        values = (saved or {}).get("values", {})
+        self.external_items = ctx.backend.list_validation_items(record.validation_version, None)
+        for data_item in self.external_items:
+            row_index = self.results.rowCount()
+            self.results.insertRow(row_index)
+            for column, text in enumerate(
+                (data_item.item_id, data_item.source_filename, values.get(data_item.item_id, ""))
+            ):
+                cell = QTableWidgetItem("" if text is None else str(text))
+                if column < 2:
+                    cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.results.setItem(row_index, column, cell)
+        self.paste = QPlainTextEdit()
+        self.paste.setPlaceholderText("画像 ID または元ファイル名、タブ、数値の順で貼り付け")
+        self.paste.setMaximumHeight(70)
+        self.apply_paste = QPushButton("貼り付け値を反映")
         result_actions = QHBoxLayout()
         result_actions.addStretch(1)
-        result_actions.addWidget(self.add_row)
-        result_actions.addWidget(self.remove_row)
+        result_actions.addWidget(self.apply_paste)
+        layout.addWidget(self.paste)
         layout.addLayout(result_actions)
         layout.addWidget(self.results, 1)
-        for item in (saved or {}).get("results", []):
-            self._append_result(item.get("name", ""), item.get("value", ""), item.get("unit", ""))
+        self.summary = QLabel()
+        self.summary.setWordWrap(True)
+        layout.addWidget(self.summary)
+        legacy_records = self._legacy_external_records()
+        if legacy_records:
+            legacy_lines = []
+            for legacy in legacy_records:
+                rows = legacy.get("results") or []
+                legacy_lines.extend(
+                    f"{row.get('name', '項目')}: {row.get('value', '')} {row.get('unit', '')}"
+                    for row in rows
+                    if isinstance(row, dict)
+                )
+            legacy_label = QLabel(
+                "旧形式の外部解析記録（読み取り専用）\n" + "\n".join(legacy_lines)
+            )
+            legacy_label.setWordWrap(True)
+            layout.addWidget(legacy_label)
         fit_table_columns(self.results)
         self.comment = QLineEdit(candidate.comment)
         comment_row = QHBoxLayout()
@@ -588,20 +695,26 @@ class EvaluationDialog(QDialog):
         self.save_button.clicked.connect(self._save)
         self.controls.rejected.connect(self.reject)
         layout.addWidget(self.controls)
-        self.add_row.clicked.connect(lambda: self._append_result("", "", ""))
-        self.remove_row.clicked.connect(
-            lambda: (
-                self.results.removeRow(self.results.currentRow())
-                if self.results.currentRow() >= 0
-                else None
-            )
-        )
+        self.apply_paste.clicked.connect(self._apply_external_paste)
+        self.results.itemChanged.connect(lambda _item: self._refresh_external_summary())
+        self.unit.currentTextChanged.connect(self._refresh_external_summary)
+        self._refresh_external_summary()
+        if self.read_only:
+            self.unit.setEnabled(False)
+            self.software.setReadOnly(True)
+            self.software_version.setReadOnly(True)
+            self.date.setReadOnly(True)
+            self.paste.setReadOnly(True)
+            self.apply_paste.setEnabled(False)
+            self.results.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+            self.comment.setReadOnly(True)
+            self.save_button.setEnabled(False)
         if self.read_only:
             self.results.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
             for widget in (
-                self.add_row,
-                self.remove_row,
-                self.scope,
+                self.apply_paste,
+                self.paste,
+                self.unit,
                 self.software,
                 self.software_version,
                 self.date,
@@ -621,41 +734,135 @@ class EvaluationDialog(QDialog):
         matching = [item for item in records if item.get("evaluation_id") == self.evaluation_id]
         return matching[-1] if matching else None
 
-    def _append_result(self, name: str, value: Any, unit: str) -> None:
-        row = self.results.rowCount()
-        self.results.insertRow(row)
-        for col, cell_value in enumerate((name, value, unit)):
-            item = QTableWidgetItem(str(cell_value))
-            if col == 1:
-                item.setFont(numeric_font())
-                item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            self.results.setItem(row, col, item)
-        fit_table_columns(self.results)
+    def _legacy_external_records(self) -> list[dict[str, Any]]:
+        try:
+            records = self.ctx.backend.list_external_results(self.candidate.candidate_id)
+        except (KeyError, ValueError, OSError):
+            return []
+        return [
+            record
+            for record in records
+            if record.get("evaluation_id") == self.evaluation_id
+            and "format" not in record
+            and isinstance(record.get("results"), list)
+        ]
 
-    def _cell(self, row: int, column: int) -> str:
-        item = self.results.item(row, column)
-        return item.text().strip() if item else ""
+    def _refresh_external_summary(self, *_args) -> None:
+        """入力済み画像数と全体・分類別の平均を即時表示する。"""
+        values: dict[str, float] = {}
+        invalid = False
+        for row, data_item in enumerate(self.external_items):
+            raw = self.results.item(row, 2).text().strip()
+            if not raw:
+                continue
+            try:
+                value = float(raw)
+            except ValueError:
+                invalid = True
+                continue
+            if not math.isfinite(value) or value < 0:
+                invalid = True
+                continue
+            values[data_item.item_id] = value
+        if invalid:
+            self.summary.setText("数値・0以上・有限の値を入力してください")
+            return
+        entered = len(values)
+        mean = sum(values.values()) / entered if entered else None
+        groups: dict[str, list[float]] = {
+            item.classification or "分類なし": [] for item in self.external_items
+        }
+        for data_item in self.external_items:
+            if data_item.item_id in values:
+                groups.setdefault(data_item.classification or "分類なし", []).append(
+                    values[data_item.item_id]
+                )
+        pieces = [
+            f"全体 {mean:.4g} {self.unit.currentText()} ({entered}/{len(self.external_items)} 枚)"
+            if mean is not None
+            else f"全体 — ({entered}/{len(self.external_items)} 枚)"
+        ]
+        totals: dict[str, int] = {}
+        for item in self.external_items:
+            name = item.classification or "分類なし"
+            totals[name] = totals.get(name, 0) + 1
+        for name, group in sorted(groups.items()):
+            average = f"{sum(group) / len(group):.4g}" if group else "—"
+            pieces.append(f"{name} {average} ({len(group)}/{totals[name]} 枚)")
+        self.summary.setText("画像ごとの円相当径中央値の平均: " + " / ".join(pieces))
+
+    def _apply_external_paste(self) -> None:
+        """ID または一意な元ファイル名で貼り付けた画像別値を反映する。"""
+        by_id = {item.item_id: row for row, item in enumerate(self.external_items)}
+        names: dict[str, list[int]] = {}
+        for row, item in enumerate(self.external_items):
+            names.setdefault(item.source_filename, []).append(row)
+            names.setdefault(Path(item.source_filename).stem, []).append(row)
+        seen: set[int] = set()
+        updates = []
+        for line_number, line in enumerate(self.paste.toPlainText().splitlines(), 1):
+            if not line.strip():
+                continue
+            parts = line.split("\t")
+            if line_number == 1 and parts == ["item_id", "median_diameter"]:
+                continue
+            if len(parts) != 2:
+                self.error.setText(f"{line_number} 行目は画像名と数値をタブで区切ってください")
+                self.error.show()
+                return
+            key, raw = (part.strip() for part in parts)
+            try:
+                parsed_value = float(raw)
+            except ValueError:
+                self.error.setText(f"{line_number} 行目の値が数値ではありません")
+                self.error.show()
+                return
+            if not math.isfinite(parsed_value) or parsed_value < 0:
+                self.error.setText(f"{line_number} 行目の値は有限の0以上にしてください")
+                self.error.show()
+                return
+            row = by_id.get(key)
+            if row is None:
+                matches = set(names.get(key, []))
+                if len(matches) != 1:
+                    self.error.setText(
+                        f"{line_number} 行目の画像名は見つからないか、一意に決まりません"
+                    )
+                    self.error.show()
+                    return
+                row = next(iter(matches))
+            if row in seen:
+                self.error.setText(f"{line_number} 行目で同じ画像が重複しています")
+                self.error.show()
+                return
+            seen.add(row)
+            updates.append((row, raw))
+        for row, raw in updates:
+            self.results.item(row, 2).setText(raw)
+        self._refresh_external_summary()
+        self.error.hide()
 
     def apply(self) -> Candidate:
         """表の外部解析結果を、開いた時点の評価 ID に結び付けて保存する。"""
-        results = []
+        values = {}
         for row in range(self.results.rowCount()):
-            name, raw, unit = (self._cell(row, column) for column in range(3))
-            if not (name or raw or unit):
+            item_id = self.results.item(row, 0).text()
+            raw = self.results.item(row, 2).text().strip()
+            if not raw:
+                values[item_id] = None
                 continue
             try:
-                value: float | str = float(raw)
-            except ValueError:
-                value = raw
-            results.append(ExternalResult(name, value, unit))
-        return self.ctx.backend.save_external_results(
+                values[item_id] = float(raw)
+            except ValueError as error:
+                raise ValueError(f"数値を確認してください（{item_id}）") from error
+        return self.ctx.backend.save_external_analysis(
             self.candidate.candidate_id,
             self.evaluation_id,
-            results,
+            values,
+            unit=self.unit.currentText(),
             software=self.software.text().strip(),
             software_version=self.software_version.text().strip(),
             analyzed_on=self.date.text().strip(),
-            scope=self.scope.currentText(),
             comment=self.comment.text(),
         )
 
@@ -691,8 +898,8 @@ class ReleaseDialog(QDialog):
         self.job: WorkerJob | None = None
         self.setWindowTitle("リリース済みモデル登録")
         self.setMinimumSize(560, 360)
-        base = ctx.backend.base_validation_version_for(candidate.candidate_id)
-        contamination = str(record.contamination.get("status") or "unknown")
+        legacy_evaluation = record.schema == 1
+        contamination = str(record.contamination.get("status") or "")
         evaluation = record.evaluation
         count = (
             (evaluation.n_images or sum(count for _ap, count in evaluation.per_class.values()))
@@ -710,13 +917,8 @@ class ReleaseDialog(QDialog):
         )
         form.addRow(
             "検証用データセット",
-            QLabel(
-                f"{record.validation_version} （学習用データセットの基準: {base or '記録なし'}）"
-            ),
+            QLabel(record.validation_version),
         )
-        self.base_warning = _note(BASE_MISMATCH_NOTE, "warning")
-        self.base_warning.setVisible(bool(base) and base != record.validation_version)
-        form.addRow("", self.base_warning)
         form.addRow(
             "評価",
             QLabel(
@@ -724,14 +926,13 @@ class ReleaseDialog(QDialog):
                 f"検証 AP {format_score(_ap(evaluation))}（対象 {count} 枚）"
             ),
         )
-        form.addRow("同一画像の混入", QLabel(contamination_label(contamination)))
         self.contamination_note = _note(state="warning")
-        if contamination == "unknown":
+        if legacy_evaluation and contamination == "unknown":
             self.contamination_note.setText(
                 "学習データに同じ画像が含まれていないかを確認できませんでした。"
                 "このことはリリース記録に残ります。"
             )
-        elif contamination == "found":
+        elif legacy_evaluation and contamination == "found":
             self.contamination_note.setText(
                 "学習データと同じ画像が検証用データセットにあるため、リリースできません。"
             )
@@ -756,7 +957,7 @@ class ReleaseDialog(QDialog):
         mark_primary(self.ok_button)
         self.buttons.accepted.connect(self._submit)
         self.buttons.rejected.connect(self.reject)
-        if contamination == "found":
+        if legacy_evaluation and contamination == "found":
             self.ok_button.setEnabled(False)
             self.ok_button.setToolTip(self.contamination_note.text())
         layout = QVBoxLayout(self)
@@ -821,7 +1022,7 @@ class ReleaseDialog(QDialog):
 
 
 class MaskExportDialog(QDialog):
-    """評価済みの予測から粒子解析用マスクを出力する（12 章）。
+    """評価済みの予測から粒子解析用抽出結果を出力する（12 章）。
 
     候補ごとの評価 ID と対象画像は、出力開始の時点で固定する。
     """
@@ -839,20 +1040,20 @@ class MaskExportDialog(QDialog):
         self.validation_version = validation_version
         self.job: WorkerJob | None = None
         self.summary: dict[str, Any] | None = None
-        self.setWindowTitle("粒子解析用マスク出力")
+        self.setWindowTitle("粒子解析用抽出結果出力")
         self.setMinimumSize(560, 400)
         self.items = ctx.backend.list_validation_items(validation_version)
         self.output_dir = QLineEdit()
         self.output_dir.setPlaceholderText("出力先フォルダを選んでください")
-        self.browse = QPushButton("参照…")
+        self.browse = QPushButton("参照")
         output_row = QWidget()
         output_layout = QHBoxLayout(output_row)
         output_layout.setContentsMargins(0, 0, 0, 0)
         output_layout.addWidget(self.output_dir, 1)
         output_layout.addWidget(self.browse)
-        self.instance_mask = QCheckBox("インスタンスラベルマスク（モデル出力のまま）")
+        self.instance_mask = QCheckBox("気泡ごとのラベル画像")
         self.instance_mask.setChecked(True)
-        self.binary_mask = QCheckBox("粒子解析用二値マスク")
+        self.binary_mask = QCheckBox("粒子解析用の白黒画像（隣接気泡を分離済み）")
         self.binary_mask.setChecked(True)
         self.file_format = QComboBox()
         self.file_format.addItems(["PNG", "TIFF"])
@@ -967,7 +1168,7 @@ class MaskExportDialog(QDialog):
         backend = self.ctx.backend
         self._params = params
         self.job = WorkerJob(
-            "粒子解析用マスク出力",
+            "粒子解析用抽出結果出力",
             lambda progress, cancelled: backend.export_particle_masks(params, progress, cancelled),
             key="mask-export",
         )
@@ -1064,14 +1265,14 @@ class MaskExportDialog(QDialog):
 
 
 class MaskExportDoneDialog(QDialog):
-    """粒子解析用マスクの出力完了の案内（承認済みモック）。"""
+    """粒子解析用抽出結果の出力完了の案内（承認済みモック）。"""
 
     FOLDER_TEXT_WIDTH = 520
 
     def __init__(self, summary: dict[str, Any], parent=None) -> None:
         super().__init__(parent)
         self.summary = summary
-        self.setWindowTitle("粒子解析用マスクを出力しました")
+        self.setWindowTitle("粒子解析用抽出結果を出力しました")
         self.setMinimumWidth(460)
         layout = QVBoxLayout(self)
         # 長いパスでダイアログが横に伸びないよう、中央を省略して全文はツールチップに出す

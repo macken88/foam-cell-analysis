@@ -13,6 +13,7 @@ from .models import (
     ArtifactGroup,
     AugmentationProfile,
     Candidate,
+    CandidateSnapshot,
     DataItem,
     DatasetVersion,
     EvaluationOutcome,
@@ -20,7 +21,6 @@ from .models import (
     EvaluationRecord,
     Experiment,
     ExperimentDeletionInfo,
-    ExternalResult,
     ImportCandidate,
     InferenceConfig,
     JobExit,
@@ -44,7 +44,7 @@ def normalization_for_weights(weights: str) -> tuple[list[float], list[float]]:
 
 @dataclass
 class MaskExportParams:
-    """粒子解析用マスク出力の条件（比較・評価設計 12 章）。
+    """抽出結果出力の条件（比較・評価設計 12 章）。
 
     画面は出力ダイアログを開いた時点の評価 ID と対象 ID を固定して渡す。
     item_ids が None なら各評価の対象画像すべてを出力する。
@@ -351,6 +351,9 @@ class Backend(Protocol):
     ) -> Candidate:
         """試行を明示して比較候補を追加する。重複は ValueError（5.3）。"""
 
+    def create_candidate_snapshot(self, experiment_id: str, attempt: int) -> CandidateSnapshot:
+        """候補元の学習時推論設定を取得する。取得不能なら不明値として返す。"""
+
     def reject_candidate(self, candidate_id: str) -> Candidate:
         """候補を非採用にする。評価中・評価待ちの候補はできない。"""
 
@@ -359,8 +362,8 @@ class Backend(Protocol):
     def set_evaluation_activity(self, is_evaluation_active: Callable[[str], bool]) -> None:
         """候補が評価中・評価待ちかを答える関数を受け取る（EvaluationRunner から渡す）。"""
 
-    def prepare_evaluation_run(self, candidate_id: str, validation_version: str) -> PreparedRun:
-        """評価を 1 回分準備する（評価の唯一の作成口。7.1）。"""
+    def prepare_evaluation_run(self, candidate_id: str) -> PreparedRun:
+        """候補に固定した検証用の版で評価を 1 回分準備する（評価の唯一の作成口。7.1）。"""
 
     def record_evaluation_process(
         self, candidate_id: str, evaluation_id: str, pid: int, creation_time: float
@@ -384,40 +387,33 @@ class Backend(Protocol):
         """実行中の評価の進捗を返す。"""
 
     def get_candidate_evaluation(
-        self, candidate_id: str, validation_version: str
+        self, candidate_id: str, validation_version: str | None = None
     ) -> EvaluationRecord | None:
-        """その候補・検証版で採用する評価（7.7）を返す。"""
+        """採用する評価（7.7）を返す。版を省くと候補に固定した検証用の版を使う。"""
 
     def list_candidate_evaluations(
-        self, candidate_id: str, validation_version: str
+        self, candidate_id: str, validation_version: str | None = None
     ) -> list[EvaluationRecord]:
-        """その候補・検証版の全評価を番号順に返す。"""
-
-    def default_validation_version(self) -> str | None:
-        """候補一覧を初めて開いたときの検証版を返す（3.5）。"""
-
-    def base_validation_version_for(self, candidate_id: str) -> str | None:
-        """候補の学習用の版が参照する基準検証版を返す（3.5）。"""
+        """その候補・検証版の全評価を番号順に返す。版を省くと全ての版の履歴を返す。"""
 
     # ---- 外部解析・出力・リリース ----
 
     def list_external_results(self, candidate_id: str) -> list[dict[str, Any]]:
         """外部解析結果の記録を古い順に返す。"""
 
-    def save_external_results(
+    def save_external_analysis(
         self,
         candidate_id: str,
         evaluation_id: str,
-        results: list[ExternalResult | dict[str, Any]],
+        values: dict[str, float | None],
         *,
+        unit: str = "µm",
         software: str = "",
         software_version: str = "",
         analyzed_on: str = "",
-        scope: str = "全体",
-        export_id: str | None = None,
         comment: str | None = None,
     ) -> Candidate:
-        """どの評価に対する解析かを付けて外部解析結果を追記する（9.4）。"""
+        """画像ごとの円相当径の中央値を、評価 ID に結び付けて新しい記録として追記する（9.4）。"""
 
     def export_particle_masks(
         self,
@@ -425,7 +421,10 @@ class Backend(Protocol):
         progress: Callable[[int, int], None],
         is_cancelled: Callable[[], bool],
     ) -> Any:
-        """粒子解析用マスクを出力して ExportResult を返す。ワーカースレッドから呼ぶ（12 章）。"""
+        """抽出結果（ラベル画像・白黒画像）を出力して ExportResult を返す（12 章）。
+
+        ワーカースレッドから呼ぶ。
+        """
 
     def release_candidate(
         self, candidate_id: str, evaluation_id: str, comment: str = ""
@@ -433,7 +432,7 @@ class Backend(Protocol):
         """指定した評価で候補をリリース登録する（13.1）。"""
 
     def list_validation_items(
-        self, validation_version: str | None = None, classification: str | None = None
+        self, validation_version: str, classification: str | None = None
     ) -> list[DataItem]:
         """検証版の画像を分類条件付きで返す。"""
 

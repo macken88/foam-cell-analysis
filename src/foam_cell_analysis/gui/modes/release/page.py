@@ -179,6 +179,7 @@ class ReleasedModelsPage(BasePage):
             "検証 AP",
             OOF_REFERENCE_LABEL,
             "推論設定",
+            "外部解析",
             "検証用データセット",
             "リリース日時",
             "コメント",
@@ -409,6 +410,7 @@ class ReleasedModelsPage(BasePage):
             + (f"\n{per_class}" if per_class else ""),
             OOF_REFERENCE_LABEL: oof_detail_text(model),
             "推論設定": self._inference_summary(model.inference_config),
+            "外部解析": self._external_summary_text(model.external_summary),
             "検証用データセット": model.validation_dataset,
             "リリース日時": format_datetime(model.released_at),
             "コメント": model.comment or "なし",
@@ -442,6 +444,7 @@ class ReleasedModelsPage(BasePage):
         ]
         rows.extend(self._flatten_detail("前処理設定", model.preprocessing_config))
         rows.extend(self._inference_rows(model.inference_config, "推論設定 / "))
+        rows.append(("外部解析", self._external_summary_text(model.external_summary)))
         evaluation = model.evaluation_result
         rows.append(("評価結果 / 全体 AP", format_score(evaluation.overall_map)))
         rows.extend(
@@ -483,6 +486,22 @@ class ReleasedModelsPage(BasePage):
         close_button.clicked.connect(dialog.accept)
         layout.addWidget(close_button, alignment=Qt.AlignmentFlag.AlignRight)
         dialog.exec()
+
+    @staticmethod
+    def _external_summary_text(summary: dict | None) -> str:
+        if not summary:
+            return "記録なし"
+        unit = summary.get("unit", "")
+        mean = summary.get("mean")
+        total = summary.get("n_total", 0)
+        entered = summary.get("n_images", 0)
+        rows = [f"円相当径中央値の画像別平均: {format_score(mean)} {unit}（{entered}/{total} 枚）"]
+        rows.extend(
+            f"{name}: {format_score(values.get('mean'))} {unit} "
+            f"（{values.get('n_images', 0)}/{values.get('n_total', 0)} 枚）"
+            for name, values in (summary.get("per_class") or {}).items()
+        )
+        return "\n".join(rows)
 
     @classmethod
     def _flatten_detail(

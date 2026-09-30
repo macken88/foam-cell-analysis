@@ -1,4 +1,4 @@
-"""評価プロセスの本体（比較・推論設計 3.3・3.4・7.3・9 章）。
+"""評価プロセスの本体（比較・推論設計 3.3・7.3・9 章）。
 
 事前検査 → resolved_data.json → preflight → 画像ごとの推論・予測保存・AP のマッチング →
 per_image.csv・eval_counts.npz・instances.csv → result.json の順に進める。
@@ -29,6 +29,7 @@ from foam_cell_analysis.inference.protocol import (
     PER_IMAGE_COLUMNS,
     PER_IMAGE_CSV,
     PREDICTIONS_DIR,
+    SCHEMA,
     build_result,
     file_entry,
     prediction_entry,
@@ -192,64 +193,6 @@ def _n_labels(labels: np.ndarray) -> int:
 # ---- 事前検査（3.3・3.4） ----
 
 
-def check_contamination(
-    workspace: Path,
-    source: dict[str, Any],
-    validation_hashes: dict[str, str],
-) -> dict[str, Any]:
-    """学習混入の検査（3.4）。{status: none|found|unknown, pairs, reason} を返す。
-
-    validation_hashes は検証画像の item_id → 照合済みの sha256。
-    比べるのは、元の試行の学習版の manifest 上の画像 sha256（used_item_ids に含まれるもの）。
-    """
-    version = source.get("dataset_version")
-    used = source.get("used_item_ids")
-    if not version or used is None:
-        return {"status": "unknown", "pairs": [], "reason": "学習時のデータの記録を確認できません"}
-    folder = workspace / "datasets" / version
-    if not folder.is_dir():
-        return {
-            "status": "unknown",
-            "pairs": [],
-            "reason": f"学習用データセット {version} が見つかりません",
-        }
-    try:
-        recorded = source.get("dataset_sha256") or {}
-        for name, expected in recorded.items():
-            if name not in {"manifest.csv", "metadata.csv"}:
-                continue
-            if _file_sha256(folder / name) != str(expected).lower():
-                return {
-                    "status": "unknown",
-                    "pairs": [],
-                    "reason": f"学習用データセット {version} が学習時の内容と一致しません",
-                }
-        _columns, manifest = _read_csv(folder / "manifest.csv")
-    except (OSError, ValueError, csv.Error, UnicodeDecodeError) as error:
-        return {
-            "status": "unknown",
-            "pairs": [],
-            "reason": f"学習用データセット {version} を読めません: {error}",
-        }
-    by_hash: dict[str, list[str]] = {}
-    for item_id in used:
-        row = manifest.get(item_id)
-        digest = (row or {}).get("image_sha256")
-        if not digest:
-            return {
-                "status": "unknown",
-                "pairs": [],
-                "reason": f"学習画像 {item_id} の記録が学習用データセットにありません",
-            }
-        by_hash.setdefault(digest.lower(), []).append(item_id)
-    pairs = [
-        {"validation_item_id": item_id, "training_item_id": training_id}
-        for item_id, digest in sorted(validation_hashes.items())
-        for training_id in by_hash.get(digest.lower(), [])
-    ]
-    return {"status": "found" if pairs else "none", "pairs": pairs, "reason": None}
-
-
 def run_preflight(
     run_dir: str | Path,
     spec: dict[str, Any],
@@ -260,8 +203,11 @@ def run_preflight(
 ) -> dict[str, Any]:
     """3.3 の事前検査を行い、resolved_data.json を書いて preflight を出す。
 
-    どれかに失敗すれば ValueError（評価は failed）。学習混入が found でも続け、warning を出す。
+    どれかに失敗すれば ValueError（評価は failed）。学習混入は検査しない（学習用の版を
+    確定するときにデータ準備が検査する。比較・評価設計 3.4）。
     """
+    if spec.get("schema") != SCHEMA:
+        raise ValueError("旧形式の評価仕様は実行できません。評価をやり直してください")
     run_path = Path(run_dir).resolve()
     workspace = workspace_of(run_path)
     validation = spec["validation"]
@@ -327,23 +273,7 @@ def run_preflight(
         raise ValueError("候補のモデルファイルの大きさが記録と一致しません")
     if _file_sha256(weights_path) != weights["sha256"].lower():
         raise ValueError("候補のモデルファイルの sha256 が記録と一致しません")
-    # 6. 学習混入
-    contamination = check_contamination(
-        workspace,
-        spec["contamination_source"],
-        {item_id: hashes["image"] for item_id, hashes in verified.items()},
-    )
-    if contamination["status"] == "found":
-        emit(
-            "warning",
-            message=(
-                f"検証画像と同じ画像が学習データに {len(contamination['pairs'])} 件含まれています。"
-                "この評価ではリリースできません"
-            ),
-        )
-    elif contamination["status"] == "unknown":
-        emit("warning", message=f"学習混入を確認できません: {contamination['reason']}")
-    # 7. 容量
+    # 6. 容量
     required = sum(int(np.prod(item["shape"])) * 4 for item in items.values()) + GIB
     get_free = free_bytes_fn or (lambda path: shutil.disk_usage(path).free)
     free = int(get_free(run_path))
@@ -362,7 +292,6 @@ def run_preflight(
         "weights_sha256": weights["sha256"].lower(),
         "items": items,
         "per_class_counts": per_class_counts,
-        "contamination": contamination,
         "required_bytes": required,
         "free_bytes": free,
         "device": str(device),
@@ -372,7 +301,6 @@ def run_preflight(
         "preflight",
         n_images=len(item_ids),
         per_class_counts=per_class_counts,
-        contamination=contamination,
         required_bytes=required,
         free_bytes=free,
     )
@@ -483,7 +411,6 @@ def execute_evaluation(
         overall={"ap": summary["ap"], "n_images": summary["n_images"]},
         per_class=summary["per_class"],
         pooled_ap=summary["pooled_ap_reference"],
-        contamination=resolved["contamination"],
         predictions=predictions,
         per_image_csv=artifacts["per_image_csv"],
         eval_counts=artifacts["eval_counts"],

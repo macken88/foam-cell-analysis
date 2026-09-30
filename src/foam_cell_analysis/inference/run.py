@@ -94,7 +94,7 @@ def run_job(
             "type": event_type,
             **fields,
         }
-        append_event(run_path / "events.jsonl", event)
+        append_event(run_path / "events.jsonl", event, schema=spec["schema"])
         output_stream.write(
             json.dumps(event, ensure_ascii=False, separators=(",", ":"), allow_nan=False) + "\n"
         )

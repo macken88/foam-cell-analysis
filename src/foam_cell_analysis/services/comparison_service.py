@@ -1,9 +1,9 @@
-"""モデル比較・リリース・振り分けの保存と復元（比較・評価設計 4〜7・9・13・14 章）。
+"""モデル比較・リリース・振り分けの保存と復元（比較・評価設計 3〜7・9・13・14 章）。
 
 Qt・torch に依存しない。評価は準備（7.1）・プロセスの記録・停止要求・進捗・終端判定（7.5）・
 起動時の復旧（7.6）と、評価フォルダの読み取り（7.7 の採用と破損）を持つ。
 評価プロセスの起動そのものは GUI 側（gui/evaluation_runner.py）が行う。
-マスク出力（12 章）は別の段階。
+候補は作成時に、元の試行の学習用の版と組になる検証用の版を固定する（3.5）。
 """
 
 from __future__ import annotations
@@ -28,6 +28,10 @@ from typing import Any
 
 import numpy as np
 
+from foam_cell_analysis.data.dataset_store import DatasetStore
+from foam_cell_analysis.inference.protocol import LEGACY_SCHEMA as EVALUATION_LEGACY_SCHEMA
+from foam_cell_analysis.inference.protocol import SCHEMA as EVALUATION_SCHEMA
+from foam_cell_analysis.inference.protocol import SCHEMAS as EVALUATION_SCHEMAS
 from foam_cell_analysis.jobs.lifecycle import (
     decide_terminal_state,
     process_alive,
@@ -61,6 +65,20 @@ RELEASE_SPACE_MARGIN = 100 * 1024**2
 # release_candidate が公開済みリリースを再利用したときに、返すモデルへ付ける属性名
 RECOVERED_RELEASE_ATTR = "recovered_release"
 BROKEN_MESSAGE = "評価結果のファイルが壊れています。再評価してください"
+# 検証用データセットの組を確認できていない旧候補の、評価・リリースできない理由（既定の文）
+UNPAIRED_MESSAGE = (
+    "この候補は検証用データセットの組を確認できていないため、評価・リリースできません"
+)
+CONTAMINATION_FOUND_MESSAGE = (
+    "この評価（以前の形式）では検証画像と同じ画像が学習データに見つかっているため、"
+    "リリースに使えません。再評価してください"
+)
+
+# 外部解析（9.4）: 画像ごとの「検出された全気泡の円相当径の中央値」を手入力する
+EXTERNAL_FORMAT = "median_equivalent_diameter_v1"
+EXTERNAL_METRIC = "median_equivalent_diameter"
+EXTERNAL_UNITS = ("µm", "px")
+UNCLASSIFIED = "未分類"
 
 # ユーザーが変更できる推論設定の項目（5.1）: キー → (最小, 最大, 整数か, 画面の名前)
 INFERENCE_PARAM_SPECS: dict[str, dict[str, tuple[float, float, bool, str]]] = {
@@ -320,8 +338,11 @@ def _valid_ap_entry(entry: Any) -> bool:
     )
 
 
-def _valid_summary(result: dict[str, Any], target_count: int) -> bool:
-    """result.json の overall・per_class・contamination の形と整合を確かめる。"""
+def _valid_summary(result: dict[str, Any], target_count: int, schema: int) -> bool:
+    """result.json の overall・per_class と、形式ごとの学習混入の項目を確かめる。
+
+    旧形式（schema 1）は contamination が必須、現行形式（schema 2）は持ってはいけない。
+    """
     overall = result.get("overall")
     if not _valid_ap_entry(overall) or overall["n_images"] != target_count:
         return False
@@ -332,6 +353,8 @@ def _valid_summary(result: dict[str, Any], target_count: int) -> bool:
         return False
     if sum(entry["n_images"] for entry in per_class.values()) != target_count:
         return False
+    if schema == EVALUATION_SCHEMA:
+        return "contamination" not in result
     contamination = result.get("contamination")
     return isinstance(contamination, dict) and contamination.get("status") in {
         "none",
@@ -341,12 +364,16 @@ def _valid_summary(result: dict[str, Any], target_count: int) -> bool:
 
 
 def validate_evaluation_result(run_dir: str | Path) -> bool:
-    """評価の result.json が妥当か（7.5）。sha256 は再計算せず、存在とバイト数だけを見る。"""
+    """評価の result.json が妥当か（7.5）。sha256 は再計算せず、存在とバイト数だけを見る。
+
+    形式は run_spec の schema（1 は旧形式、2 は現行）で決め、result.json も同じ形式に限る。
+    """
     directory = Path(run_dir)
     try:
         spec = read_json(directory / "run_spec.json")
         result = read_json(directory / "result.json")
-        if spec.get("schema") != SCHEMA or result.get("schema") != SCHEMA:
+        schema = spec.get("schema")
+        if schema not in EVALUATION_SCHEMAS or result.get("schema") != schema:
             return False
         for key in ("run_id", "evaluation_id", "input_fingerprint"):
             if not spec.get(key) or result.get(key) != spec.get(key):
@@ -362,7 +389,7 @@ def validate_evaluation_result(run_dir: str | Path) -> bool:
             path = resolve_recorded_path(directory, entry.get("path"))
             if not path.is_file() or path.stat().st_size != entry["bytes"]:
                 return False
-        if not _valid_summary(result, len(item_ids)):
+        if not _valid_summary(result, len(item_ids), schema):
             return False
         per_image = _artifact_path(directory, result, "per_image_csv", "per_image.csv")
         with per_image.open("r", encoding="utf-8-sig", newline="") as stream:
@@ -420,6 +447,88 @@ def is_recovered_release(model: Any) -> bool:
     return bool(getattr(model, RECOVERED_RELEASE_ATTR, False))
 
 
+class DuplicateCandidateError(ValueError):
+    """同じ設定（fingerprint）の候補がすでにある。画面はその候補へ案内する。"""
+
+    def __init__(self, candidate_id: str) -> None:
+        super().__init__(f"既に {candidate_id} として登録済みです")
+        self.candidate_id = candidate_id
+
+
+# ---- 外部解析（9.4） ----
+
+
+def is_external_analysis(record: Any) -> bool:
+    """現行形式（画像ごとの円相当径の中央値）の外部解析の記録か。旧形式の自由項目は False。"""
+    return isinstance(record, dict) and record.get("format") == EXTERNAL_FORMAT
+
+
+def _external_value(item_id: str, value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise ValueError(f"{item_id} の値が数値ではありません")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{item_id} の値が有限の数値ではありません")
+    if number < 0:
+        raise ValueError(f"{item_id} の値が負です")
+    return number
+
+
+def summarize_external_values(
+    values: dict[str, float], classifications: dict[str, str | None]
+) -> dict[str, Any]:
+    """画像ごとの値の平均（全体・分類別）と、入力済み枚数／全枚数を求める。
+
+    classifications は評価対象の全画像（item_id → 分類）。空欄の画像は平均に含めない。
+    """
+
+    def mean(numbers: list[float]) -> float | None:
+        return sum(numbers) / len(numbers) if numbers else None
+
+    groups: dict[str, list[str]] = {}
+    for item_id, name in classifications.items():
+        groups.setdefault(name or UNCLASSIFIED, []).append(item_id)
+    per_class = {}
+    for name in sorted(groups):
+        entered = [values[item_id] for item_id in groups[name] if item_id in values]
+        per_class[name] = {
+            "mean": mean(entered),
+            "n_images": len(entered),
+            "n_total": len(groups[name]),
+        }
+    return {
+        "mean": mean(list(values.values())),
+        "n_images": len(values),
+        "n_total": len(classifications),
+        "per_class": per_class,
+    }
+
+
+def build_external_analysis(
+    values: dict[str, Any],
+    classifications: dict[str, str | None],
+    *,
+    unit: str,
+) -> tuple[dict[str, float], dict[str, Any]]:
+    """入力値を検証し、（保存する値, 集計）を返す。不正なら ValueError（何も保存しない）。
+
+    None・空欄は未入力（値の削除）として扱う。評価対象にない画像・負値・NaN・無限大は拒否する。
+    """
+    if unit not in EXTERNAL_UNITS:
+        raise ValueError("単位は µm または px を選んでください")
+    if not isinstance(values, dict):
+        raise ValueError("外部解析の値の形が不正です")
+    unknown = sorted(str(item_id) for item_id in values if item_id not in classifications)
+    if unknown:
+        raise ValueError("評価の対象にない画像があります: " + "、".join(unknown[:5]))
+    cleaned = {
+        item_id: _external_value(item_id, value)
+        for item_id, value in sorted(values.items())
+        if value is not None and value != ""
+    }
+    return cleaned, summarize_external_values(cleaned, classifications)
+
+
 class ComparisonService:
     """推論設定・比較候補・評価の読み取り・外部解析・リリース・振り分けの窓口。"""
 
@@ -449,14 +558,18 @@ class ComparisonService:
         self.process_terminator = process_terminator or _default_terminate_process
         # 復旧で終了できなかった評価プロセスの説明。GUI が新しい計算を止めるために使う
         self.recovery_blockers: list[str] = []
-        # 実行中の評価の進捗（保存しない）と、評価ごとの最後の seq
+        # 実行中の評価の進捗（保存しない）と、評価ごとの最後の seq・記録の形式
         self._progress: dict[str, EvaluationProgress] = {}
         self._last_event_seq: dict[tuple[str, str], int] = {}
+        self._event_schema: dict[tuple[str, str], int] = {}
+        # 検証用データセットの組を補完できなかった旧候補 → 理由（起動時の移行で決める）
+        self.pairing_issues: dict[str, str] = {}
+        self.migrated_candidates: list[str] = []
 
     # ---- 起動時の復旧 ----
 
     def recover(self) -> list[str]:
-        """*.tmp と .preparing_* を消し、リリースと候補の食い違いを直す。
+        """*.tmp と .preparing_* を消し、旧候補の組を補完し、リリースと候補の食い違いを直す。
 
         評価フォルダ（evaluations/ 以下）はプロセスの照合が要るので、評価の復旧（7.6）に任せる。
         修復した候補 ID を返す。
@@ -469,7 +582,140 @@ class ComparisonService:
             self._remove(path)
         for path in self.releases_root.glob("*.tmp"):
             self._remove(path)
+        self.migrate_candidate_pairs()
         return self.recover_releases()
+
+    # ---- 旧候補の検証用データセットの組の補完（比較・評価設計 3.5） ----
+
+    def migrate_candidate_pairs(self) -> list[str]:
+        """組（validation_version）の記録がない旧候補に、一度だけ組を補完する。
+
+        元の学習用の版に記録された組の検証用の版を使い、学習用の版が学習時と同じ内容で、
+        検証用の版と同じ識別子・同じ画像がないことを確かめてから candidate.json に書く。
+        確かめられない候補は書き換えず、理由を pairing_issues に残す（評価・リリース不可）。
+        起動時の復旧からだけ呼ぶ（読み取りの途中では書き換えない）。補完した候補 ID を返す。
+        """
+        migrated: list[str] = []
+        self.pairing_issues = {}
+        for record in self._candidate_records():
+            if record.get("validation_version"):
+                continue
+            candidate_id = record["candidate_id"]
+            try:
+                pair = self._verified_legacy_pair(record)
+            except ValueError as error:
+                self.pairing_issues[candidate_id] = str(error)
+                logger.warning(
+                    "候補 %s の検証用データセットの組を補完できません: %s", candidate_id, error
+                )
+                continue
+            record["validation_version"] = pair["validation_version"]
+            record["dataset_pair"] = pair
+            try:
+                self._write_candidate(record)
+            except OSError as error:
+                self.pairing_issues[candidate_id] = "候補の記録を保存できませんでした"
+                logger.warning("候補 %s の記録を保存できません: %s", candidate_id, error)
+                continue
+            migrated.append(candidate_id)
+            logger.info("候補 %s の検証用データセットを %s に固定しました", candidate_id, pair)
+        self.migrated_candidates = migrated
+        return migrated
+
+    def _training_version_of(self, record: dict[str, Any]) -> str:
+        """候補の元の試行の学習用の版。記録がなければ ValueError。"""
+        pair = record.get("dataset_pair") or {}
+        source = record.get("source") or {}
+        version = (
+            pair.get("training_version")
+            or (source.get("training_dataset") or {}).get("version")
+            or ((source.get("experiment_config") or {}).get("data") or {}).get("dataset_version")
+        )
+        if not isinstance(version, str) or not version:
+            raise ValueError("元の試行の学習用データセットの記録がありません")
+        return _check_name(version, "学習用データセットの版")
+
+    def _verified_legacy_pair(self, record: dict[str, Any]) -> dict[str, Any]:
+        """旧候補の組を確かめて返す。確かめられなければ理由付きの ValueError。"""
+        source = record.get("source") or {}
+        training = self._training_version_of(record)
+        validation = self.dataset_store.paired_validation_version(training)
+        training_dir = self.workspace_root / "datasets" / training
+        recorded = (source.get("training_dataset") or {}).get("sha256")
+        if not isinstance(recorded, dict) or not all(
+            isinstance(recorded.get(name), str) for name in ("manifest.csv", "metadata.csv")
+        ):
+            raise ValueError(
+                "学習時の学習用データセットの記録（sha256）がないため、組を確認できません"
+            )
+        for name in ("manifest.csv", "metadata.csv"):
+            try:
+                same = file_sha256(training_dir / name) == recorded[name].lower()
+            except OSError as error:
+                raise ValueError(f"学習用データセット {training} を読めません") from error
+            if not same:
+                raise ValueError(f"学習用データセット {training} が学習時の内容と一致しません")
+        try:
+            train_rows = DatasetStore._read_csv(training_dir / "manifest.csv")
+            val_rows = DatasetStore._read_csv(
+                self.workspace_root / "datasets" / validation / "manifest.csv"
+            )
+        except (OSError, ValueError, csv.Error) as error:
+            raise ValueError(
+                "データセットの manifest を読めないため、組を確認できません"
+            ) from error
+
+        def image_hash(row: dict[str, str]) -> str:
+            value = str(row.get("image_sha256") or "").lower()
+            if re.fullmatch(r"[0-9a-f]{64}", value) is None:
+                raise ValueError("画像の sha256 の記録がない画像があるため、重複を確認できません")
+            return value
+
+        train_ids = {item_id.casefold() for item_id in train_rows}
+        train_hashes = {image_hash(row) for row in train_rows.values()}
+        same_ids = [item_id for item_id in val_rows if item_id.casefold() in train_ids]
+        same_images = [
+            item_id for item_id, row in val_rows.items() if image_hash(row) in train_hashes
+        ]
+        if same_ids or same_images:
+            raise ValueError(
+                f"学習用データセット {training} と検証用データセット {validation} に"
+                f"同じ識別子 {len(same_ids)} 件・同じ画像 {len(same_images)} 件があるため、"
+                "組を確定できません"
+            )
+        return {
+            "training_version": training,
+            "validation_version": validation,
+            "method": "migrated",
+            "recorded_at": _now(),
+            "duplicate_check": {
+                "same_item_ids": 0,
+                "same_images": 0,
+                "training_items": len(train_rows),
+                "validation_items": len(val_rows),
+            },
+        }
+
+    def _pairing_issue(self, record: dict[str, Any]) -> str:
+        return self.pairing_issues.get(record.get("candidate_id", ""), "") or UNPAIRED_MESSAGE
+
+    def _fixed_pair(self, record: dict[str, Any]) -> tuple[str, str]:
+        """評価開始・新規リリースの前に、候補に固定した組を保存された組の情報と照合する。
+
+        画像の読み直しや重複検査はしない。組を確認できなければ理由付きの ValueError
+        （黙って別の検証用の版へ切り替えない）。（学習用の版, 検証用の版）を返す。
+        """
+        version = record.get("validation_version")
+        if not isinstance(version, str) or not version:
+            raise ValueError(self._pairing_issue(record))
+        training = self._training_version_of(record)
+        current = self.dataset_store.paired_validation_version(training)
+        if current != version:
+            raise ValueError(
+                f"学習用データセット {training} の組（{current}）が"
+                f"候補の記録（{version}）と一致しません"
+            )
+        return training, version
 
     def recover_releases(self) -> list[str]:
         """13.3: releases/.preparing_* を消し、公開済みリリースの候補状態を修復する。"""
@@ -681,6 +927,11 @@ class ComparisonService:
         weights = self._weights_path(source)
         if not weights.is_file() or weights.stat().st_size != snapshot.weights_size:
             raise ValueError("最終学習モデルのファイルが記録と一致しません")
+        # 元の試行の学習用の版と組になる検証用の版を、候補に固定する（3.5）
+        training_version = (source["training_dataset"] or {}).get("version")
+        if not isinstance(training_version, str) or not training_version:
+            raise ValueError("元の試行の学習用データセットの記録がありません")
+        validation_version = self.dataset_store.paired_validation_version(training_version)
         training_params = source["training_eval_params"]
         if not training_params:
             # 旧形式の試行: 学習 10.2・10.3 の既知の値で補い、補ったことを記録する（5.2）
@@ -697,7 +948,7 @@ class ComparisonService:
         )
         for other in self._candidate_records():
             if other.get("status") != "rejected" and other.get("fingerprint") == fingerprint:
-                raise ValueError(f"既に {other['candidate_id']} として登録済みです")
+                raise DuplicateCandidateError(other["candidate_id"])
         if source["training_eval_params_filled"]:
             applicability, reason = "unknown", "学習時の評価条件を確認できません"
             source_effective = None
@@ -715,6 +966,13 @@ class ComparisonService:
             "status": "candidate",
             "inference_config_id": config.config_id,
             "effective_params": effective,
+            "validation_version": validation_version,
+            "dataset_pair": {
+                "training_version": training_version,
+                "validation_version": validation_version,
+                "method": "created",
+                "recorded_at": _now(),
+            },
             "source": source,
             "oof": {
                 "source_run_id": snapshot.run_id,
@@ -771,13 +1029,22 @@ class ComparisonService:
         oof = record.get("oof") or {}
         oof_eval = oof.get("evaluation") or {}
         evaluations = {}
-        dataset_cache: dict[str, tuple[dict[str, str], list[str]] | None] = {}
-        for version in self._evaluated_versions(record["candidate_id"]):
-            adopted = self._adopted(record, version, dataset_cache)
-            if adopted is not None and not adopted.broken and adopted.evaluation is not None:
-                evaluations[version] = adopted.evaluation
+        version = record.get("validation_version")
+        version = version if isinstance(version, str) and version else None
+        adopted = self._adopted(record, version) if version else None
+        if adopted is not None and not adopted.broken and adopted.evaluation is not None:
+            evaluations[version] = adopted.evaluation
         externals = self._read_external(record["candidate_id"])
-        latest = externals[-1] if externals else {}
+        legacy = [item for item in externals if not is_external_analysis(item)]
+        latest = legacy[-1] if legacy else {}
+        summary = None
+        if adopted is not None and not adopted.broken:
+            analysis = self._latest_external_analysis(externals, adopted.evaluation_id)
+            summary = self._external_summary(analysis)
+        try:
+            training_version = self._training_version_of(record)
+        except ValueError:
+            training_version = ""
         attempt = int(source.get("attempt") or 1)
         weights = source.get("weights") or {}
         snapshot = CandidateSnapshot(
@@ -821,33 +1088,12 @@ class ComparisonService:
             oof_applicability=str(oof.get("applicability") or ""),
             oof_reason=str(oof.get("reason") or ""),
             released_model_id=record.get("released_model_id"),
+            validation_version=version,
+            pairing_issue="" if version else self._pairing_issue(record),
+            training_version=training_version,
+            effective_params=copy.deepcopy(record.get("effective_params") or {}),
+            external_summary=summary,
         )
-
-    # ---- 検証版の選び方（3.5） ----
-
-    def base_validation_version_for(self, candidate_id: str) -> str | None:
-        """候補の学習用の版が参照する基準検証版を返す。読めなければ None。"""
-        record = self._read_candidate(candidate_id)
-        version = ((record.get("source") or {}).get("training_dataset") or {}).get("version")
-        try:
-            version = _check_name(version, "データセット版")
-            info = read_json(self.workspace_root / "datasets" / version / "dataset_info.json")
-        except (OSError, ValueError):
-            return None
-        base = info.get("base_validation_version")
-        return base if isinstance(base, str) and base else None
-
-    def default_validation_version(self) -> str | None:
-        """候補一覧を初めて開いたときの検証版を返す。検証版がなければ None。"""
-        versions = self.dataset_store.list_versions("val")
-        if not versions:
-            return None
-        records = self._candidate_records()
-        if records:
-            base = self.base_validation_version_for(records[-1]["candidate_id"])
-            if base in versions:
-                return base
-        return versions[-1]
 
     # ---- 評価の読み取り（7.5・7.7） ----
 
@@ -917,6 +1163,8 @@ class ComparisonService:
         try:
             spec = read_json(run_dir / "run_spec.json")
             record.input_fingerprint = spec.get("input_fingerprint")
+            schema = spec.get("schema")
+            record.schema = schema if schema in EVALUATION_SCHEMAS else None
         except (OSError, ValueError):
             record.status = "failed"
             record.broken = True
@@ -934,8 +1182,10 @@ class ComparisonService:
             record.evaluation = _evaluation_from_summary(
                 result.get("overall"), result.get("per_class")
             )
+            # 学習混入の検査結果は旧形式の評価にだけある（現行形式では空のまま）
             contamination = result.get("contamination")
-            record.contamination = dict(contamination) if isinstance(contamination, dict) else {}
+            if record.schema == EVALUATION_LEGACY_SCHEMA and isinstance(contamination, dict):
+                record.contamination = dict(contamination)
             record.completed_at = result.get("completed_at")
         except (OSError, ValueError, TypeError, AttributeError):
             record.broken = True
@@ -944,14 +1194,25 @@ class ComparisonService:
         return record
 
     def list_candidate_evaluations(
-        self, candidate_id: str, validation_version: str
+        self, candidate_id: str, validation_version: str | None = None
     ) -> list[EvaluationRecord]:
-        """その候補・検証版の全評価を番号順に返す（状態を問わない）。"""
+        """その候補・検証版の全評価を番号順に返す（状態を問わない）。
+
+        validation_version を省くと、全ての検証版の評価（固定した版と異なる版の旧評価を含む
+        履歴）を評価番号順に返す。
+        """
         self._read_candidate(candidate_id)
-        return [
-            self._read_record(candidate_id, validation_version, path)
-            for _evaluation_id, path in self._evaluation_dirs(candidate_id, validation_version)
+        versions = (
+            [validation_version]
+            if validation_version is not None
+            else self._evaluated_versions(candidate_id)
+        )
+        records = [
+            self._read_record(candidate_id, version, path)
+            for version in versions
+            for _evaluation_id, path in self._evaluation_dirs(candidate_id, version)
         ]
+        return sorted(records, key=lambda item: _number(_EVALUATION_ID, item.evaluation_id) or 0)
 
     def _adopted(
         self,
@@ -981,10 +1242,17 @@ class ComparisonService:
         return None
 
     def get_candidate_evaluation(
-        self, candidate_id: str, validation_version: str
+        self, candidate_id: str, validation_version: str | None = None
     ) -> EvaluationRecord | None:
-        """採用する評価（7.7）を返す。破損していれば broken=True のまま返す。"""
-        return self._adopted(self._read_candidate(candidate_id), validation_version)
+        """採用する評価（7.7）を返す。破損していれば broken=True のまま返す。
+
+        validation_version を省くと候補に固定した検証用の版を使う（組が未確認なら None）。
+        """
+        record = self._read_candidate(candidate_id)
+        version = validation_version or record.get("validation_version")
+        if not isinstance(version, str) or not version:
+            return None
+        return self._adopted(record, version)
 
     def verify_evaluation(self, candidate_id: str, evaluation_id: str) -> bool:
         """評価が completed で、予測と集計ファイルの sha256 が記録と一致するか。"""
@@ -1039,41 +1307,6 @@ class ComparisonService:
         ]
         return max(numbers, default=0) + 1
 
-    def _contamination_source(self, record: dict[str, Any]) -> dict[str, Any]:
-        """学習混入の検査（3.4）に使う、元の試行の学習版と used_item_ids。
-
-        元の試行の run_spec.json を読めなければ used_item_ids を None にする（評価側で unknown）。
-        """
-        source = record.get("source") or {}
-        dataset = source.get("training_dataset") or {}
-        version = dataset.get("version")
-        hashes = dataset.get("sha256")
-        result: dict[str, Any] = {
-            "run_id": source.get("run_id"),
-            "dataset_version": version if isinstance(version, str) else None,
-            "dataset_sha256": dict(hashes) if isinstance(hashes, dict) else None,
-            "used_item_ids": None,
-        }
-        try:
-            spec = read_json(self._run_dir(source) / "run_spec.json")
-            spec_dataset = spec.get("dataset") or {}
-            used = spec.get("used_item_ids")
-            if isinstance(used, list) and all(isinstance(item, str) for item in used):
-                result["used_item_ids"] = list(used)
-            if isinstance(spec_dataset.get("version"), str):
-                result["dataset_version"] = spec_dataset["version"]
-            if isinstance(spec_dataset.get("sha256"), dict):
-                result["dataset_sha256"] = dict(spec_dataset["sha256"])
-        except (OSError, ValueError) as error:
-            logger.warning(
-                "候補 %s の元の試行の記録を読めません: %s", record["candidate_id"], error
-            )
-        version = result["dataset_version"]
-        if version is not None and (_NAME.fullmatch(version) is None or version in {".", ".."}):
-            result["dataset_version"] = None
-            result["used_item_ids"] = None
-        return result
-
     def _process_env(self) -> dict[str, str]:
         """評価プロセスの環境変数。TORCH_HOME などは学習と同じ場所に固定する（7.2）。"""
         env = os.environ.copy()
@@ -1087,10 +1320,12 @@ class ComparisonService:
         )
         return env
 
-    def prepare_evaluation_run(self, candidate_id: str, validation_version: str) -> PreparedRun:
+    def prepare_evaluation_run(self, candidate_id: str) -> PreparedRun:
         """評価の唯一の作成口（7.1）。run_spec を書いてから eval_NNN へ改名する。
 
-        再評価は常に新しい eval_NNN を作り、過去の評価は変更・削除しない。
+        評価先は候補に固定した検証用の版だけ（利用者は選ばない）。開始前に、保存された組の
+        情報と候補の固定値を照合する。再評価は常に新しい eval_NNN を作り、過去の評価は
+        変更・削除しない。
         """
         from foam_cell_analysis.evaluation.ap import METRIC
         from foam_cell_analysis.inference.protocol import evaluation_run_id, validate_run_spec
@@ -1101,7 +1336,8 @@ class ComparisonService:
             raise ValueError(f"比較候補がありません: {candidate_id}") from error
         if record.get("status") != "candidate":
             raise ValueError("候補状態のモデルだけ評価できます")
-        version = _check_name(validation_version, "検証版")
+        training_version, version = self._fixed_pair(record)
+        version = _check_name(version, "検証版")
         if version not in self.dataset_store.list_versions("val"):
             raise ValueError(f"検証用データセット {version} がありません")
         items = self.dataset_store.select_evaluation_items(version)
@@ -1133,7 +1369,7 @@ class ComparisonService:
         evaluation_id = f"eval_{number:03d}"
         run_id = evaluation_run_id(candidate_id, version, evaluation_id)
         spec = {
-            "schema": SCHEMA,
+            "schema": EVALUATION_SCHEMA,
             "protocol": 1,
             "run_id": run_id,
             "candidate_id": candidate_id,
@@ -1154,7 +1390,10 @@ class ComparisonService:
                 "sha256": dataset_sha,
                 "item_ids": item_ids,
             },
-            "contamination_source": self._contamination_source(record),
+            "dataset_pair": {
+                "training_version": training_version,
+                "validation_version": version,
+            },
             "metric": copy.deepcopy(METRIC),
             "device_request": "auto",
             "app_version": self.app_version,
@@ -1222,12 +1461,16 @@ class ComparisonService:
         """
         from foam_cell_analysis.inference.protocol import parse_run_id, read_events, validate_event
 
-        validate_event(event, allow_hello=True)
-        if event["type"] == "hello":
+        if isinstance(event, dict) and event.get("type") == "hello":
+            validate_event(event, schema=EVALUATION_SCHEMA, allow_hello=True)
             return self.get_evaluation_progress(candidate_id)
-        event_candidate, version, event_evaluation = parse_run_id(event["run_id"])
+        event_candidate, version, event_evaluation = parse_run_id(
+            event.get("run_id") if isinstance(event, dict) else None
+        )
         if event_candidate != candidate_id or event_evaluation != evaluation_id:
             raise ValueError("イベントの run_id が評価に対応していません")
+        schema = self._evaluation_schema(candidate_id, evaluation_id)
+        validate_event(event, schema=schema, allow_hello=False)
         key = (candidate_id, evaluation_id)
         progress = self._progress.get(candidate_id)
         if progress is None or progress.evaluation_id != evaluation_id:
@@ -1239,7 +1482,9 @@ class ComparisonService:
             return copy.copy(progress)
         if state == "gap":
             _version, run_dir = self._locate_evaluation(candidate_id, evaluation_id)
-            events = read_events(run_dir / "events.jsonl", expected_run_id=event["run_id"])
+            events = read_events(
+                run_dir / "events.jsonl", schema=schema, expected_run_id=event["run_id"]
+            )
             progress = EvaluationProgress(candidate_id, evaluation_id, version)
             self._progress[candidate_id] = progress
             for recorded in events:
@@ -1253,6 +1498,20 @@ class ComparisonService:
         self._apply_progress(progress, event)
         self._last_event_seq[key] = event["seq"]
         return copy.copy(progress)
+
+    def _evaluation_schema(self, candidate_id: str, evaluation_id: str) -> int:
+        """評価の記録の形式（run_spec の schema）。イベントの検証に使う。"""
+        key = (candidate_id, evaluation_id)
+        if key not in self._event_schema:
+            _version, run_dir = self._locate_evaluation(candidate_id, evaluation_id)
+            try:
+                schema = read_json(run_dir / "run_spec.json").get("schema")
+            except (OSError, ValueError) as error:
+                raise ValueError("評価の run_spec を読めません") from error
+            if schema not in EVALUATION_SCHEMAS:
+                raise ValueError("評価の run_spec の形式が不正です")
+            self._event_schema[key] = schema
+        return self._event_schema[key]
 
     def get_evaluation_progress(self, candidate_id: str) -> EvaluationProgress | None:
         """実行中の評価の進捗（completed / total）を返す。なければ None。"""
@@ -1397,31 +1656,70 @@ class ComparisonService:
         self._read_candidate(candidate_id)
         return copy.deepcopy(self._read_external(candidate_id))
 
-    def save_external_results(
+    @staticmethod
+    def _latest_external_analysis(
+        records: list[dict[str, Any]], evaluation_id: str | None
+    ) -> dict[str, Any] | None:
+        """その評価に対する、現行形式の外部解析の最新の記録。"""
+        matching = [
+            item
+            for item in records
+            if is_external_analysis(item) and item.get("evaluation_id") == evaluation_id
+        ]
+        return matching[-1] if matching else None
+
+    @staticmethod
+    def _external_summary(record: dict[str, Any] | None) -> dict[str, Any] | None:
+        """外部解析の記録から、一覧・リリースに出す集計（単位と評価 ID 付き）を作る。"""
+        if record is None or not isinstance(record.get("summary"), dict):
+            return None
+        return {
+            **copy.deepcopy(record["summary"]),
+            "unit": record.get("unit", ""),
+            "evaluation_id": record.get("evaluation_id"),
+            "record_id": record.get("record_id"),
+        }
+
+    def save_external_analysis(
         self,
         candidate_id: str,
         evaluation_id: str,
-        results: list[ExternalResult | dict[str, Any]],
+        values: dict[str, float | None],
         *,
+        unit: str = "µm",
         software: str = "",
         software_version: str = "",
         analyzed_on: str = "",
-        scope: str = "全体",
-        export_id: str | None = None,
         comment: str | None = None,
     ) -> Candidate:
-        """外部解析結果を、どの評価に対する解析かを付けて追記する。
+        """外部解析（画像ごとの円相当径の中央値）を、評価 ID に結び付けて新しい記録として追記する。
 
-        comment を渡すと候補のコメントも更新する（candidate.json で変更してよい唯一の項目）。
+        values はその時点の全画像分の値（未入力の画像は含めないか None）。保存のたびに全体の
+        スナップショットを 1 件追加し、過去の記録は変えない。値と対象画像はここでも検証し、
+        平均と分類別平均をここで求める。comment を渡すと候補のコメントも更新する。
         """
         record = self._read_candidate(candidate_id)
         if record.get("status") == "released":
             raise ValueError("リリース済みの候補の外部解析結果は変更できません")
-        version, _run_dir = self._locate_evaluation(candidate_id, evaluation_id)
-        values = []
-        for item in results:
-            value = item if isinstance(item, ExternalResult) else ExternalResult(**item)
-            values.append({"name": value.name, "value": value.value, "unit": value.unit})
+        version, run_dir = self._locate_evaluation(candidate_id, evaluation_id)
+        self._fixed_pair(record)
+        if version != record.get("validation_version"):
+            raise ValueError("候補に固定した検証用データセットと異なる過去の評価は編集できません")
+        evaluation = self._read_record(candidate_id, version, run_dir)
+        if evaluation.status != "completed" or evaluation.broken:
+            raise ValueError("完了した評価にだけ外部解析結果を保存できます")
+        try:
+            item_ids = list(read_json(run_dir / "run_spec.json")["validation"]["item_ids"])
+            items = {
+                item.item_id: item for item in self.dataset_store.select_evaluation_items(version)
+            }
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise ValueError("評価の対象画像を読めません") from error
+        classifications = {
+            item_id: (items[item_id].classification if item_id in items else None)
+            for item_id in item_ids
+        }
+        cleaned, summary = build_external_analysis(values, classifications, unit=unit)
         records = self._read_external(candidate_id)
         numbers = [
             int(match.group(1))
@@ -1432,14 +1730,16 @@ class ComparisonService:
         records.append(
             {
                 "record_id": f"ext_{number:03d}",
+                "format": EXTERNAL_FORMAT,
                 "evaluation_id": evaluation_id,
                 "validation_version": version,
-                "export_id": export_id,
-                "scope": scope,
+                "metric": EXTERNAL_METRIC,
+                "unit": unit,
                 "software": software,
                 "software_version": software_version,
                 "analyzed_on": analyzed_on,
-                "results": values,
+                "values": cleaned,
+                "summary": summary,
                 "comment": comment or "",
                 "saved_at": _now(),
             }
@@ -1499,6 +1799,17 @@ class ComparisonService:
             inference_config_id=str(value.get("inference_config_id") or ""),
             oof_applicability=str(oof_record.get("applicability") or ""),
             oof_reason=str(oof_record.get("reason") or ""),
+            evaluation_id=str(evaluation.get("evaluation_id") or ""),
+            external_summary=ComparisonService._external_summary(
+                ComparisonService._latest_external_analysis(
+                    [
+                        item
+                        for item in value.get("external_results") or []
+                        if isinstance(item, dict)
+                    ],
+                    evaluation.get("evaluation_id"),
+                )
+            ),
         )
 
     def list_released_models(self) -> list[ReleasedModel]:
@@ -1534,7 +1845,9 @@ class ComparisonService:
 
         リリース登録の再試行と起動時の復旧が同じ規則で判定する。次の場合は ValueError:
         同じ候補のリリースが複数ある、候補の released_model_id が見つからないか別の候補を指す、
-        リリースの候補 fingerprint・重み（sha256・バイト数）が候補の記録と一致しない。
+        リリースの候補 fingerprint・重み（sha256・バイト数）が候補の記録と一致しない、
+        リリースが参照する評価が候補にない（または検証用の版が一致しない）。
+        旧形式のリリース（学習混入の項目を持つもの）も同じ規則で読み、書き換えない。
         """
         candidate_id = record.get("candidate_id")
         if releases is None:
@@ -1564,6 +1877,19 @@ class ComparisonService:
             or published.get("size") != weights.get("size")
         ):
             raise ValueError(f"リリース {model_id} の記録が候補 {candidate_id} と一致しません")
+        evaluation = release.get("evaluation") or {}
+        try:
+            version, _run_dir = self._locate_evaluation(
+                candidate_id, evaluation.get("evaluation_id")
+            )
+        except ValueError as error:
+            raise ValueError(
+                f"リリース {model_id} が参照する評価が候補 {candidate_id} にありません"
+            ) from error
+        if version != evaluation.get("validation_version"):
+            raise ValueError(
+                f"リリース {model_id} が参照する評価の検証用データセットが一致しません"
+            )
         return model_id, release
 
     def _mark_released(self, record: dict[str, Any], model_id: str) -> bool:
@@ -1575,14 +1901,14 @@ class ComparisonService:
         self._write_candidate(record)
         return True
 
-    def _reuse_published_release(
-        self, record: dict[str, Any], evaluation_id: str
-    ) -> ReleasedModel | None:
-        """前回の登録で公開済みなら候補を修復してそのリリースを返す（再試行の二重登録を防ぐ）。
+    def _reuse_published_release(self, record: dict[str, Any]) -> ReleasedModel | None:
+        """同じ候補の公開済みリリースがあれば、候補の状態だけを修復してそのリリースを返す。
 
-        公開済みの記録（コメントを含む）は書き換えない。返すモデルには
+        新しいリリースは作らず、公開済みの記録（評価・コメントを含む）は書き換えない。
+        今回指定された評価が別の評価（再評価の後の再試行など）でも、公開済みリリースの評価を
+        保持する。照合するのは公開済みリリースが参照する評価。返すモデルには
         recovered_release=True を付ける（is_recovered_release で判定できる）。
-        別の評価で公開済み、または参照が食い違う場合は何も作らずに ValueError。
+        参照が食い違う場合は何も作らずに ValueError。
         """
         candidate_id = record["candidate_id"]
         try:
@@ -1595,13 +1921,6 @@ class ComparisonService:
         if published is None:
             return None
         model_id, release = published
-        published_evaluation = (release.get("evaluation") or {}).get("evaluation_id")
-        if published_evaluation != evaluation_id:
-            raise ValueError(
-                f"この候補は別の評価（{published_evaluation}）で {model_id} として"
-                "リリース済みです。新しいリリースは作成していません。"
-                "アプリを再起動すると候補の状態が修復されます"
-            )
         # モデルファイルの有無と大きさを確かめる（読めなければ ValueError）
         self.get_release_record(model_id)
         try:
@@ -1627,7 +1946,9 @@ class ComparisonService:
         """候補を指定した評価でリリースする（13.1・13.2）。重みは独立したコピーを持つ。
 
         公開（改名）の後の候補保存だけが失敗していた場合の再試行では、新しいリリースを作らず
-        公開済みのリリースを返す（is_recovered_release が True）。
+        公開済みのリリースを返す（is_recovered_release が True。評価は公開済みのまま）。
+        新規リリースでは、候補に固定した組を保存された組の情報と照合し、評価の検証用の版が
+        候補の版と一致することを確かめる。旧形式で学習混入が見つかっていた評価は使えない。
         """
         record = self._read_candidate(candidate_id)
         if record.get("status") != "candidate":
@@ -1636,24 +1957,27 @@ class ComparisonService:
         if active(candidate_id):
             raise ValueError("評価中または評価待ちの候補はリリースできません")
         # 採番・重みのコピーより前に、前回の登録で公開済みのリリースを探す
-        reused = self._reuse_published_release(record, evaluation_id)
+        reused = self._reuse_published_release(record)
         if reused is not None:
             return reused
+        training_version, fixed_version = self._fixed_pair(record)
         version, run_dir = self._locate_evaluation(candidate_id, evaluation_id)
+        if version != fixed_version:
+            raise ValueError(
+                f"この評価は候補の検証用データセット（{fixed_version}）ではなく {version} で"
+                "行われたため、リリースに使えません"
+            )
         evaluation = self._read_record(candidate_id, version, run_dir)
         if evaluation.status != "completed":
             raise ValueError("完了した評価だけでリリースできます")
         if not self.verify_evaluation(candidate_id, evaluation_id):
             raise ValueError(BROKEN_MESSAGE)
+        if evaluation.contamination_found:
+            raise ValueError(CONTAMINATION_FOUND_MESSAGE)
         spec = read_json(run_dir / "run_spec.json")
         result = read_json(run_dir / "result.json")
         if spec.get("candidate_id") not in (None, candidate_id):
             raise ValueError("評価の候補 ID が一致しません")
-        contamination = result.get("contamination") or {}
-        if contamination.get("status") == "found":
-            raise ValueError(
-                "検証画像と同じ画像が学習データに含まれているため、この評価ではリリースできません"
-            )
         source = record["source"]
         weights = source["weights"]
         source_path = self._weights_path(source)
@@ -1706,15 +2030,18 @@ class ComparisonService:
                     "candidate_id": candidate_id,
                     "fingerprint": record.get("fingerprint"),
                 },
+                "dataset_pair": {
+                    "training_version": training_version,
+                    "validation_version": fixed_version,
+                },
                 "evaluation": {
                     "evaluation_id": evaluation_id,
                     "validation_version": version,
-                    "base_validation_version": self.base_validation_version_for(candidate_id),
+                    "schema": evaluation.schema,
                     "input_fingerprint": result.get("input_fingerprint"),
                     "overall": copy.deepcopy(result.get("overall")),
                     "per_class": copy.deepcopy(result.get("per_class") or {}),
                     "metric": copy.deepcopy(result.get("metric") or spec.get("metric")),
-                    "contamination": copy.deepcopy(contamination),
                 },
                 "oof": copy.deepcopy(record.get("oof") or {}),
                 "external_results": copy.deepcopy(self._read_external(candidate_id)),

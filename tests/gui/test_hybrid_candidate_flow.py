@@ -21,13 +21,13 @@ def test_snapshot_candidate_oof_and_evaluation_render_without_experiment_lookup(
     context.navigator.navigate(PageId.CANDIDATES)
     page = manager.page(PageId.CANDIDATES)
     assert page.table.rowCount() == 1
-    assert page.table.item(0, 7).text() != "—"
-    assert page.table.item(0, 6).text() == "未評価"
+    assert page.table.item(0, 8).text() != "—"
+    assert page.table.item(0, 6).text() == "val_v000"
 
     _write_evaluation(backend.comparison, candidate.candidate_id, "eval_001")
     page.refresh()
-    assert page.table.item(0, 6).text() != "未評価"
-    assert page.table.item(0, 7).text() != "—"
+    assert page.table.item(0, 7).text() != "未評価"
+    assert page.table.item(0, 8).text() != "—"
     backend.release_candidate(candidate.candidate_id, "eval_001", "ready")
     assert backend.get_candidate(candidate.candidate_id).status == "released"
     home.hide()

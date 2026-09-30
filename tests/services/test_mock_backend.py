@@ -85,9 +85,53 @@ def test_validation_then_finalize_creates_version():
     assert ds.state == "WORKING"
 
 
-def _evaluate(backend: MockBackend, candidate_id: str, version: str) -> str:
-    """評価を 1 回分、模擬の評価イベントで完了させて評価 ID を返す。"""
-    prepared = backend.prepare_evaluation_run(candidate_id, version)
+def test_finalize_working_rejects_duplicate_train_validation_images_before_versioning():
+    backend = MockBackend()
+    before = [item.version for item in backend.list_dataset_versions()]
+    working = backend.get_working_items()
+    for item in working:
+        if item.usage in {"train", "val"}:
+            item.classification = item.classification or "分類A"
+            item.quality = item.quality or "良"
+            item.mask_revisions = item.mask_revisions or ["rev_001"]
+    train = next(item for item in working if item.usage == "train")
+    validation = next(item for item in working if item.usage == "val")
+    train.sha256 = validation.sha256
+    train.change = "changed"
+    with pytest.raises(ValueError, match="識別子または画像の重複"):
+        backend.finalize_working_dataset()
+    assert [item.version for item in backend.list_dataset_versions()] == before
+
+
+def test_validation_only_finalize_keeps_existing_training_pair():
+    backend = MockBackend()
+    training = next(
+        item for item in backend.list_dataset_versions("train") if item.version == "train_v003"
+    )
+    original_pair = training.base_validation_version
+    working = backend.get_working_items()
+    baseline_train = backend._items_for_version("train_v003")
+    for item in baseline_train:
+        item.usage = "train"
+    working[:] = [item for item in working if item.usage != "train"] + baseline_train
+    for item in baseline_train:
+        item.change = None
+    for item in working:
+        if item.usage in {"train", "val"}:
+            item.classification = item.classification or "分類A"
+            item.quality = item.quality or "良"
+            item.mask_revisions = item.mask_revisions or ["rev_001"]
+    validation_item = next(item for item in working if item.usage == "val")
+    validation_item.comment = "changed validation only"
+    validation_item.change = "changed"
+    created = backend.finalize_working_dataset()
+    assert [item.purpose for item in created] == ["val"]
+    assert training.base_validation_version == original_pair
+
+
+def _evaluate(backend: MockBackend, candidate_id: str) -> str:
+    """候補に固定した検証用の版での評価を、模擬の評価イベントで完了させて評価 ID を返す。"""
+    prepared = backend.prepare_evaluation_run(candidate_id)
     evaluation_id = prepared.run_id.rsplit("/", 1)[1]
     event = {"v": 1, "run_id": prepared.run_id, "seq": 1, "time": 0, "type": "completed"}
     backend.apply_evaluation_event(candidate_id, evaluation_id, event)
@@ -100,7 +144,7 @@ def test_candidate_duplicate_and_release():
     backend = MockBackend()
     with pytest.raises(ValueError, match="登録済み"):
         backend.add_candidate("exp_0042", 1, "infer_v005")
-    evaluation_id = _evaluate(backend, "RC-003", "val_v003")
+    evaluation_id = _evaluate(backend, "RC-003")
     model = backend.release_candidate("RC-003", evaluation_id)
     assert model.model_id.startswith("model_")
     assert (model.model_type, model.inference_config_id) == ("mask_rcnn", "infer_v007")
@@ -223,11 +267,12 @@ def test_inclusion_change_state_restores_added_and_original_changes():
 
 def test_evaluation_can_be_started_and_completed():
     backend = MockBackend()
-    _evaluate(backend, "RC-003", "val_v002")
+    _evaluate(backend, "RC-003")
     assert backend.get_candidate("RC-003").status == "candidate"
-    evaluation = backend.get_candidate_evaluation("RC-003", "val_v002").evaluation
+    assert backend.get_candidate("RC-003").validation_version == "val_v003"
+    evaluation = backend.get_candidate_evaluation("RC-003").evaluation
     assert evaluation.overall_map > 0
-    assert len(backend.list_validation_items("val_v002", "分類A")) == 10
+    assert len(backend.list_validation_items("val_v003", "分類A")) == 10
 
 
 # ---- 比較・評価設計 16.1 の新しい API の形（段階 D1） ----
@@ -244,59 +289,60 @@ def test_mock_evaluation_lifecycle_through_fake_evaluation_job(qtbot):
     runner.ended.connect(outcomes.append)
     runner.progressed.connect(progressed.append)
 
-    runner.start(["RC-003"], "val_v002")
+    runner.start(["RC-003"])
     with pytest.raises(ValueError, match="評価中"):
         backend.reject_candidate("RC-003")
     qtbot.waitUntil(lambda: not runner.is_busy, timeout=5000)
 
     assert [(item.status, item.evaluation_id) for item in outcomes] == [("completed", "eval_001")]
     assert progressed
-    record = backend.get_candidate_evaluation("RC-003", "val_v002")
+    record = backend.get_candidate_evaluation("RC-003")
     assert record.evaluation_id == "eval_001"
+    assert record.validation_version == "val_v003"
     assert record.evaluation.overall_map > 0
     assert record.evaluation.n_images == 30
-    assert backend.get_candidate("RC-003").evaluations["val_v002"] is record.evaluation
+    assert backend.get_candidate("RC-003").evaluations["val_v003"] is record.evaluation
     assert backend.get_evaluation_progress("RC-003") is None
 
 
-def test_mock_evaluation_stop_and_numbering_across_versions(qtbot):
+def test_mock_evaluation_stop_and_numbering(qtbot):
     from foam_cell_analysis.gui.evaluation_runner import EvaluationRunner
 
     backend = MockBackend()
     runner = EvaluationRunner(backend)
     outcomes = []
     runner.ended.connect(outcomes.append)
-    runner.start(["RC-003"], "val_v003")
+    runner.start(["RC-003"])
     qtbot.waitUntil(lambda: runner.job is not None, timeout=5000)
     runner.request_stop()
     qtbot.waitUntil(lambda: not runner.is_busy, timeout=5000)
     assert (outcomes[0].status, outcomes[0].reason) == ("stopped", "user_stop")
-    assert backend.get_candidate_evaluation("RC-003", "val_v003") is None
+    assert backend.get_candidate_evaluation("RC-003") is None
 
-    prepared = backend.prepare_evaluation_run("RC-003", "val_v002")
+    prepared = backend.prepare_evaluation_run("RC-003")
     assert prepared.fake
-    assert prepared.run_id == "RC-003/val_v002/eval_002"
+    assert prepared.run_id == "RC-003/val_v003/eval_002"
     statuses = [item.status for item in backend.list_candidate_evaluations("RC-003", "val_v003")]
-    assert statuses == ["stopped"]
+    assert statuses == ["stopped", "running"]
 
 
 def test_mock_release_prediction_and_external_results_by_evaluation_id():
     backend = MockBackend()
-    record = backend.get_candidate_evaluation("RC-001", "val_v003")
+    record = backend.get_candidate_evaluation("RC-001")
     assert record is not None and record.status == "completed"
     item_id = backend.list_validation_items("val_v003")[0].item_id
     labels = backend.get_candidate_prediction("RC-001", record.evaluation_id, item_id)
     assert labels.ndim == 2
 
-    evaluation_id = _evaluate(backend, "RC-003", "val_v003")
-    backend.save_external_results(
-        "RC-003", evaluation_id, [{"name": "平均径", "value": 1.5, "unit": "um"}], software="X"
-    )
+    evaluation_id = _evaluate(backend, "RC-003")
+    backend.save_external_analysis("RC-003", evaluation_id, {item_id: 1.5}, software="X")
     assert backend.list_external_results("RC-003")[-1]["evaluation_id"] == evaluation_id
+    assert backend.get_candidate("RC-003").external_summary["mean"] == 1.5
     with pytest.raises(ValueError, match="評価がありません"):
         backend.release_candidate("RC-003", "eval_099")
     model = backend.release_candidate("RC-003", evaluation_id, "新形式")
     assert model.validation_dataset == "val_v003"
+    assert model.external_summary["n_images"] == 1
     assert backend.get_candidate("RC-003").released_model_id == model.model_id
 
 
@@ -352,7 +398,6 @@ def test_mock_without_samples_has_no_comparison_seed():
     assert backend.list_released_models() == []
     assert backend.get_routing() == {}
     assert backend.list_validation_versions() == []
-    assert backend.default_validation_version() is None
 
 
 def test_mock_cleanup_plan_protects_candidate_final_and_records_pruned():

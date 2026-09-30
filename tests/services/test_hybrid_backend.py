@@ -94,8 +94,8 @@ def test_add_candidate_uses_explicit_attempt(hybrid):
     assert candidate.source_attempt_number == 1
     assert (hybrid.workspace_root / "comparison" / "candidates" / "RC-001").is_dir()
     assert hybrid.mock.candidates == {}
-    assert hybrid.default_validation_version() == "val_v000"
-    assert hybrid.base_validation_version_for("RC-001") == "val_v000"
+    assert candidate.validation_version == "val_v000"
+    assert hybrid.get_candidate("RC-001").validation_version == "val_v000"
 
 
 def test_deletion_protection_uses_comparison_references(hybrid, monkeypatch):
@@ -180,7 +180,7 @@ def test_export_masks_from_adopted_evaluation_and_old_call_forms(hybrid, tmp_pat
     config = _config(hybrid)
     candidate = hybrid.add_candidate("exp_0001", 1, config.config_id)
     _write_evaluation(hybrid.comparison, candidate.candidate_id, "eval_001")
-    adopted = hybrid.get_candidate_evaluation(candidate.candidate_id, "val_v000")
+    adopted = hybrid.get_candidate_evaluation(candidate.candidate_id)
     assert adopted.evaluation_id == "eval_001"
     output = tmp_path / "out"
     output.mkdir()

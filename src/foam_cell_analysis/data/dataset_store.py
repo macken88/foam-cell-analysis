@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import re
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,7 @@ from foam_cell_analysis.services.models import DataItem
 
 logger = logging.getLogger(__name__)
 MAX_ARRAY_CACHE_BYTES = 2 * 1024**3
+_SAFE_VERSION = re.compile(r"(?!\.{1,2}$)[A-Za-z0-9_.-]+")
 
 
 class DatasetStore:
@@ -33,7 +35,11 @@ class DatasetStore:
         return self._cache.size
 
     def list_versions(self, purpose: str = "train") -> list[str]:
-        """読み込み可能な指定用途（既定は学習）の RELEASED 版を版名順に返す。"""
+        """読み込み可能な指定用途（既定は学習）の RELEASED 版を版名順に返す。
+
+        学習用の版は、組になる検証用の版（base_validation_version）が正しいものだけを返す。
+        組が正しくない学習用の版は一覧から外し、理由をログに残す。
+        """
         versions = []
         if not self.datasets_root.exists():
             return versions
@@ -44,6 +50,8 @@ class DatasetStore:
                 info = json.loads((folder / "dataset_info.json").read_text(encoding="utf-8"))
                 if info.get("purpose") == purpose and info.get("status") == "RELEASED":
                     self._read_items(folder)
+                    if purpose == "train":
+                        self._paired_validation(folder.name, info)
                     versions.append(str(info.get("dataset_version", folder.name)))
             except (OSError, ValueError, KeyError, csv.Error) as error:
                 logger.warning("データセットを一覧から除外しました (%s): %s", folder, error)
@@ -53,9 +61,72 @@ class DatasetStore:
         """メタデータと manifest を item_id で結合して返す。
 
         expected_purpose を省略すると従来どおり学習用 RELEASED 版だけを受け付ける。
+        学習用の版は、組になる検証用の版が正しくなければ ValueError にする。
         """
         purpose = expected_purpose or "train"
-        return self._released_items(version, purpose)
+        items = self._released_items(version, purpose)
+        if purpose == "train":
+            self.paired_validation_version(version)
+        return items
+
+    def paired_validation_version(self, train_version: str) -> str:
+        """学習用の版と組になる検証用の版を返す（データ準備仕様 6 章）。
+
+        組は学習用の版の dataset_info.json の base_validation_version に確定時に記録され、
+        以後変わらない。記録がない・空・指す版がない・指す版が確定済みの検証用の版でない
+        ときは、理由を付けて ValueError にする（別の版へ切り替えない）。
+        """
+        if not isinstance(train_version, str) or not _SAFE_VERSION.fullmatch(train_version):
+            raise ValueError(f"学習用データセットの版名が不正です: {train_version}")
+        folder = self.datasets_root / train_version
+        try:
+            info = json.loads((folder / "dataset_info.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise ValueError(f"学習用データセット {train_version} を読めません") from error
+        if info.get("purpose") != "train":
+            raise ValueError(f"{train_version} は学習用データセットではありません")
+        if info.get("status") != "RELEASED":
+            raise ValueError(f"学習用データセット {train_version} は確定済みではありません")
+        if info.get("dataset_version", train_version) != train_version:
+            raise ValueError(f"学習用データセット {train_version} の版名が一致しません")
+        return self._paired_validation(train_version, info)
+
+    def _paired_validation(self, train_version: str, info: dict[str, Any]) -> str:
+        base = info.get("base_validation_version")
+        if not isinstance(base, str) or not base:
+            raise ValueError(
+                f"学習用データセット {train_version} に組になる検証用データセットが"
+                "記録されていません"
+            )
+        if not _SAFE_VERSION.fullmatch(base):
+            raise ValueError(
+                f"学習用データセット {train_version} の組になる検証用データセットの版名が不正です"
+            )
+        folder = self.datasets_root / base
+        try:
+            val_info = json.loads((folder / "dataset_info.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise ValueError(
+                f"学習用データセット {train_version} の組になる検証用データセット {base} が"
+                "ありません"
+            ) from error
+        if (
+            val_info.get("purpose") != "val"
+            or val_info.get("status") != "RELEASED"
+            or val_info.get("dataset_version", base) != base
+        ):
+            raise ValueError(
+                f"学習用データセット {train_version} の組になる {base} は、"
+                "確定済みの検証用データセットではありません"
+            )
+        try:
+            self._read_items(folder)
+        except (OSError, ValueError, KeyError, csv.Error) as error:
+            raise ValueError(
+                f"学習用データセット {train_version} の組になる検証用データセット {base} を"
+                "読めません"
+            ) from error
+        return base
 
     def select_evaluation_items(self, version: str) -> list[DataItem]:
         """検証版の全画像を item_id 昇順で返す（分類・品質・usage では絞らない）。"""
