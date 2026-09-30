@@ -127,7 +127,7 @@ class ArtifactCleanupDialog(QDialog):
         buttons = QHBoxLayout()
         buttons.addStretch(1)
         self.cancel_button = QPushButton("キャンセル")
-        self.delete_button = QPushButton("削除する…")
+        self.delete_button = QPushButton("削除する")
         mark_primary(self.delete_button)
         buttons.addWidget(self.cancel_button)
         buttons.addWidget(self.delete_button)

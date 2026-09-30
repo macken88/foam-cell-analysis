@@ -63,7 +63,7 @@ pre{background:#111827;color:#f9fafb;padding:18px;border-radius:10px;overflow-x:
     ↓
 同一画像で抽出結果を比較
     ↓
-必要に応じて粒子解析用マスク出力
+必要に応じて粒子解析用画像を出力
     ↓
 外部ソフトウェアで粒子解析
     ↓
@@ -109,7 +109,7 @@ pre{background:#111827;color:#f9fafb;padding:18px;border-radius:10px;overflow-x:
     ↓
 8近傍で別粒子になっていることを確認
     ↓
-粒子解析用二値マスク</div>
+粒子解析用の白黒画像</div>
 <ul>
 <li>角で1ピクセルでも接触している場合を分離対象とする。</li>
 <li>接触している画素は両側とも背景化し、判定は元のラベルで一斉に行う（ラベル番号に依存しない）。細い気泡の消失や分断が起きた場合は、出力時に件数を記録して知らせる。</li>
@@ -118,12 +118,12 @@ pre{background:#111827;color:#f9fafb;padding:18px;border-radius:10px;overflow-x:
 </ul>
 </section>
 <section class="card">
-<h2>6. 出力マスク</h2>
+<h2>6. 出力画像</h2>
 <table>
 <thead><tr><th>出力</th><th>用途</th></tr></thead>
 <tbody>
-<tr><td>インスタンスラベルマスク</td><td>モデル出力の保存・追跡用。各気泡が別識別子を持つ。</td></tr>
-<tr><td>粒子解析用二値マスク</td><td>外部粒子解析ソフトへの入力用。隣接気泡を分離済み。</td></tr>
+<tr><td>気泡ごとのラベル画像</td><td>モデル出力の保存・追跡用。各気泡が別識別子を持つ。</td></tr>
+<tr><td>粒子解析用の白黒画像</td><td>外部粒子解析ソフトへの入力用。隣接気泡を分離済み。</td></tr>
 </tbody>
 </table>
 <p>ファイル形式は後段ソフトに合わせ、PNG / TIFF等から選択可能とする。</p>
@@ -227,9 +227,9 @@ Type C → model_007</pre>
 </div>
 <div class="preview">
 <div><strong>原画像</strong><div class="box">原画像</div></div>
-<div><strong>RC-001</strong><div class="box">マスクA</div></div>
-<div><strong>RC-002</strong><div class="box">マスクB</div></div>
-<div><strong>RC-005</strong><div class="box">マスクC</div></div>
+<div><strong>RC-001</strong><div class="box">抽出結果 A</div></div>
+<div><strong>RC-002</strong><div class="box">抽出結果 B</div></div>
+<div><strong>RC-005</strong><div class="box">抽出結果 C</div></div>
 </div>
 <div class="btns"><span class="btn">← 前の画像</span><span class="btn">次の画像 →</span></div>
 <div class="note">ズーム・パンは全表示枠で同期する。</div>

@@ -83,7 +83,7 @@ class TrainingQueuePage(BasePage):
         self.delete_button = QPushButton("削除")
         self.up_button = QPushButton("上へ")
         self.down_button = QPushButton("下へ")
-        self.edit_button = QPushButton("設定を開いて編集…")
+        self.edit_button = QPushButton("設定を開いて編集")
         self.clear_button = QPushButton("終了・中断した行を削除")
         mark_primary(self.run_button)
         self.run_action = QAction("▶ キューをすべて実行", self)
@@ -107,7 +107,7 @@ class TrainingQueuePage(BasePage):
             "delete": QAction("削除", self),
             "up": QAction("上へ移動\tCtrl+↑", self),
             "down": QAction("下へ移動\tCtrl+↓", self),
-            "edit": QAction("設定を開いて編集…", self),
+            "edit": QAction("設定を開いて編集", self),
             "clear": QAction("終了・中断した行を削除", self),
         }
         for key, callback in (

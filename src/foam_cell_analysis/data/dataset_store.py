@@ -228,13 +228,13 @@ class DatasetStore:
         if item is None:
             raise KeyError(item_id)
         if revision is not None and revision != item.selected_mask_revision:
-            raise ValueError(f"指定マスク版がありません: {revision}")
+            raise ValueError(f"指定した正解ラベル版がありません: {revision}")
         image, mask = self._paths(version, item_id)
         image_array, mask_array = self._read_array(image), self._read_array(mask)
         if not np.issubdtype(mask_array.dtype, np.integer):
-            raise ValueError(f"マスクは整数ラベルである必要があります: {item_id}")
+            raise ValueError(f"正解ラベル画像は整数ラベルである必要があります: {item_id}")
         if image_array.shape != mask_array.shape:
-            raise ValueError(f"画像とマスクのサイズが一致しません: {item_id}")
+            raise ValueError(f"原画像と正解ラベル画像のサイズが一致しません: {item_id}")
         return mask_array
 
     def select_training_items(self, config: dict[str, Any]) -> list[DataItem]:

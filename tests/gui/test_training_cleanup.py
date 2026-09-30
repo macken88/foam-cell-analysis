@@ -1,4 +1,4 @@
-"""実験一覧の「成果物を整理…」（比較・評価設計 19.5）。"""
+"""実験一覧の「成果物を整理」（比較・評価設計 19.5）。"""
 
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
@@ -87,7 +87,7 @@ def test_cleanup_from_menu_updates_freed_size_and_marks_pruned_checkpoints(shell
         return dialog.result()
 
     monkeypatch.setattr(ArtifactCleanupDialog, "exec", operate)
-    _click_menu_item(window, "学習", "成果物を整理…")
+    _click_menu_item(window, "学習", "成果物を整理")
 
     assert "dialog" in seen
     assert questions == [f"{format_bytes(seen['freed'])} を削除します。取り消せません。"]
@@ -109,4 +109,4 @@ def test_cleanup_is_in_context_menu(shell):
     page.table.setCurrentCell(_row_of(page, "exp_0042"), 1)
     page.context_menu.aboutToShow.emit()
     labels = [action.text() for action in page.context_menu.actions()]
-    assert "成果物を整理…" in labels
+    assert "成果物を整理" in labels

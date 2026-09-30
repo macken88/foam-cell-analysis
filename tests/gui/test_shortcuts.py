@@ -189,7 +189,7 @@ def test_saving_keymap_by_mouse_updates_open_pages_and_triage(qapp, shell):
     action = next(
         action
         for action in data_page.other_button.menu().actions()
-        if action.text() == "キー割り当て一覧…"
+        if action.text() == "キー割り当て一覧"
     )
     with patch.object(KeymapDialog, "exec", edit_and_save):
         _click_menu_action(qapp, data_page.other_button, action)
@@ -240,7 +240,7 @@ def test_keymap_window_is_single_non_modal_and_refreshes(qapp):
     ctx = make_context()
     home = HomeWindow(ctx, WindowManager(ctx))
     settings_menu = home.menuBar().actions()[1].menu()
-    action = next(item for item in settings_menu.actions() if item.text() == "キー割り当て…")
+    action = next(item for item in settings_menu.actions() if item.text() == "キー割り当て")
     action.trigger()
     first = ctx.keymap_window
     action.trigger()

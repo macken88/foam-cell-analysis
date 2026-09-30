@@ -290,7 +290,9 @@ class AugmentationDialog(QDialog):
         self.single_preview = QWidget()
         self.preview_grid = QGridLayout(self.single_preview)
         self.preview_labels: dict[str, QLabel] = {}
-        for index, title in enumerate(("元画像", "拡張後画像", "拡張後マスク", "オーバーレイ")):
+        for index, title in enumerate(
+            ("元画像", "拡張後画像", "拡張後の正解ラベル画像", "オーバーレイ")
+        ):
             cell = QWidget()
             cell_layout = QVBoxLayout(cell)
             cell_layout.setContentsMargins(2, 2, 2, 2)
@@ -591,11 +593,11 @@ class AugmentationDialog(QDialog):
             overlay = self._overlay(transformed, transformed_mask)
             source_size = self._preview_size(self.preview_labels["元画像"])
             transformed_size = self._preview_size(self.preview_labels["拡張後画像"])
-            mask_size = self._preview_size(self.preview_labels["拡張後マスク"])
+            mask_size = self._preview_size(self.preview_labels["拡張後の正解ラベル画像"])
             overlay_size = self._preview_size(self.preview_labels["オーバーレイ"])
             self.preview_labels["元画像"].setPixmap(_gray_pixmap(source, source_size))
             self.preview_labels["拡張後画像"].setPixmap(_gray_pixmap(transformed, transformed_size))
-            self.preview_labels["拡張後マスク"].setPixmap(
+            self.preview_labels["拡張後の正解ラベル画像"].setPixmap(
                 _rgb_pixmap(self._colorize(transformed_mask), mask_size)
             )
             self.preview_labels["オーバーレイ"].setPixmap(_rgb_pixmap(overlay, overlay_size))

@@ -166,7 +166,7 @@ class ReleasedModelsPage(BasePage):
         self.new_release_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.release_actions = {
             "new": QAction("設定を変えて新しいリリースを作る", self),
-            "detail": QAction("リリースの詳細を表示…", self),
+            "detail": QAction("リリースの詳細を表示", self),
             "discard": QAction("振り分けの変更を破棄", self),
         }
         self.release_actions["new"].triggered.connect(self._create_new_release)
@@ -188,7 +188,7 @@ class ReleasedModelsPage(BasePage):
             value.setWordWrap(True)
             self.detail_values[label] = value
             self.detail.form.addRow(label, value)
-        self.detail_button = QPushButton("詳細を表示…")
+        self.detail_button = QPushButton("詳細を表示")
         self.detail_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.detail_button.setEnabled(False)
         bind_button_action(self.detail_button, self.release_actions["detail"])
@@ -226,13 +226,13 @@ class ReleasedModelsPage(BasePage):
         note = QLabel("新しいリリース済みモデルを登録しても、自動では切り替わりません")
         set_style(note, role="note")
         actions = QHBoxLayout()
-        self.apply_button = QPushButton("変更を適用…")
+        self.apply_button = QPushButton("変更を適用")
         self.discard_button = QPushButton("変更を破棄")
         self.apply_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.discard_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         mark_primary(self.apply_button)
         self.change_count_label = QLabel()
-        self.apply_action = QAction("変更を適用…", self)
+        self.apply_action = QAction("変更を適用", self)
         self.apply_action.triggered.connect(self._confirm_apply)
         bind_button_action(self.apply_button, self.apply_action)
         bind_button_action(self.discard_button, self.release_actions["discard"])
@@ -567,7 +567,7 @@ class ReleasedModelsPage(BasePage):
         "box_detections_per_img": "最大検出数",
         "cellprob_threshold": "セル確率閾値",
         "flow_threshold": "フロー閾値",
-        "mask_thresh": "マスク閾値",
+        "mask_thresh": "抽出判定閾値",
         "min_size": "最小サイズ（画素）",
         "max_size_fraction": "最大サイズの割合",
     }

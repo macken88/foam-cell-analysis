@@ -54,8 +54,8 @@ td.nowrap{white-space:nowrap}
 <li><a href="#s8">8. 推論（評価プロセス内）</a></li>
 <li><a href="#s9">9. 評価結果と指標</a></li>
 <li><a href="#s10">10. 粒子分離（後処理）</a></li>
-<li><a href="#s11">11. マスク比較</a></li>
-<li><a href="#s12">12. 粒子解析用マスク出力</a></li>
+<li><a href="#s11">11. 抽出結果比較</a></li>
+<li><a href="#s12">12. 抽出結果出力</a></li>
 <li><a href="#s13">13. リリース登録</a></li>
 <li><a href="#s14">14. モデル振り分け</a></li>
 <li><a href="#s15">15. ジョブの排他と共通基盤</a></li>
@@ -75,10 +75,10 @@ td.nowrap{white-space:nowrap}
 <p>次の項目は確定事項です。本書の他の章はすべてこれに従います。</p>
 <div class="table-wrap"><table class="keys">
 <tr><th>項目</th><th>内容</th></tr>
-<tr><td>実装範囲</td><td>推論設定、比較候補、検証用データセットでの評価（実推論）、マスク比較、粒子解析用マスク出力、外部解析結果の保存、リリース登録、モデル振り分け、学習成果物（重みなど）の整理（19 章）、AP 表記の統一（9.3）。</td></tr>
+<tr><td>実装範囲</td><td>推論設定、比較候補、検証用データセットでの評価（実推論）、抽出結果比較、抽出結果出力、外部解析結果の保存、リリース登録、モデル振り分け、学習成果物（重みなど）の整理（19 章）、AP 表記の統一（9.3）。</td></tr>
 <tr><td>範囲外</td><td><strong>本番推論（PageId.INFERENCE）はモックのまま</strong>（2.4 で境界を決める）。データ準備もモックのまま（検証用データセットは 3 章の方法で用意する）。<strong>OOF による推論設定の調整と、最終学習の分離は先送りする</strong>（20 章）。</td></tr>
 <tr><td>指標</td><td>学習と同じ Cellpose 方式 AP（学習 11 章、<code>evaluation/ap.py</code>）。画面・仕様上の「mAP」は「AP」に改める（9.3）。</td></tr>
-<tr><td>実行方式</td><td>検証用データセットでの評価は、学習と同じく GUI とは別のプロセスで実行する。粒子解析用マスク出力は保存済みの予測から作るので、GUI プロセス内のワーカースレッドで行う。</td></tr>
+<tr><td>実行方式</td><td>検証用データセットでの評価は、学習と同じく GUI とは別のプロセスで実行する。抽出結果出力は保存済みの予測から作るので、GUI プロセス内のワーカースレッドで行う。</td></tr>
 <tr><td>排他</td><td>重い ML プロセス（学習・評価）は同時に 1 つだけ動かす（15.1）。</td></tr>
 <tr><td>環境</td><td>学習と同じ（pip のみ、開発は CPU、後で CUDA）。</td></tr>
 </table></div>
@@ -113,7 +113,7 @@ td.nowrap{white-space:nowrap}
 <tr><td><code>inference/run.py</code>、<code>inference/loop.py</code></td><td>評価プロセス本体（7.3）</td><td>torch</td></tr>
 <tr><td><code>inference/adapters.py</code></td><td>推論用アダプタの生成口（8.1）</td><td>torch（Cellpose のみ cellpose）</td></tr>
 <tr><td><code>inference/particle_split.py</code></td><td>粒子分離（10 章）。表示と出力で共有する</td><td>numpy, scipy</td></tr>
-<tr><td><code>inference/mask_export.py</code></td><td>粒子解析用マスク出力（12 章）。ワーカースレッドから呼ぶ</td><td>numpy, pillow, tifffile</td></tr>
+<tr><td><code>inference/mask_export.py</code></td><td>粒子解析用画像出力（12 章）。ワーカースレッドから呼ぶ</td><td>numpy, pillow, tifffile</td></tr>
 <tr><td><code>gui/process_job.py</code></td><td>QProcess の起動・hello/go・Job Object・ログ保存（<code>gui/training_jobs.py</code> から共通部分を移す）</td><td>PySide6, ctypes</td></tr>
 <tr><td><code>gui/compute_coordinator.py</code></td><td>学習と評価の排他（15.1）</td><td>PySide6</td></tr>
 <tr><td><code>gui/evaluation_runner.py</code></td><td>EvaluationRunner と評価ジョブ 2 種（ProcessEvaluationJob / FakeEvaluationJob）</td><td>PySide6</td></tr>
@@ -124,7 +124,7 @@ td.nowrap{white-space:nowrap}
 <p>比較・リリース系の API は、<code>__getattr__</code> に頼らず<strong>明示的に</strong> ComparisonService へ委譲します（漏れて MockBackend に流れると、実データと模擬データが混ざるため）。</p>
 <div class="table-wrap"><table class="keys">
 <tr><th>メソッド群</th><th>委譲先</th></tr>
-<tr><td>推論設定、候補、評価、候補の予測、外部解析、マスク出力、リリース、振り分け（16.1 の一覧すべて）</td><td>ComparisonService</td></tr>
+<tr><td>推論設定、候補、評価、候補の予測、外部解析、抽出結果画像の出力、リリース、振り分け（16.1 の一覧すべて）</td><td>ComparisonService</td></tr>
 <tr><td><code>list_validation_versions</code>、<code>list_dataset_versions("val")</code>、<code>list_validation_items</code>、検証版の <code>get_dataset_item_image / mask</code></td><td>TrainingService.dataset_store（3 章で val に対応）</td></tr>
 <tr><td><code>experiment_deletion_info</code>、<code>delete_experiment</code></td><td>TrainingService ＋ ComparisonService の参照確認（13.5）</td></tr>
 <tr><td><code>get_inference_result</code> ほか本番推論</td><td>MockBackend（2.4）</td></tr>
@@ -384,7 +384,7 @@ ComparisonService.add_candidate(experiment_id, attempt, inference_config_id, com
 <li>run_spec の対象 ID すべてに予測があり、ファイルが存在し、バイト数が一致する。</li>
 <li>per_image.csv が存在し、行数が対象件数と一致する。eval_counts.npz と instances.csv が存在する。</li>
 </ul>
-<p>判定の終了時に status.json を書く。ここではファイル内容の sha256 は再計算しない（重いので、マスク比較・出力・リリースの時点で必要な分だけ照合する。7.7）。</p>
+<p>判定の終了時に status.json を書く。ここではファイル内容の sha256 は再計算しない（重いので、抽出結果比較・出力・リリースの時点で必要な分だけ照合する。7.7）。</p>
 
 <h3>7.6 起動時の復旧</h3>
 <p>学習 5.4 と同じ手順を、全候補の全評価に対して行います（プロセスの照合 → 終端判定 → status.json、その後に <code>*.tmp</code> と <code>.preparing_*</code> を削除）。評価にはキューがないので、キューの修復はありません。復旧中に実行中だった評価は <code>stopped</code>（理由 interrupted または app_exit）になり、自動では再開しない。</p>
@@ -392,7 +392,7 @@ ComparisonService.add_candidate(experiment_id, attempt, inference_config_id, com
 <h3>7.7 採用する評価と破損</h3>
 <ul>
 <li>候補一覧・詳細に出す評価 = その候補・その検証版で、status が completed かつ input_fingerprint が現在の条件と一致する評価のうち、番号が最も大きいもの。</li>
-<li>詳細評価・マスク比較・出力・リリースは、画面を開いた時点の evaluation_id を固定して使う（途中で再評価が終わっても、見ている結果が入れ替わらない）。</li>
+<li>評価詳細・抽出結果比較・出力・リリースは、画面を開いた時点の evaluation_id を固定して使う（途中で再評価が終わっても、見ている結果が入れ替わらない）。</li>
 <li>completed の評価の予測ファイルが後から消えた・変わった場合、status.json は書き換えない。読んだ時点で sha256 またはサイズが合わなければ、その評価を「破損」として扱い、比較・出力・リリースに使わない（画面には「評価結果のファイルが壊れています。再評価してください」）。</li>
 </ul>
 </div>
@@ -520,7 +520,7 @@ get_candidate_prediction(candidate_id, evaluation_id, item_id) -&gt; np.ndarray<
 
 <!-- ============================================================ -->
 <div class="card" id="s12">
-<h2>12. 粒子解析用マスク出力</h2>
+<h2>12. 抽出結果出力</h2>
 <p>評価済みの予測から作るので、ML プロセスは使いません。<code>inference/mask_export.py</code> をワーカースレッド（JobManager に登録する出力ジョブ）から呼びます。未評価の候補は出力できない。</p>
 <pre><code>選んだフォルダ/
   export_20260929_101530_ab12/            … 完成後の名前
@@ -590,7 +590,7 @@ get_candidate_prediction(candidate_id, evaluation_id, item_id) -&gt; np.ndarray<
 <p><strong>OOF AP の表示</strong>。release.json の <code>oof.applicability</code> と <code>oof.reason</code> を ReleasedModel（<code>oof_applicability</code>・<code>oof_reason</code>）へ引き継ぎ、実験は引かない。</p>
 <ul>
 <li>一覧は候補一覧と同じく、<code>matching</code> のときだけ数値を出す。<code>different</code>・<code>unknown</code>・記録がない旧形式は「対象外」とし、理由をツールチップで確認できる（記録がないときの理由は「学習時の評価条件を確認できません」。記録がないものを <code>matching</code> とは扱わない）。</li>
-<li>詳細（右の欄と「リリースの詳細を表示…」）は数値を残し、「学習時 OOF AP（参考）」と明示する。条件（推論設定が学習時と異なります / 学習時の評価条件を確認できません）と、final.pt 自身の評価ではないことを併記する。</li>
+<li>詳細（右の欄と「リリースの詳細を表示」）は数値を残し、「学習時 OOF AP（参考）」と明示する。条件（推論設定が学習時と異なります / 学習時の評価条件を確認できません）と、final.pt 自身の評価ではないことを併記する。</li>
 </ul>
 
 <h3>13.5 実験の削除との関係</h3>
@@ -693,13 +693,13 @@ get_candidate_prediction(candidate_id, evaluation_id, item_id) -&gt; np.ndarray<
 <tr><td>候補一覧</td><td>上段に「候補追加」「設定を変えて候補追加」「評価実行/評価中止」と検証版・状態フィルタを置く。列は固定検証版、推論条件（学習時と同じ/変更あり/確認できません）、検証 AP、OOF AP、状態、外部解析、コメント。検証版で絞った時だけその版の検証 AP 最高値を強調する。下段に「評価詳細」「抽出結果比較」「抽出結果出力」と右端「選択候補リリース」を置く。評価中・待機中は runner から導出する。</td></tr>
 <tr><td>候補追加ダイアログ</td><td>試行の選択を必須に（5.3）。「学習時と同じ推論設定」を既定にし、元設定・学習モデルを保持して新規未評価候補を作る。重複候補は既存候補へ案内する。</td></tr>
 <tr><td>詳細評価ダイアログ</td><td>表記（9.3）、全体の対象件数、学習時 OOF AP（参考）と注記（6 章）、候補に固定した検証版、評価 ID ごとの画像別円相当径中央値入力と集計を表示する。候補固定版以外の旧評価は履歴選択から読み取り専用で表示する。</td></tr>
-<tr><td>粒子解析用マスク出力ダイアログ</td><td>FakeJob をやめて実出力（12 章）。完了時に出力フォルダと消失・分断の件数を表示し、フォルダを開けるようにする。</td></tr>
-<tr><td>マスク比較</td><td>11 章。</td></tr>
+<tr><td>抽出結果出力ダイアログ</td><td>FakeJob をやめて実出力（12 章）。完了時に出力フォルダと消失・分断の件数を表示し、フォルダを開けるようにする。</td></tr>
+<tr><td>抽出結果比較</td><td>11 章。</td></tr>
 <tr><td>リリース登録ダイアログ</td><td>評価 ID の固定、固定版と評価版の一致、コピー中の進行表示（13 章）。</td></tr>
 <tr><td>リリース済みモデル・振り分け</td><td>実験を引かない（13.4）、expected_revision の衝突時のメッセージ（14 章）。</td></tr>
 <tr><td>学習キュー</td><td>評価の実行中は「評価の終了を待っています」（15.1）。</td></tr>
 <tr><td>アプリ終了</td><td>評価中も学習と同じ確認を出す。</td></tr>
-<tr><td>実験一覧</td><td>「成果物を整理…」を追加（19.5）。実験詳細の途中保存モデルの一覧で、削除済みのものは「削除済み」と表示する。</td></tr>
+<tr><td>実験一覧</td><td>「成果物を整理」を追加（19.5）。実験詳細の途中保存モデルの一覧で、削除済みのものは「削除済み」と表示する。</td></tr>
 <tr><td>候補一覧・詳細・リリース登録</td><td>候補ごとの固定検証版表示と絞り込み、候補固定版のみの評価・比較・新規リリース（3.5）。</td></tr>
 </table></div>
 <p>ID・enum 名・生のパス・例外メッセージをそのまま画面に出さない（GUI ガイドライン）。表示の変更が大きいもの（出力完了の案内、詳細評価ダイアログの追加項目、成果物の整理ダイアログ）は、実装前に ASCII のモックで承認をもらう。</p>
@@ -715,7 +715,7 @@ get_candidate_prediction(candidate_id, evaluation_id, item_id) -&gt; np.ndarray<
 <li>ComparisonService: 推論設定の範囲と再利用、候補の重複（fingerprint）、試行の明示、OOF の applicability 3 値、評価の準備（再評価で新しい番号、旧結果が残る）、採用する評価の選び方、破損の検出、リリースの公開と復旧（改名の直後に落ちた場合）、リリース重みの独立（元の final.pt を書き換えてもリリースが変わらない）、振り分けの一括検証と revision の衝突、パスの逸脱の拒否。</li>
 <li>終端判定の共通関数（全行）と、評価の result.json の妥当性。</li>
 <li>粒子分離: 対角の接触、細い橋、1 画素の粒子、消失、分断、非連続のラベル番号、ラベル番号を入れ替えても結果が同じ。</li>
-<li>マスク出力: 衝突するファイル名、PNG の上限、キャンセル後に <code>.partial</code> が残り完成扱いにならない、既存フォルダに上書きしない。</li>
+<li>抽出結果画像の出力: 衝突するファイル名、PNG の上限、キャンセル後に <code>.partial</code> が残り完成扱いにならない、既存フォルダに上書きしない。</li>
 <li>instance_table: 手計算した小さな例（重なり・非連続のラベル・空）。eval_counts.npz が学習の形式と同じ読み方で読める。</li>
 <li>成果物の整理: 種類ごとの対象、実行中・未確定の試行を消さない、候補状態の候補が参照する final.pt を消さない、リリース済みはリリース側のコピーが残る、pruned.json の deleting から再開して deleted になる、整理後も試行の状態（completed）が変わらない、整理した final.pt からは候補を作れない（理由付きのエラー）、run_dir の外を消さない。</li>
 </ul>
@@ -734,7 +734,7 @@ get_candidate_prediction(candidate_id, evaluation_id, item_id) -&gt; np.ndarray<
 <li>train_v000 で学習した Mask R-CNN の実験から候補を作り、val_v000 で評価でき、候補一覧に検証 AP・OOF AP が表示される。</li>
 <li>推論設定を変えた 2 つ目の候補を作ると、OOF AP が「対象外」になり、検証 AP が別の値として出る。</li>
 <li>2 候補の抽出結果比較で、原画像と両候補の予測が表示される。</li>
-<li>粒子解析用マスクを出力し、二値マスクで接触していた気泡が分かれている。</li>
+<li>粒子解析用の白黒画像を出力し、隣接気泡が分離されている。</li>
 <li>リリース登録・振り分けの適用ができ、アプリを再起動しても同じ表示になる。<code>workspace/pretrained/</code> を空にしても評価・リリースが動く。</li>
 <li>評価中の中断・アプリ終了・評価プロセスの強制終了で、状態が正しく確定し、再起動後も同じ表示になる。</li>
 <li>Cellpose（cpsam）の実験でも 1 と 3 ができる（手動確認）。</li>
@@ -751,8 +751,8 @@ get_candidate_prediction(candidate_id, evaluation_id, item_id) -&gt; np.ndarray<
 <tr><td>A. 土台（torch 不要）</td><td>DatasetStore の val 対応とダミー val_v000、データ型（EvaluationRecord、RoutingState、Evaluation.n_images）、ComparisonService の保存と復元（推論設定・候補・外部解析・振り分け）、fingerprint と OOF の applicability、粒子分離の共通関数、instance_table、成果物の整理のサービス側（19 章）</td><td>17.1 の該当分</td></tr>
 <tr><td>B. 共通ジョブ基盤と評価プロセス</td><td>jobs/ と gui/process_job.py への共通化（学習の既存テストが通ること）、ComputeCoordinator、EvaluationRunner、inference/run（偽アダプタ）、評価の準備・終端判定・復旧</td><td>17.2 の偽アダプタ・障害・排他</td></tr>
 <tr><td>C. 実推論</td><td>推論用アダプタの生成口、Cellpose の評価パラメータの受け渡し、入力変換の共通化</td><td>ml テスト（実行前にユーザー確認）</td></tr>
-<tr><td>D. GUI 接続</td><td>HybridBackend の明示委譲、MockBackend の API 変更、16.2 の画面変更（大きい表示の変更は先に ASCII モックで承認）、マスク比較の修正、AP 表記の統一（9.3）、成果物の整理ダイアログ</td><td>GUI の主要経路のテスト、スクリーンショットでのレビュー</td></tr>
-<tr><td>E. 出力とリリース</td><td>マスク出力、リリースの公開と復旧、振り分けの一括適用、リリース画面の実験非依存化、本番推論画面の境界（2.4）</td><td>17.1 の該当分、受け入れ条件 1〜7</td></tr>
+<tr><td>D. GUI 接続</td><td>HybridBackend の明示委譲、MockBackend の API 変更、16.2 の画面変更（大きい表示の変更は先に ASCII モックで承認）、抽出結果比較の修正、AP 表記の統一（9.3）、成果物の整理ダイアログ</td><td>GUI の主要経路のテスト、スクリーンショットでのレビュー</td></tr>
+<tr><td>E. 出力とリリース</td><td>抽出結果画像の出力、リリースの公開と復旧、振り分けの一括適用、リリース画面の実験非依存化、本番推論画面の境界（2.4）</td><td>17.1 の該当分、受け入れ条件 1〜7</td></tr>
 </table></div>
 </div>
 
@@ -810,7 +810,7 @@ PruneResult(freed_bytes, n_files, skipped: list[ArtifactGroup])   # 条件を満
 <p>HybridBackend は TrainingService へ委譲し、final の参照確認に ComparisonService を使う。MockBackend は模擬の大きさを返し、状態だけを持つ。</p>
 
 <h3>19.5 画面</h3>
-<p>実験一覧の「実験」メニューと右クリックに「成果物を整理…」を置く（複数選択可）。ダイアログでは種類ごとにチェック欄・ファイル数・容量を出し、消せないものは理由を出して選べないようにする。実行前に消える容量の合計を出し、確認してから消す。画面の形は実装前に ASCII のモックで承認をもらう。</p>
+<p>実験一覧の「実験」メニューと右クリックに「成果物を整理」を置く（複数選択可）。ダイアログでは種類ごとにチェック欄・ファイル数・容量を出し、消せないものは理由を出して選べないようにする。実行前に消える容量の合計を出し、確認してから消す。画面の形は実装前に ASCII のモックで承認をもらう。</p>
 </div>
 
 <!-- ============================================================ -->

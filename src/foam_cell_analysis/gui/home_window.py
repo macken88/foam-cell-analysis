@@ -22,6 +22,7 @@ from .home_summary import HomeSummary, build_home_summary
 from .labels import running_jobs_label
 from .navigation import ModeId, PageId
 from .theme import Color, body_font, numeric_font, set_style
+from .widgets.marks import display_mode_label
 from .window_manager import WindowManager
 
 
@@ -307,11 +308,11 @@ class HomeWindow(QMainWindow):
         file_menu = self.menuBar().addMenu("ファイル(&F)")
         file_menu.addAction("終了", self.close)
         tools_menu = self.menuBar().addMenu("ツール(&T)")
-        tools_menu.addAction("キー割り当て…", self._show_shortcuts_info)
+        tools_menu.addAction("キー割り当て", self._show_shortcuts_info)
         display_menu = tools_menu.addMenu("原画像と切り替える表示")
         self.display_actions = {}
         for name in sorted(self.ctx.display.MODES):
-            action = display_menu.addAction(name)
+            action = display_menu.addAction(display_mode_label(name))
             action.setCheckable(True)
             action.setChecked(name == self.ctx.display.value)
             action.triggered.connect(

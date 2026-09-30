@@ -370,12 +370,12 @@
 <tr><td>rescale</td><td>Cellpose内部のリスケール</td></tr>
 <tr><td>bsize</td><td>学習パッチサイズ</td></tr>
 <tr><td>nimg_per_epoch</td><td>1エポックあたりの画像数</td></tr>
-<tr><td>min_train_masks</td><td>学習画像として認める最小マスク数</td></tr>
+<tr><td>min_train_masks</td><td>1画像あたりの最小気泡数（これ未満の画像を Cellpose の学習対象から除外）</td></tr>
 <tr><td>class_weights</td><td>必要に応じた重み設定</td></tr>
 </tbody>
 </table>
 <div class="warning">
-      cellprob_threshold、flow_threshold等は主に推論・マスク生成側の設定として扱い、
+      cellprob_threshold、flow_threshold等は主に推論・抽出結果生成側の設定として扱い、
       学習設定には混在させない。
     </div>
 </section>
@@ -432,7 +432,7 @@ Range       : -180 ～ +180 deg</pre>
 <ul>
 <li>元画像</li>
 <li>拡張後画像</li>
-<li>拡張後 マスク</li>
+<li>拡張後の正解ラベル画像</li>
 <li>オーバーレイ</li>
 <li>再生成ボタンで別乱数の変換を確認</li>
 <li>複数パターン表示（例：8パターン）</li>
@@ -603,7 +603,7 @@ Range       : -180 ～ +180 deg</pre>
 <div class="preview-grid">
 <div><strong>元画像</strong><div class="preview-box">元画像</div></div>
 <div><strong>拡張後</strong><div class="preview-box">拡張後画像</div></div>
-<div><strong>マスク</strong><div class="preview-box">拡張後 マスク</div></div>
+<div><strong>正解ラベル画像</strong><div class="preview-box">拡張後の正解ラベル画像</div></div>
 <div><strong>オーバーレイ</strong><div class="preview-box">オーバーレイ</div></div>
 </div>
 <div class="btnbar">
@@ -749,7 +749,7 @@ Range       : -180 ～ +180 deg</pre>
 <tr><td>リスケール</td><td>rescale</td><td>Cellpose内部で画像サイズを調整する設定。</td></tr>
 <tr><td>学習パッチサイズ</td><td>bsize</td><td>学習時に切り出して使用する画像パッチのサイズ。</td></tr>
 <tr><td>1エポック当たり画像数</td><td>nimg_per_epoch</td><td>1エポック中に学習へ使用する画像数。</td></tr>
-<tr><td>最小マスク数</td><td>min_train_masks</td><td>学習対象画像として採用するために必要な最小インスタンス数。</td></tr>
+<tr><td>1画像あたりの最小気泡数</td><td>min_train_masks</td><td>画像内の正解ラベルから気泡数を数え、この数より少ない画像をCellposeの学習対象から除外する。</td></tr>
 <tr><td>クラス重み</td><td>class_weights</td><td>必要に応じてクラス不均衡等を補正するための重み。</td></tr>
 </tbody>
 </table>

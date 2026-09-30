@@ -27,7 +27,7 @@ from .labels import (
 )
 from .navigation import ModeId, PageId
 from .theme import install_input_guard, numeric_font
-from .widgets.marks import LayoutButton
+from .widgets.marks import LayoutButton, display_mode_label
 
 MODE_LABELS = {
     ModeId.DATA_PREPARATION: "データ準備",
@@ -171,7 +171,7 @@ class ModeWindow(QMainWindow):
         if self.mode == ModeId.INFERENCE:
             help_menu = self.menuBar().addMenu("ヘルプ(&H)")
             self._help_menu_action = self._add_action(
-                help_menu, "キー割り当て一覧…", self._open_keymap, "help"
+                help_menu, "キー割り当て一覧", self._open_keymap, "help"
             )
             return
         menu_specs = [("file", "ファイル(&F)")]
@@ -212,14 +212,15 @@ class ModeWindow(QMainWindow):
         if self.mode == ModeId.TRAINING:
             self._tools_keymap_separator = self._menus["tools"].addSeparator()
         self._tools_keymap_action = self._add_action(
-            self._menus["tools"], "キー割り当て…", self._open_keymap
+            self._menus["tools"], "キー割り当て", self._open_keymap
         )
         self._display_menu = None
         if self.mode in (ModeId.DATA_PREPARATION, ModeId.COMPARISON):
             self._display_menu = self._menus["tools"].addMenu("原画像と切り替える表示")
             self._display_actions = {}
+            display_scope = "ground_truth" if self.mode == ModeId.DATA_PREPARATION else "prediction"
             for name in sorted(self.ctx.display.MODES):
-                action = self._display_menu.addAction(name)
+                action = self._display_menu.addAction(display_mode_label(name, display_scope))
                 action.setCheckable(True)
                 action.setChecked(name == self.ctx.display.value)
                 action.triggered.connect(
@@ -228,7 +229,7 @@ class ModeWindow(QMainWindow):
                 self._display_actions[name] = action
             self.ctx.display.changed.connect(self._display_changed)
         self._help_menu_action = self._add_action(
-            self._menus["help"], "キー割り当て一覧…", self._open_keymap, "help"
+            self._menus["help"], "キー割り当て一覧", self._open_keymap, "help"
         )
         self._tab_menu_actions = {}
         for target in self.page_ids:
@@ -485,7 +486,7 @@ class ModeWindow(QMainWindow):
                 f"ホームに戻る\t{self.ctx.shortcuts.display_key(self.ctx.shortcuts['home'])}"
             )
         self._help_menu_action.setText(
-            f"キー割り当て一覧…\t{self.ctx.shortcuts.display_key(self.ctx.shortcuts['help'])}"
+            f"キー割り当て一覧\t{self.ctx.shortcuts.display_key(self.ctx.shortcuts['help'])}"
         )
 
     def _open_keymap(self) -> None:

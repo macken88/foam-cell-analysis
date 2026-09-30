@@ -71,8 +71,8 @@ class InferencePage(BasePage):
     def _build_ui(self) -> None:
         input_section = FormSection("入力画像")
         controls = QHBoxLayout()
-        self.add_files_button = QPushButton("画像を追加…")
-        self.add_folder_button = QPushButton("フォルダを追加…")
+        self.add_files_button = QPushButton("画像を追加")
+        self.add_folder_button = QPushButton("フォルダを追加")
         self.remove_button = QPushButton("選択を削除")
         controls.addWidget(self.add_files_button)
         controls.addWidget(self.add_folder_button)
@@ -108,7 +108,7 @@ class InferencePage(BasePage):
         self.instance_check.setChecked(True)
         self.binary_check = QCheckBox("粒子解析用の白黒画像（隣接気泡を分離済み）")
         self.binary_check.setChecked(True)
-        self.overlay_check = QCheckBox("オーバーレイ画像も保存")
+        self.overlay_check = QCheckBox("抽出結果を重ねた画像も保存")
         self.output_section.add_row(
             "保存内容",
             self._checkbox_row(self.instance_check, self.binary_check, self.overlay_check),

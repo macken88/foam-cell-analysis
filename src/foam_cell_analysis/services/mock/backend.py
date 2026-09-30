@@ -67,10 +67,10 @@ class MockBackend:
     check_names: ClassVar[list[str]] = [
         "識別子の重複なし",
         "原画像が存在",
-        "必要なマスクが存在",
-        "原画像とマスクの対応",
+        "正解ラベル画像がそろっている",
+        "原画像と正解ラベル画像の対応",
         "必須メタデータ入力済み",
-        "原画像とマスクの画像サイズ一致",
+        "原画像と正解ラベル画像のサイズ一致",
         "ファイルハッシュ一致",
         "参照先が一意に確定",
     ]
@@ -895,7 +895,7 @@ class MockBackend:
         item = next(item for item in dataset.items if item.item_id == item_id)
         revision = changes.get("selected_mask_revision")
         if revision and revision not in item.mask_revisions:
-            raise ValueError(f"{item_id} にマスク版 {revision} はありません")
+            raise ValueError(f"画像 {item_id} に正解ラベル版 {revision} はありません")
         was_included = item.included
         original_change = item.previous_change if item.change == "excluded" else item.change
         legacy_included = "included" in changes

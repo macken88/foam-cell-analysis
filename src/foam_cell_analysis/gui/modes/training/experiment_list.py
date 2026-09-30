@@ -53,7 +53,7 @@ from .cleanup_dialog import ArtifactCleanupDialog, cleanup_status_message
 from .dialogs import ExperimentCompareDialog, SendToCandidatesDialog, flatten_config
 
 RETRY_LABEL = "同じ設定でやり直す"
-CLEANUP_LABEL = "成果物を整理…"
+CLEANUP_LABEL = "成果物を整理"
 PRUNED_TEXT = "削除済み"
 RETRY_TIP = (
     "同じ実験の新しい試行として、同じ設定で最初から学習し直します。"
@@ -235,7 +235,7 @@ class ExperimentListPage(BasePage):
         for key, label in (
             ("compare", "選択した実験を比較"),
             ("copy", "設定を複製して新規実験"),
-            ("send", "モデル比較へ送る…"),
+            ("send", "モデル比較へ送る"),
         ):
             button = QPushButton(label)
             button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
@@ -247,7 +247,7 @@ class ExperimentListPage(BasePage):
         for key, label, callback in (
             ("compare", "選択した実験を比較", self.compare_selected),
             ("copy", "設定を複製して新規実験", self.copy_selected),
-            ("send", "モデル比較へ送る…", self.send_selected),
+            ("send", "モデル比較へ送る", self.send_selected),
         ):
             self.action_map[key] = QAction(label, self)
             self.action_map[key].triggered.connect(callback)
@@ -261,7 +261,7 @@ class ExperimentListPage(BasePage):
             action = self.more_menu.addAction(label)
             action.triggered.connect(callback)
             self.action_map[key] = action
-        self.action_map["delete"] = QAction("実験を削除…", self)
+        self.action_map["delete"] = QAction("実験を削除", self)
         self.action_map["delete"].triggered.connect(self.delete_selected)
         self.action_map["cleanup"] = QAction(CLEANUP_LABEL, self)
         self.action_map["cleanup"].triggered.connect(self.cleanup_selected)
@@ -331,7 +331,7 @@ class ExperimentListPage(BasePage):
 
     def menu_actions(self):
         if not hasattr(self, "yaml_menu_action"):
-            self.yaml_menu_action = QAction("設定 YAML を表示…", self)
+            self.yaml_menu_action = QAction("設定 YAML を表示", self)
             self.yaml_menu_action.triggered.connect(self.show_config_yaml)
             self._update_buttons()
         return {

@@ -153,13 +153,13 @@ def test_stopped_experiment_menu_offers_retry_first_and_deletes_after_confirmati
     items = [action for action in menu.actions() if not action.isSeparator()]
     assert items[0].text() == "同じ設定でやり直す"
     assert items[0].isEnabled()
-    delete = _action(menu, "実験を削除…")
+    delete = _action(menu, "実験を削除")
     assert not delete.isEnabled()
     assert "比較候補 RC-009 がこの実験を参照しています" in delete.toolTip()
 
     backend.reject_candidate("RC-009")
     menu = _open_row_menu(page, row, monkeypatch)
-    delete = _action(menu, "実験を削除…")
+    delete = _action(menu, "実験を削除")
     assert delete.isEnabled()
     prompts = []
     monkeypatch.setattr(

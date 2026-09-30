@@ -92,7 +92,7 @@ class MaskComparisonPage(BasePage):
         controls.addWidget(self.classification)
         controls.addWidget(QLabel("対象画像:"))
         controls.addWidget(self.item_select, 1)
-        self.display_toggle = DisplayToggle(ctx.display)
+        self.display_toggle = DisplayToggle(ctx.display, label_scope="prediction")
         self.display_toggle.alternate_selected.connect(self._toggle_display)
         mode_row = QHBoxLayout()
         mode_row.addWidget(self.display_toggle)
@@ -445,7 +445,7 @@ class MaskComparisonPage(BasePage):
         return {
             "オーバーレイ": DisplayMode.OVERLAY,
             "インスタンスラベル": DisplayMode.INSTANCE_LABEL,
-            "二値抽出結果": DisplayMode.BINARY,
+            "二値マスク": DisplayMode.BINARY,
         }[self.ctx.display.value]
 
     def _toggle_display(self, _alternate: bool) -> None:

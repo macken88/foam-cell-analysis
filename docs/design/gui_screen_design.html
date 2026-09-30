@@ -236,7 +236,7 @@ table.rev{font-size:.92rem}
 </style>
 </head>
 <body>
-<!-- 画面モック用の合成画像（気泡）。原画像 / オーバーレイ / インスタンスラベル / 二値マスク -->
+<!-- 画面モック用の合成画像（気泡）。原画像 / オーバーレイ / 気泡ごとの抽出結果 / 白黒の抽出結果 -->
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
 <defs>
 <g id="bubbles">
@@ -340,7 +340,7 @@ table.rev{font-size:.92rem}
 <li>ページは表示されるたびに <code>on_enter</code> で backend から最新データを読み直す（画面間の整合はこれで取る）。</li>
 <li>画面遷移は必ず <code>ctx.navigator.navigate(PageId.X, **params)</code> を使う。ページ同士が直接参照し合わない。</li>
 <li>ダイアログは各モードの <code>dialogs.py</code> などに置き、モーダル（<code>exec()</code>）とする。ただし、データ拡張プロファイル編集は大きめのダイアログにする。</li>
-<li>長い処理（取り込み、整合性確認、アーカイブ、学習、評価、マスク出力、推論）は <code>FakeJob</code> で進捗を模擬する。</li>
+<li>長い処理（取り込み、整合性確認、アーカイブ、学習、評価、粒子解析用画像出力、推論）は <code>FakeJob</code> で進捗を模擬する。</li>
 <li>画面遷移してもジョブは継続する（<code>JobManager</code> が保持）。</li>
 <li>実行中ジョブ数をステータスバーに表示する。</li>
 <li>確定済みのもの（データセット版、実験で使用済みのデータ拡張プロファイル、リリース済みモデル）は、GUI 上でも編集不可（読み取り専用表示）にする。</li>
@@ -415,10 +415,10 @@ table.rev{font-size:.92rem}
 <div class="table-wrap"><table>
 <thead><tr><th>ウィンドウ／メニュー</th><th>項目</th></tr></thead>
 <tbody>
-<tr><td>ホーム／ファイル・ツール・ヘルプ</td><td>ファイル: 終了。ツール: キー割り当て…・原画像と切り替える表示。ヘルプ: キー割り当て一覧…。</td></tr>
-<tr><td>データ準備・モデル学習・比較／ファイル・ツール・ヘルプ</td><td>ファイル末尾: ホームに戻る・ウィンドウを閉じる。ツール: データ準備・比較はキー割り当て…・原画像と切り替える表示、モデル学習はデータ拡張を設定…・キー割り当て…。ヘルプ: キー割り当て一覧…。</td></tr>
-<tr><td>データ準備／ファイル・編集・表示・データセット</td><td>ファイル: 画像を取り込む…・新しいマスク版を取り込む… ― Excel に出力…・Excel から取り込む… ― アーカイブを作成…。編集: 元に戻す・やり直す ― すべて選択・選択を解除・検索 ― 用途・画像分類・品質を変更。画像分類は存在する分類名と 1〜9 のキーを表示する。表示: タブ ― 絞り込み ― 原画像表示・前の画像・次の画像 ― 拡大・縮小・全体表示。データセット: 自動振り分け・連続振り分け ― エラー画像表示・確定 ― 版履歴のサムネイル確認。版履歴タブではサムネイル確認だけを有効にする。</td></tr>
-<tr><td>モデル学習／ファイル・編集・表示・学習</td><td>ファイル: 新しい実験・下書き保存 ― 実験一覧の設定 YAML。編集: 学習キューの複製・削除 ― 上へ移動・下へ移動 ― 設定を開いて編集…・実験一覧の下書きを編集。表示: タブ ― 設定プレビュー YAML ― 学習キュー用の列・実験一覧用の列・実験群／モデル／状態の絞り込み。学習: 設定を検証・キューに追加・学習開始 ― キューをすべて実行・この学習の後で停止・今すぐ停止・終了・中断した行を削除 ― 今すぐ停止・同じ設定でやり直す ― 設定を複製して新規実験・複製してキューに追加 ― 選択した実験を比較・結果を開く・モデル比較へ送る… ― 実験を削除…。</td></tr>
+<tr><td>ホーム／ファイル・ツール・ヘルプ</td><td>ファイル: 終了。ツール: キー割り当て・原画像と切り替える表示。ヘルプ: キー割り当て一覧。</td></tr>
+<tr><td>データ準備・モデル学習・比較／ファイル・ツール・ヘルプ</td><td>ファイル末尾: ホームに戻る・ウィンドウを閉じる。ツール: データ準備・比較はキー割り当て・原画像と切り替える表示、モデル学習はデータ拡張を設定・キー割り当て。ヘルプ: キー割り当て一覧。</td></tr>
+<tr><td>データ準備／ファイル・編集・表示・データセット</td><td>ファイル: 画像を取り込む・正解ラベル版を追加 ― Excel に出力・Excel から取り込む ― アーカイブを作成。編集: 元に戻す・やり直す ― すべて選択・選択を解除・検索 ― 用途・画像分類・品質を変更。画像分類は存在する分類名と 1〜9 のキーを表示する。表示: タブ ― 絞り込み ― 原画像表示・前の画像・次の画像 ― 拡大・縮小・全体表示。データセット: 自動振り分け・連続振り分け ― エラー画像表示・確定 ― 版履歴のサムネイル確認。版履歴タブではサムネイル確認だけを有効にする。</td></tr>
+<tr><td>モデル学習／ファイル・編集・表示・学習</td><td>ファイル: 新しい実験・下書き保存 ― 実験一覧の設定 YAML。編集: 学習キューの複製・削除 ― 上へ移動・下へ移動 ― 設定を開いて編集・実験一覧の下書きを編集。表示: タブ ― 設定プレビュー YAML ― 学習キュー用の列・実験一覧用の列・実験群／モデル／状態の絞り込み。学習: 設定を検証・キューに追加・学習開始 ― キューをすべて実行・この学習の後で停止・今すぐ停止・終了・中断した行を削除 ― 今すぐ停止・同じ設定でやり直す ― 設定を複製して新規実験・複製してキューに追加 ― 選択した実験を比較・結果を開く・モデル比較へ送る ― 実験を削除。</td></tr>
 <tr><td>モデル比較・リリース／ファイル・表示・候補・リリース</td><td>候補一覧の上段に候補追加・設定変更して候補追加・評価実行/中止と検証版/状態フィルタを配置。下段に評価詳細・抽出結果比較・抽出結果出力、右端に選択候補リリースを配置する。候補固定版以外の旧評価は読み取り専用で閲覧する。</td></tr>
 <tr><td>本番推論／ヘルプ</td><td>キー割り当て一覧。</td></tr>
 </tbody></table></div>
@@ -472,7 +472,7 @@ table.rev{font-size:.92rem}
 <ol>
 <li><strong>色はデータの意味にだけ使う。</strong>作業エリアで色が付いているものは、必ず用途（学習・検証・未振り分け・不採用）、エラー、変更ありのどれかを表す。ボタン・選択行・タブ・フォーカスは無彩色（グラファイトと灰）で表す。これで学習の青や検証の橙が、ボタンの色と混ざらない。</li>
 <li><strong>数字は計測値の書体で表示する。</strong>件数・AP・エポック・版番号・時刻・データ識別子は Bahnschrift の等幅数字にし、縦にそろえて読み比べられるようにする。</li>
-<li><strong>画像がいちばん目立つ。</strong>画像の背景は暗い灰色とし、周りの UI は明るく控えめにする。原画像やマスクの色と競う色を UI に使わない。</li>
+<li><strong>画像がいちばん目立つ。</strong>画像の背景は暗い灰色とし、周りの UI は明るく控えめにする。原画像や正解ラベル画像の色と競う色を UI に使わない。</li>
 <li><strong>目立たせるのはホームの工程の流れ（2.1）だけ。</strong>モードウィンドウは影付きのカードや角丸の枠を使わず、罫線1本で区切る。動きはホームの学習中の点の明滅だけとする。</li>
 </ol>
 
@@ -525,9 +525,9 @@ table.rev{font-size:.92rem}
 <div class="m-split" style="grid-template-columns:1fr 1fr">
 <div class="panel">
 <p class="ptitle">ボタン</p>
-<span class="btn primary">確定…</span> <span class="btn">取り込み…</span> <span class="btn dis">確定…</span>
+<span class="btn primary">確定</span> <span class="btn">取り込み</span> <span class="btn dis">確定</span>
 <p class="ptitle" style="margin-top:10px">用途タグ</p>
-<span class="tag train">学習</span> <span class="tag val">検証</span> <span class="tag idle">未振り分け</span> <span class="tag excl">不採用</span> <span class="tag err">⚠ マスクなし</span>
+<span class="tag train">学習</span> <span class="tag val">検証</span> <span class="tag idle">未振り分け</span> <span class="tag excl">不採用</span> <span class="tag err">⚠ 正解ラベル画像なし</span>
 <p class="ptitle" style="margin-top:10px">状態タグ（実験・候補）</p>
 <span class="tag run">実行中</span> <span class="tag okk">完了</span> <span class="tag idle">下書き</span> <span class="tag err">失敗</span> <span class="tag idle">中断</span>
 </div>
@@ -537,7 +537,7 @@ table.rev{font-size:.92rem}
 <p class="ptitle" style="margin-top:10px">入力欄</p>
 <span class="input">20</span> <span class="input focus">0.0001</span> <span class="input ro">exp_0045</span> <span class="sel-combo">分類B ▾</span>
 <p class="ptitle" style="margin-top:10px">キー割り当て一覧</p>
-操作名　分類　現在のキー　［変更…］
+操作名　分類　現在のキー　［変更］
 </div>
 </div>
 </div></div>
@@ -586,7 +586,7 @@ table.rev{font-size:.92rem}
 <ul>
 <li><code>ImageView(QGraphicsView)</code>: ホイールでズーム、ドラッグでパン、ダブルクリックで全体表示。</li>
 <li><code>ViewSynchronizer</code>: 複数の <code>ImageView</code> のズーム倍率とスクロール位置を同期する（抽出結果比較で使用）。</li>
-<li>描画形式 <code>DisplayMode</code> は <code>IMAGE</code>（原画像）, <code>OVERLAY</code>, <code>INSTANCE_LABEL</code>, <code>BINARY</code> を持つ。画面設定はこのうち1種類を保存し、利用者は原画像と設定表示を二択で切り替える。既定はオーバーレイ。</li>
+<li>描画形式 <code>DisplayMode</code> は <code>IMAGE</code>（原画像）, <code>OVERLAY</code>, <code>INSTANCE_LABEL</code>, <code>BINARY</code> を持つ。画面設定はこのうち1種類を保存し、利用者は原画像と設定表示を二択で切り替える。データ準備の表示名は「正解ラベル画像」、推論・比較の表示名は「抽出結果」にそろえる。既定はオーバーレイ。</li>
 <li><code>to_binary_separated(labels)</code>: 仕様どおり、異なるインスタンス同士の8近傍接触ピクセルを背景化した二値マスクを返す。モックだが numpy で実装してよい（処理は軽い）。</li>
 <li>画像が無い場合は「画像なし」の灰色プレースホルダを表示する。</li>
 </ul>
@@ -620,7 +620,7 @@ table.rev{font-size:.92rem}
   </ul></li>
 <li><strong>人が1枚ずつ判断する作業だけを残す。</strong>
   <ul>
-  <li><strong>自動で決まるもの</strong>: マスクの対応、整合性確認</li>
+  <li><strong>自動で決まるもの</strong>: 原画像と正解ラベル画像の対応、整合性確認</li>
   <li><strong>フォルダ単位・一括で決めるもの</strong>: 取り込み時の統一項目（分類など）、学習/検証の分割</li>
   <li><strong>目で見て決めるもの</strong>: 例外的な品質、不採用</li>
   </ul></li>
@@ -679,7 +679,7 @@ table.rev{font-size:.92rem}
 <div class="mock-title">データ準備 — 気泡インスタンスセグメンテーション</div>
 <div class="mock-body">
 <div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span class="on">作業中データ</span><span>データセット版履歴</span></span>
-<span class="spacer"></span><span class="small">ベース 学習 <span class="num">train_v003</span> / 検証 <span class="num">val_v003</span></span><span class="err">⚠ エラー 2 件を直すと確定できます</span><span class="btn primary dis">確定…</span></div>
+<span class="spacer"></span><span class="small">ベース 学習 <span class="num">train_v003</span> / 検証 <span class="num">val_v003</span></span><span class="err">⚠ エラー 2 件を直すと確定できます</span><span class="btn primary dis">確定</span></div>
 <div class="m-chips"><span class="small">用途</span>
 <span class="chip on plain">すべて <b>612</b></span><span class="chip gray">未振り分け <b>23</b></span><span class="chip blue">学習 <b>489</b></span><span class="chip orange">検証 <b>96</b></span><span class="chip strike">不採用 <b>4</b></span></div>
 <div class="m-chips"><span class="small">絞り込み</span><span class="chip red">⚠ エラー <b>2</b></span><span class="chip chg">変更あり <b>37</b></span>
@@ -687,13 +687,13 @@ table.rev{font-size:.92rem}
 <div class="m-main tbl" style="grid-template-columns:1.5fr 1fr">
 <div><div class="row"><span class="small"><span class="num">612</span> 件中 <span class="num">612</span> 件を表示</span><span class="spacer"></span><span class="btn">表示する列 ▾</span></div><div class="table-wrap"><table>
 <thead><tr><th></th><th>元ファイル名</th><th>用途</th><th>画像分類</th><th>品質</th></tr></thead>
-<tbody><tr><td></td><td class="num">foam_0121.tif</td><td><span class="tag train">学習</span></td><td>分類A</td><td>良</td></tr><tr class="sel"><td></td><td class="num">foam_0122.tif</td><td><span class="tag val">検証</span></td><td>分類A</td><td>良</td></tr><tr class="sel chg"><td title="用途変更">●</td><td class="num">foam_0123.tif</td><td><span class="tag train">学習</span></td><td>分類B</td><td>可</td></tr><tr><td></td><td class="num">foam_0124.tif</td><td><span class="tag idle">未振り分け</span></td><td>分類B</td><td>良</td></tr><tr class="chg"><td title="マスクがありません">⚠</td><td class="num">foam_0125.tif</td><td><span class="tag train">学習</span></td><td>分類B</td><td>良</td></tr></tbody></table></div></div>
+<tbody><tr><td></td><td class="num">foam_0121.tif</td><td><span class="tag train">学習</span></td><td>分類A</td><td>良</td></tr><tr class="sel"><td></td><td class="num">foam_0122.tif</td><td><span class="tag val">検証</span></td><td>分類A</td><td>良</td></tr><tr class="sel chg"><td title="用途変更">●</td><td class="num">foam_0123.tif</td><td><span class="tag train">学習</span></td><td>分類B</td><td>可</td></tr><tr><td></td><td class="num">foam_0124.tif</td><td><span class="tag idle">未振り分け</span></td><td>分類B</td><td>良</td></tr><tr class="chg"><td title="正解ラベル画像がありません">⚠</td><td class="num">foam_0125.tif</td><td><span class="tag train">学習</span></td><td>分類B</td><td>良</td></tr></tbody></table></div></div>
 <div class="m-preview">
-<div class="m-info"><b class="num">foam_0123.tif</b><br><span class="small"><span class="num">item_000123</span>　取り込み元 <span class="path">2026-09\分類B_lot07</span>　マスク版 <span class="num">rev_002</span></span></div>
+<div class="m-info"><b class="num">foam_0123.tif</b><br><span class="small"><span class="num">item_000123</span>　取り込み元 <span class="path">2026-09\分類B_lot07</span>　正解ラベル版 <span class="num">rev_002</span></span></div>
 <div class="row"><span class="btn">原画像</span><span class="btn primary">オーバーレイ</span></div>
 <div class="m-img" style="min-height:230px"><svg><use href="#foam-ovl"/></svg><span class="cap">オーバーレイ</span></div>
 <div class="panel"><div class="m-info">
-用途 <span class="sel-combo">学習 ▾</span>　　 分類 <span class="sel-combo">分類B ▾</span>　　 品質 <span class="sel-combo">可 ▾</span>　　 マスク <span class="sel-combo num">rev_002 ▾</span><br>
+用途 <span class="sel-combo">学習 ▾</span>　　 分類 <span class="sel-combo">分類B ▾</span>　　 品質 <span class="sel-combo">可 ▾</span>　　 正解ラベル版 <span class="sel-combo num">rev_002 ▾</span><br>
 <span class="small">選択中の <span class="num">2</span> 件を変更</span></div></div>
 </div>
 </div>
@@ -701,12 +701,12 @@ table.rev{font-size:.92rem}
 </div></div>
 
 <ul>
-<li><strong>メニューとタブ右端</strong>: 取り込み・自動振り分け・Excel 入出力・連続振り分け・マスク版取り込み・アーカイブはメニューバーから実行する。タブ行の右端にベース版、エラー件数とエラー行へ絞り込む操作、主ボタン「確定…」を置く。版履歴では「サムネイルで確認…」を表上部の右端に置く。</li>
+<li><strong>メニューとタブ右端</strong>: 取り込み・自動振り分け・Excel 入出力・連続振り分け・正解ラベル版取り込み・アーカイブはメニューバーから実行する。タブ行の右端にベース版、エラー件数とエラー行へ絞り込む操作、主ボタン「確定」を置く。版履歴では「サムネイルで確認」を表上部の右端に置く。</li>
 <li><strong>絞り込み</strong>: 1行目の用途ボタンは単一選択。2行目の「⚠ エラー」「変更あり」と画像分類（件数付き複数選択）、取り込み元、検索は AND で組み合わせる。用途は <code>Alt</code>+<code>1</code>〜<code>5</code>、エラーは <code>Alt</code>+<code>6</code> で切り替える。表示件数は条件に合わせて更新する。絞り込みや用途変更で選択行がすべて表示から外れた場合は選択 0 件とし、別の先頭行を選ばない。</li>
 <li><strong>取り込み元の絞り込み（▾）</strong>: 画像ごとに記録している取り込み元フォルダ（仕様8章「元ディレクトリからの相対パス」）で絞り込む。「あるフォルダの画像だけを見直す」ときに使う。フォルダを管理する機能ではなく、絞り込みの条件の1つにすぎない。</li>
 <li><strong>中央</strong>: 作業中データは表だけを表示する。画像の一覧確認は確定ダイアログに置く。</li>
-<li><strong>表（左）</strong>: 上部に「全件数 件中 表示件数 件を表示」と「表示する列 ▾」を置く。既定列は状態の印・元ファイル名・用途・画像分類・品質。識別子・取り込み元フォルダ・マスク版は任意表示とし、表示状態を設定へ保存する。</li>
-<li><strong>プレビュー（右）</strong>: 選択中の元ファイル名を大きく表示し、下に識別子・取り込み元・マスク版を小さく表示する。原画像と設定表示を二択で切り替える。一括変更コンボは「選択中の N 件を変更」の枠にまとめ、狭い幅では 2 行に折り返す。表または画像プレビューを操作中は現在行・スクロール位置を保ち、入力部品にフォーカスがある間は表操作用の編集ショートカットを実行しない。</li>
+<li><strong>表（左）</strong>: 上部に「全件数 件中 表示件数 件を表示」と「表示する列 ▾」を置く。既定列は状態の印・元ファイル名・用途・画像分類・品質。識別子・取り込み元フォルダ・正解ラベル版は任意表示とし、表示状態を設定へ保存する。</li>
+<li><strong>プレビュー（右）</strong>: 選択中の元ファイル名を大きく表示し、下に識別子・取り込み元・正解ラベル版を小さく表示する。原画像と設定表示を二択で切り替える。データ準備の表示名は「正解ラベル画像」、推論・比較の表示名は「抽出結果」にそろえる。一括変更コンボは「選択中の N 件を変更」の枠にまとめ、狭い幅では 2 行に折り返す。表または画像プレビューを操作中は現在行・スクロール位置を保ち、入力部品にフォーカスがある間は表操作用の編集ショートカットを実行しない。</li>
 <li><strong>表の列幅</strong>: 幅は設定に保存し、列の表示・非表示と組み合わせて次回復元する。古い列幅設定は無視し、既定幅で表示する。ファイル名列を伸ばして余白を抑える。</li>
 <li><strong>確定不可の理由</strong>: 整合性エラー件数をタブ行の確定ボタン左に表示する。押すとエラーのある行だけに絞り込む。</li>
 </ul>
@@ -716,22 +716,22 @@ table.rev{font-size:.92rem}
 
 <div class="mock"><div class="mock-title">① データ取り込み — フォルダの選択</div>
 <div class="mock-body">
-<div class="row"><span>取り込むフォルダ</span><span>［フォルダを追加…］ または画面にドラッグ（複数可）</span></div>
+<div class="row"><span>取り込むフォルダ</span><span>［フォルダを追加］ または画面にドラッグ（複数可）</span></div>
 <div class="table-wrap"><table>
-<thead><tr><th>フォルダ</th><th>画像</th><th>マスク</th></tr></thead>
+<thead><tr><th>フォルダ</th><th>画像</th><th>正解ラベル画像</th></tr></thead>
 <tbody>
 <tr><td><span class="path">2026-09\分類A_lot12</span></td><td class="n">128</td><td class="n">128</td></tr>
 <tr><td><span class="path">2026-09\分類B_lot07</span></td><td class="n">96</td><td class="n">96</td></tr>
 <tr><td><span class="path">2026-09\lot03</span></td><td class="n">23</td><td class="warn">21</td></tr>
 </tbody></table></div>
-<div class="row"><span>マスクの場所</span><span>◉ 各フォルダ内の <code>masks</code> サブフォルダ　○ 別のフォルダを指定［参照…］</span></div>
-<p class="small">マスクが見つからない画像 2件（一覧を表示）・取り込み済みと同じ内容 0件</p>
+<div class="row"><span>正解ラベル画像フォルダ</span><span>◉ 各フォルダ内の <code>masks</code> サブフォルダ　○ 別のフォルダを指定［参照］</span></div>
+<p class="small">正解ラベル画像が見つからない画像 2件（一覧を表示）・取り込み済みと同じ内容 0件</p>
 <div class="btns"><span class="btn">キャンセル</span><span class="btn primary">次へ</span></div>
 </div></div>
 
 <div class="mock"><div class="mock-title">② フォルダ内で統一する項目</div>
 <div class="mock-body">
-<div class="row"><span>統一する項目</span><span>☑ 画像分類　☑ 品質　☐ 用途　☐ マスク版</span></div>
+<div class="row"><span>統一する項目</span><span>☑ 画像分類　☑ 品質　☐ 用途　☐ 正解ラベル版</span></div>
 <div class="table-wrap"><table>
 <thead><tr><th>フォルダ</th><th>画像</th><th>画像分類</th><th>品質</th></tr></thead>
 <tbody>
@@ -745,7 +745,7 @@ table.rev{font-size:.92rem}
 <ul>
 <li><strong>統一する項目の選択</strong>
   <ul>
-  <li>画像ごとのメタデータ列（画像分類、品質、用途、マスク版、今後追加する項目）がチェックボックスで並ぶ。</li>
+  <li>画像ごとのメタデータ列（画像分類、品質、用途、正解ラベル版、今後追加する項目）がチェックボックスで並ぶ。</li>
   <li>チェックした項目だけが下の表の列になり、フォルダごとに値を選べる。</li>
   <li>前回チェックした項目を覚えておく。</li>
   </ul></li>
@@ -758,12 +758,12 @@ table.rev{font-size:.92rem}
 <li>用途を統一する項目に選べば、「このフォルダはすべて検証」のような取り込みもできる。選ばなければ「未振り分け」になる。</li>
 <li><strong>取り込み時に自動で行うこと</strong>
   <ul>
-  <li>マスクは、拡張子を除いたファイル名で画像と対応付ける。</li>
+  <li>正解ラベル画像は、拡張子を除いたファイル名で原画像と対応付ける。</li>
   <li>ハッシュが一致するデータ（同じ画像の再取り込み）は取り込まない。</li>
   <li>取り込み元フォルダの相対パスを、画像ごとに記録する（仕様8章）。</li>
   </ul></li>
 <li>取り込み後は、取り込み元の絞り込みを今回取り込んだフォルダにし、用途の絞り込みを「未振り分け」に切り替える。</li>
-<li>取り込みの設定（マスクの場所、分類の別名、統一する項目）は前回の値を覚えておく。GUI は最初のチャンネルを表示し、チャンネル選択は設けない。</li>
+<li>取り込みの設定（正解ラベル画像フォルダ、分類の別名、統一する項目）は前回の値を覚えておく。GUI は最初のチャンネルを表示し、チャンネル選択は設けない。</li>
 </ul>
 
 <h3 id="sec4-5">4.5 作業表（表表示）の列とコンボによる編集</h3>
@@ -772,7 +772,7 @@ table.rev{font-size:.92rem}
 <tbody>
 <tr><td>状態の印</td><td>先頭の狭い列。変更ありは ●、エラーは ⚠ とツールチップで示す。変更行は背景色でも示す。</td></tr>
 <tr><td>元ファイル名 / 用途 / 画像分類 / 品質</td><td>既定で表示する。用途は色付きタグ（未振り分け=灰、学習=青、検証=橙、不採用=灰・取り消し線）。用途・分類・品質は<strong>コンボ</strong>またはキーで変更する。</td></tr>
-<tr><td>データ識別子 / 取り込み元フォルダ / マスク版</td><td>読み取り専用。既定で非表示。「表示する列 ▾」または「表示 → 表示する列」から表示できる。</td></tr>
+<tr><td>データ識別子 / 取り込み元フォルダ / 正解ラベル版</td><td>読み取り専用。既定で非表示。「表示する列 ▾」または「表示 → 表示する列」から表示できる。</td></tr>
 </tbody></table></div>
 <ul>
 <li><strong>コンボによる選択は v1 と同じく残す。</strong>セルをクリックして値を選ぶ。分類選択はキー割り当てからも開ける。</li>
@@ -811,7 +811,7 @@ table.rev{font-size:.92rem}
 <div class="mock-body"><div class="table-wrap"><table>
 <thead><tr><th>操作名</th><th>分類</th><th>現在のキー</th></tr></thead>
 <tbody><tr><td>前の画像</td><td>画像移動</td><td>Left</td></tr><tr><td>次の画像</td><td>画像移動</td><td>Right</td></tr><tr><td>表示形式を切り替える</td><td>表示</td><td>M</td></tr></tbody>
-</table></div><div class="btns"><span class="spacer"></span><span class="btn primary">変更…</span></div></div></div>
+</table></div><div class="btns"><span class="spacer"></span><span class="btn primary">変更</span></div></div></div>
 <div class="mock"><div class="mock-title">キー割り当て — 変更ダイアログ</div>
 <div class="mock-body">
 <div class="table-wrap"><table>
@@ -823,10 +823,10 @@ table.rev{font-size:.92rem}
 <tr><td>次の画像</td><td>画像移動</td><td><span class="input">Right</span></td></tr>
 <tr><td>表示形式を切り替える</td><td>表示</td><td><span class="input">M</span></td></tr>
 </tbody></table></div>
-<div class="btns"><span class="btn">既定に戻す</span><span class="btn">書き出し…</span><span class="btn">読み込み…</span><span class="spacer"></span><span class="btn">キャンセル</span><span class="btn primary">保存</span></div>
+<div class="btns"><span class="btn">既定に戻す</span><span class="btn">書き出し</span><span class="btn">読み込み</span><span class="spacer"></span><span class="btn">キャンセル</span><span class="btn primary">保存</span></div>
 </div></div>
 <ul>
-<li>ホームの「設定 &gt; キー割り当て一覧」、データ準備の「その他 ▾」、各モードウィンドウの「ヘルプ」、または <code>?</code> / <code>F1</code> から一覧を開く。選択行の「変更…」から割り当て編集へ進む。</li>
+<li>ホームの「設定 &gt; キー割り当て一覧」、データ準備の「その他 ▾」、各モードウィンドウの「ヘルプ」、または <code>?</code> / <code>F1</code> から一覧を開く。選択行の「変更」から割り当て編集へ進む。</li>
 <li>キーの欄を選んで、割り当てたいキー（修飾キーとの組み合わせを含む）を押すと登録される。<code>Backspace</code> で割り当てを外す。</li>
 <li><strong>重複の確認</strong>: 同じ画面で有効な別の操作と同じキーを押した場合は、重複する操作名を赤字で示し、「入れ替える／やめる」を選ばせる。重複したままでは保存できない。</li>
 <li>保存先はユーザーごとの設定ファイル（<code>%APPDATA%\foam-cell-analysis\keymap.json</code>）。書き出し・読み込みで、他の利用者と同じ割り当てを共有できる。</li>
@@ -894,7 +894,7 @@ table.rev{font-size:.92rem}
 <li>v1 と同じく残す。ツールバーの「Excel ▾」または <code>Ctrl</code>+<code>E</code>（出力）/ <code>Ctrl</code>+<code>Shift</code>+<code>E</code>（取込）から実行する。</li>
 <li><strong>出力内容</strong>
   <ul>
-  <li>1シートで出力する。列はデータ識別子、取り込み元フォルダ、元ファイル名、<strong>用途</strong>、画像分類、品質、マスク版。</li>
+  <li>1シートで出力する。列はデータ識別子、取り込み元フォルダ、元ファイル名、<strong>用途</strong>、画像分類、品質、正解ラベル版。</li>
   <li>現在の絞り込みを適用するか、全件にするかを選べる。</li>
   </ul></li>
 <li><strong>取り込み時の扱い</strong>
@@ -910,7 +910,7 @@ table.rev{font-size:.92rem}
 <div class="table-wrap"><table>
 <thead><tr><th>タイミング</th><th>検査項目（仕様 7章）</th></tr></thead>
 <tbody>
-<tr><td>取り込み・編集のたび（即時・軽量）</td><td>データ識別子の重複／必要なマスクが存在／原画像とマスクの対応／必須メタデータ入力済み／原画像とマスクの画像サイズ一致／参照先が一意に確定</td></tr>
+<tr><td>取り込み・編集のたび（即時・軽量）</td><td>データ識別子の重複／必要な正解ラベル画像がそろっている／原画像と正解ラベル画像の対応／必須メタデータ入力済み／原画像と正解ラベル画像のサイズ一致／参照先が一意に確定</td></tr>
 <tr><td>確定時（進捗表示あり）</td><td>原画像が存在／ファイルハッシュが登録内容と一致（全件再計算）</td></tr>
 </tbody></table></div>
 <ul>
@@ -957,7 +957,7 @@ table.rev{font-size:.92rem}
 <div class="mock"><div class="mock-title">train_v004 のサムネイル — 2026-09-26 14:20　489件　追加データを反映</div>
 <div class="mock-body">
 <div class="row"><span class="btn primary">train_v004</span><span class="btn">基準検証用 val_v004</span></div>
-<div class="row"><span>画像分類</span><span class="sel-combo">すべて ▾</span><span>品質</span><span class="sel-combo">すべて ▾</span><span class="spacer"></span><span class="num">12 / 489 件</span><span class="btn">サムネイルで確認…</span></div>
+<div class="row"><span>画像分類</span><span class="sel-combo">すべて ▾</span><span>品質</span><span class="sel-combo">すべて ▾</span><span class="spacer"></span><span class="num">12 / 489 件</span><span class="btn">サムネイルで確認</span></div>
 <div class="m-grid g4">
 <div class="th blue"><svg><use href="#foam-ovl"/></svg><span class="b">分類A・良</span><span class="u">学習 ・ 追加</span></div>
 <div class="th blue"><svg><use href="#foam-ovl"/></svg><span class="b">分類B・可</span><span class="u">学習 ・ 変更</span></div>
@@ -965,7 +965,7 @@ table.rev{font-size:.92rem}
 <div class="th blue"><svg><use href="#foam-ovl"/></svg><span class="b">分類A・良</span><span class="u">学習 ・ 追加</span></div>
 </div></div></div>
 <ul>
-<li>版履歴で版を選び「サムネイルで確認…」またはダブルクリックすると、版ごとの非モーダルウィンドウを開く。同じ版を再度開く場合は既存ウィンドウを前面に出す。</li>
+<li>版履歴で版を選び「サムネイルで確認」またはダブルクリックすると、版ごとの非モーダルウィンドウを開く。同じ版を再度開く場合は既存ウィンドウを前面に出す。</li>
 <li>版名、作成日時、件数、コメントを見出しに表示する。学習版は紐付く基準検証版をタブで切り替えられる。</li>
 <li>確定時点の内容を読み取り専用で表示する。分類・品質の絞り込みと「表示中 / 全件」の件数、クリック拡大に対応する。確定ダイアログとサムネイル部品・非同期生成・可視範囲要求・共有 LRU キャッシュを共用する。</li>
 </ul>
@@ -1035,7 +1035,7 @@ table.rev{font-size:.92rem}
 <div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span class="on">学習設定</span><span>学習キュー</span><span>実験一覧</span></span></div>
 <div class="v27-summary"><span>データ <span class="num">train_v003</span>・全分類・すべて・学習 <b class="num">515</b> 件</span><span>交差検証 <span class="num">5</span> 分割・層別・フォルダ単位・各検証 約 <span class="num">103</span> 件</span><span>モデル Mask R-CNN（COCO）</span><span>学習 <span class="num">100</span> エポック・バッチ <span class="num">8</span>・学習率 <span class="num">0.0001</span></span><span class="spacer"></span><span class="btn">設定プレビュー（YAML）</span></div>
 <div class="v27-form2"><div><p class="v27-h">実験</p><div class="row"><span>実験群</span><span class="sel-combo">foam_study ▾</span></div><div class="row"><span>実験識別子</span><span class="input ro num">exp_0046</span></div><div class="row"><span>説明</span><span class="input"></span></div><p class="v27-h">データセット・交差検証</p><div class="row"><span>データセット版</span><span class="sel-combo num">train_v003 ▾</span></div><div class="row"><span>画像分類 / 品質条件</span><span class="sel-combo">全分類 ▾　すべて ▾</span></div><div class="row"><span>分割数・条件・乱数シード</span><span class="input num">5</span>　☑ 画像分類で層別　☑ 取り込み元フォルダ単位</div><p class="small">交差検証は学習用版だけを使い、検証用版は含めない</p><p class="v27-h">共通学習設定</p><div class="row"><span>エポック / バッチ</span><span class="input num">100</span>　<span class="input num">8</span></div><div class="row"><span>学習率</span><span class="input num">0.0001</span></div></div>
-<div><p class="v27-h">モデル種類・固有設定</p><div class="row"><span>モデル種類</span><span class="sel-combo">Mask R-CNN ▾</span></div><div class="row"><span>事前学習済み重み</span><span class="sel-combo">COCO ▾</span></div><div class="row"><span>画像平均・標準偏差</span><span class="small">重みから自動決定</span></div><div class="row"><span>アンカーサイズ</span><span class="input num">32, 64, 128, 256, 512</span></div><div class="row"><span>アンカー縦横比</span><span class="input num">0.5, 1.0, 2.0</span></div><p class="small">▶ 前処理 詳細設定　▶ RPN 詳細設定　▶ ROI 詳細設定</p><p class="v27-h">データ拡張</p><div class="row"><span>プロファイル</span><span class="sel-combo num">aug_v003 ▾</span> <span class="btn">データ拡張を設定…</span></div><p class="v27-h">途中保存モデル / 評価</p><div class="row"><span>保存間隔 / 検証間隔</span><span class="input num">10</span>　<span class="input num">5</span> エポック</div><div class="row"><span>エポックの選び方</span><span class="small">OOF AP 最大</span></div></div></div>
+<div><p class="v27-h">モデル種類・固有設定</p><div class="row"><span>モデル種類</span><span class="sel-combo">Mask R-CNN ▾</span></div><div class="row"><span>事前学習済み重み</span><span class="sel-combo">COCO ▾</span></div><div class="row"><span>画像平均・標準偏差</span><span class="small">重みから自動決定</span></div><div class="row"><span>アンカーサイズ</span><span class="input num">32, 64, 128, 256, 512</span></div><div class="row"><span>アンカー縦横比</span><span class="input num">0.5, 1.0, 2.0</span></div><p class="small">▶ 前処理 詳細設定　▶ RPN 詳細設定　▶ ROI 詳細設定</p><p class="v27-h">データ拡張</p><div class="row"><span>プロファイル</span><span class="sel-combo num">aug_v003 ▾</span> <span class="btn">データ拡張を設定</span></div><p class="v27-h">途中保存モデル / 評価</p><div class="row"><span>保存間隔 / 検証間隔</span><span class="input num">10</span>　<span class="input num">5</span> エポック</div><div class="row"><span>エポックの選び方</span><span class="small">OOF AP 最大</span></div></div></div>
 <div class="v27-actions"><span class="btn">設定を検証</span><span class="btn">下書き保存</span><span class="v27-gap"></span><span class="btn">キューに追加</span><span class="btn primary">学習開始</span></div></div></div>
 <ul>
 <li>YAML プレビューは既定で閉じる。要約のボタンまたは「表示」メニューから開閉し、状態を <code>app_settings()</code> に保存する。開くと右側に表示し、フォーカス中の項目に対応する行を強調する。</li>
@@ -1049,9 +1049,9 @@ table.rev{font-size:.92rem}
 <ol>
 <li><strong>実験</strong>: 実験群（既存値から選択または入力）、実験識別子（自動採番・読み取り専用）、説明。</li>
 <li><strong>データセット</strong>: 確定済み学習版、交差検証（分割数 2〜10、画像分類による層別、取り込み元フォルダ単位の分割、乱数シード）、画像分類、品質条件。GUI の入力チャンネルは A に固定する。検証用データセットは学習・交差検証に使わない。要約には見込み件数と各分割の検証件数を表示する。</li>
-<li><strong>モデル</strong>: Mask R-CNN / Cellpose を切り替える。Mask R-CNN は事前学習済み重み、バックボーン、学習層数、入力画像サイズ、重みから自動決定する画像平均・標準偏差、編集可能なアンカーサイズ・縦横比、RPN / ROI 詳細設定を持つ。Cellpose は事前学習済みモデル、最適化手法、正規化、スケール変動幅、リスケール、パッチサイズ、1 エポック当たり画像数、最小マスク数、クラス重みを持つ。セル確率閾値・フロー閾値はモデル比較・リリースの推論設定で管理する。</li>
+<li><strong>モデル</strong>: Mask R-CNN / Cellpose を切り替える。Mask R-CNN は事前学習済み重み、バックボーン、学習層数、入力画像サイズ、重みから自動決定する画像平均・標準偏差、編集可能なアンカーサイズ・縦横比、RPN / ROI 詳細設定を持つ。Cellpose は事前学習済みモデル、最適化手法、正規化、スケール変動幅、リスケール、パッチサイズ、1 エポック当たり画像数、1画像あたりの最小気泡数、クラス重みを持つ。セル確率閾値・フロー閾値はモデル比較・リリースの推論設定で管理する。</li>
 <li><strong>共通学習設定</strong>: エポック数、バッチサイズ、学習率、重み減衰、早期終了（有効 / 無効・待機エポック数）。</li>
-<li><strong>データ拡張</strong>: プロファイルを選択し、「データ拡張を設定…」から表形式の編集・プレビューダイアログを開く。</li>
+<li><strong>データ拡張</strong>: プロファイルを選択し、「データ拡張を設定」から表形式の編集・プレビューダイアログを開く。</li>
 <li><strong>途中保存モデル / 評価</strong>: 保存間隔、検証間隔、各フォールドのモデル保存。選択エポックの指標は OOF AP（Cellpose 方式）最大で、読み取り専用表示する。</li>
 </ol>
 <p>正規化方式と low/high percentile は Mask R-CNN・Cellpose とも「前処理 詳細設定」の折りたたみ内に置く。設定欄の数値・選択欄はホイールで値を変えない（3 章）。編集メニューの「既定値に戻す」は確認後、現在モデルの既定値を読み込み、実験群・説明・データセット版を保持する。拡張編集画面では既定値を aug_v001 相当へ戻すが、保存操作まではプロファイルを作成しない。入力のツールチップには設定キーを持たせる。YAML は入力に即時追従する。設定検証は OK / 警告 / エラーをダイアログに示し、エラーがある設定は学習開始・キュー登録を止める。下書き保存は実験一覧へ保存する。学習開始は「この設定をキューの末尾に追加し、学習していなければキューの実行を始める」操作であり、単独で学習する経路は持たない。学習していなければ確認後（待機行があればその件数も示す）にキューを実行して実験一覧へ移る。学習中なら確認せずに末尾へ追加し、ステータスバーで知らせる（警告があるときだけ確認する）。編集中の下書きは同じ実験 ID のままキューへ移る。複製・下書き編集・キュー編集では読み込んだ設定をフォームと要約に表示する。</p>
@@ -1063,7 +1063,7 @@ table.rev{font-size:.92rem}
 │ ベースプロファイル: aug_v002              │ │ [再生成] [8パターン表示 □]          │
 ├ 幾何変換 ─────────────────────────────────┤ │ ┌元画像┐┌拡張後┐                   │
 │ ☑左右反転  p=[0.5]                        │ │ └────┘└────┘                   │
-│ ☑上下反転  p=[0.5]                        │ │ ┌拡張後マスク┐┌オーバーレイ┐          │
+│ ☑上下反転  p=[0.5]                        │ │ ┌拡張後の正解ラベル画像┐┌オーバーレイ┐          │
 │ ☑回転      p=[0.5] 範囲 [-180]〜[180]°     │ │ └────┘└────┘                   │
 │ ☑拡大縮小  p=[0.3] 範囲 [0.8]〜[1.2]       │ │                                   │
 │ □平行移動 □切り出し □弾性変形            │ │                                   │
@@ -1103,7 +1103,7 @@ table.rev{font-size:.92rem}
 <div class="mock"><div class="mock-title">モデル学習 — 気泡インスタンスセグメンテーション</div>
 <div class="mock-body">
 <div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span>学習設定</span><span class="on">実験一覧</span></span><span class="spacer"></span></div>
-<div class="m-toolbar"><span class="sel-combo">実験群: すべて ▾</span><span class="sel-combo">モデル: すべて ▾</span><span class="sel-combo">状態: すべて ▾</span><span class="spacer"></span><span class="btn primary">モデル比較へ送る…</span></div>
+<div class="m-toolbar"><span class="sel-combo">実験群: すべて ▾</span><span class="sel-combo">モデル: すべて ▾</span><span class="sel-combo">状態: すべて ▾</span><span class="spacer"></span><span class="btn primary">モデル比較へ送る</span></div>
 <div class="table-wrap"><table>
 <thead><tr><th></th><th>ID</th><th>実験群</th><th>モデル</th><th>データセット</th><th>データ拡張</th><th>状態</th><th class="n">進捗</th><th class="n">OOF AP</th><th>途中保存モデル</th></tr></thead>
 <tbody><tr class=""><td class="ck">☐</td><td class="num">exp_0046</td><td>入力画像サイズ比較</td><td>Mask R-CNN</td><td class="num">train_v003</td><td class="num">aug_v003</td><td><span class="tag run">実行中</span></td><td class="n">epoch 40/100</td><td class="n"><b>0.874</b></td><td class="num">epoch_040.pt</td></tr><tr class="sel"><td class="ck">☑</td><td class="num">exp_0042</td><td>入力画像サイズ比較</td><td>Mask R-CNN</td><td class="num">train_v003</td><td class="num">aug_v003</td><td><span class="tag okk">完了</span></td><td class="n">100/100</td><td class="n"><b>0.913</b></td><td class="num">final.pt</td></tr><tr class=""><td class="ck">☑</td><td class="num">exp_0041</td><td>入力画像サイズ比較</td><td>Mask R-CNN</td><td class="num">train_v003</td><td class="num">aug_v002</td><td><span class="tag okk">完了</span></td><td class="n">100/100</td><td class="n"><b>0.897</b></td><td class="num">final.pt</td></tr><tr class=""><td class="ck">☐</td><td class="num">exp_0040</td><td>Cellpose 初期検討</td><td>Cellpose</td><td class="num">train_v002</td><td class="num">aug_v002</td><td><span class="tag err">失敗</span></td><td class="n">12/200</td><td class="n"><b>—</b></td><td class="num">epoch_010.pt</td></tr><tr class=""><td class="ck">☐</td><td class="num">exp_0047</td><td>入力画像サイズ比較</td><td>Mask R-CNN</td><td class="num">train_v004</td><td class="num">aug_v003</td><td><span class="tag idle">下書き</span></td><td class="n">—</td><td class="n"><b>—</b></td><td class="num">—</td></tr></tbody></table></div>
@@ -1133,10 +1133,10 @@ table.rev{font-size:.92rem}
 - [設定を複製して新規実験]（1件）: モデル学習へ遷移（<code>copy_from</code>）。
 - [■ 今すぐ停止]（実行中1件）: 学習キューの同名操作と同じ確認・動作（学習とキューを止め、今の学習は「中断」）。
 - [同じ設定でやり直す]（失敗・中断1件）: 同じ実験 ID の新しい実行試行として最初から学習し直す。前の試行結果は保持し、学習中なら同じ実験の次の試行としてキューへ予約する。旧形式は再試行せず、設定の複製を案内する。失敗・中断の実験では右クリックメニューの先頭に置き、詳細の「実行試行」タブにも同名のボタンを置く。
-- [実験を削除…]（下書き・中断・失敗・完了の1件）: 右クリックと学習メニュー。確認ダイアログに実験 ID・試行数・解放される容量（「約 2.4 GB を削除します」）と、取り消せないことを示す。<code>workspace/experiments/&lt;id&gt;/</code>（設定・全試行・途中保存モデル・OOF・ログ）とその実験のキュー行を削除し、<code>datasets</code>・<code>pretrained</code>・<code>augmentation</code> には触れない。学習中・待機中の実験、比較候補（非採用を除く）やリリース済みモデルが参照する実験は削除できず、理由をツールチップと警告で示す（例「比較候補 RC-003 がこの実験を参照しています。先に候補を非採用・削除してください」）。
-- [成果物を整理…]（チェックした実験。チェックがなければ選択中の1件）: 右クリックと学習メニュー。記録は残したまま、途中保存モデルなどの大きなファイルを種類ごとに選んで削除する（6.5）。
-右クリックメニューは状態に合わせて並べる: 失敗・中断なら「同じ設定でやり直す」、実行中なら「■ 今すぐ停止」を先頭に置き、区切りの後にモデル比較へ送る・比較・複製・結果・下書き編集、最後に区切って「成果物を整理…」「実験を削除…」。
-- [モデル比較へ送る…]（完了1件）: 引き渡しダイアログ。
+- [実験を削除]（下書き・中断・失敗・完了の1件）: 右クリックと学習メニュー。確認ダイアログに実験 ID・試行数・解放される容量（「約 2.4 GB を削除します」）と、取り消せないことを示す。<code>workspace/experiments/&lt;id&gt;/</code>（設定・全試行・途中保存モデル・OOF・ログ）とその実験のキュー行を削除し、<code>datasets</code>・<code>pretrained</code>・<code>augmentation</code> には触れない。学習中・待機中の実験、比較候補（非採用を除く）やリリース済みモデルが参照する実験は削除できず、理由をツールチップと警告で示す（例「比較候補 RC-003 がこの実験を参照しています。先に候補を非採用・削除してください」）。
+- [成果物を整理]（チェックした実験。チェックがなければ選択中の1件）: 右クリックと学習メニュー。記録は残したまま、途中保存モデルなどの大きなファイルを種類ごとに選んで削除する（6.5）。
+右クリックメニューは状態に合わせて並べる: 失敗・中断なら「同じ設定でやり直す」、実行中なら「■ 今すぐ停止」を先頭に置き、区切りの後にモデル比較へ送る・比較・複製・結果・下書き編集、最後に区切って「成果物を整理」「実験を削除」。
+- [モデル比較へ送る]（完了1件）: 引き渡しダイアログ。
 - [下書きを編集]（下書き1件）: モデル学習へ遷移（<code>edit=exp_id</code>。採番しなおさない）。</p>
 <h3 id="sec6-2">6.2 詳細タブ</h3>
 <ul>
@@ -1196,15 +1196,15 @@ table.rev{font-size:.92rem}
     うち 1 件（exp_0004 試行 1）は削除しません: 比較候補 RC-003 がこの最終学習モデルを参照しています
 ☑ 中断・失敗した試行の一時ファイル              12   約 0.3 GB
 空く容量: 約 9.9 GB
-                                  [キャンセル]  [削除する…]
+                                  [キャンセル]  [削除する]
 </code></pre>
 <ul>
 <li>対象は、実験一覧でチェックした実験（チェックがなければ選択中の1件）。</li>
 <li>種類ごとに、削除できるものだけのファイル数・容量を出す。削除できないまとまりは、理由ごとに「うち N 件（実験 試行）は削除しません: 理由」と出す（理由の文はバックエンドが返す日本語）。</li>
 <li>削除できるものが1つもない種類は、チェックを外して選べなくし、理由（または「削除できるファイルはありません」）を下に出す。</li>
 <li>初めは「fold の定期保存モデル」と「中断・失敗した試行の一時ファイル」を選んでおく。選択エポックのモデルと最終学習モデルは利用者が選んだときだけ消す。</li>
-<li>「空く容量」は、チェックを変えるたびに <code>estimate_freed_bytes</code> で見積もり直す。何も選んでいなければ「削除する…」は押せず、理由をツールチップに出す。</li>
-<li>「削除する…」で「約 9.9 GB を削除します。取り消せません。」を確認してから <code>prune_artifacts</code> を呼ぶ。終わったらステータスバーに空いた容量を出し（条件を満たさず残したものがあれば件数も）、一覧と詳細を読み直す。</li>
+<li>「空く容量」は、チェックを変えるたびに <code>estimate_freed_bytes</code> で見積もり直す。何も選んでいなければ「削除する」は押せず、理由をツールチップに出す。</li>
+<li>「削除する」で「約 9.9 GB を削除します。取り消せません。」を確認してから <code>prune_artifacts</code> を呼ぶ。終わったらステータスバーに空いた容量を出し（条件を満たさず残したものがあれば件数も）、一覧と詳細を読み直す。</li>
 </ul>
 <hr />
 </section>
@@ -1239,7 +1239,7 @@ table.rev{font-size:.92rem}
 <li>評価を中止: 評価待ち・評価中の候補。候補メニューと右クリックに置く。</li>
 <li>詳細評価を見る: 1件（評価済み）。</li>
 <li>抽出結果比較: 同じ固定検証版で評価済みの2〜4件。5件以上は切り捨てず、理由を案内する。</li>
-<li>粒子解析用マスク出力: 1件以上。</li>
+<li>粒子解析用画像の出力: 1件以上。</li>
 <li>非採用にする: 候補の状態のもの。確認あり。</li>
 <li>選択候補をリリース: 1件、評価済み、状態が候補のもの。</li>
 </ul>
@@ -1261,9 +1261,9 @@ table.rev{font-size:.92rem}
 <li>旧自由形式の値は新しい画像別データと混同しない。</li>
 <li>保存で backend に反映する。リリース済み候補は読み取り専用。</li>
 </ul>
-<h3 id="sec7-4">7.4 粒子解析用マスク出力ダイアログ（仕様 5〜6章）</h3>
+<h3 id="sec7-4">7.4 粒子解析用画像の出力ダイアログ（仕様 5〜6章）</h3>
 <ul>
-<li>出力先フォルダ、出力内容（インスタンスラベルマスク / 粒子解析用二値マスク、複数選択）、ファイル形式（PNG / TIFF）、対象（検証用データセット全体 / 画像分類で絞り込み）。</li>
+<li>出力先フォルダ、出力内容（気泡ごとのラベル画像 / 粒子解析用の白黒画像（隣接気泡を分離済み）、複数選択）、ファイル形式（PNG / TIFF）、対象（検証用データセット全体 / 画像分類で絞り込み）。</li>
 <li>「後処理は隣接気泡の分離のみ（8近傍接触の境界を背景化）」と注記する。</li>
 <li>実際にファイルを出力する（バックエンド設計 12章）。完了時に出力フォルダと、消失・分断した粒子の件数を出し、フォルダを開けるようにする。</li>
 </ul>
@@ -1319,7 +1319,7 @@ table.rev{font-size:.92rem}
 <li>全表示枠のズーム・パンを <code>ViewSynchronizer</code> で同期する。</li>
 <li>画像分類の選択肢は、その検証版に現れる分類。絞り込むと、対象画像の候補が絞られる。</li>
 <li>表示のキャッシュのキーには、検証版・evaluation_id・表示形式を含める。</li>
-<li>MockBackend では、各候補の予測は合成マスク（候補ごとに乱数シードを変えて少し違う結果にする）。</li>
+<li>MockBackend では、各候補の抽出結果画像は合成画像（候補ごとに乱数シードを変えて少し違う結果にする）。</li>
 <li>前/次ボタンと左右キーで画像を送る。</li>
 </ul>
 <hr />
@@ -1352,7 +1352,7 @@ table.rev{font-size:.92rem}
 <tr><td>分類C</td><td class="num">model_007</td><td><span class="sel-combo num">model_007 ▾</span></td></tr>
 <tr><td>分類D</td><td><span class="err">未割り当て</span></td><td><span class="sel-combo">未割り当て ▾</span></td></tr>
 </tbody></table></div>
-<div class="btns" style="justify-content:flex-start;flex-wrap:wrap"><span class="small">1 件の変更があります</span><span class="btn primary">変更を適用…</span><span class="spacer"></span><span class="small">新しいリリース済みモデルを登録しても、自動では切り替わりません</span></div>
+<div class="btns" style="justify-content:flex-start;flex-wrap:wrap"><span class="small">1 件の変更があります</span><span class="btn primary">変更を適用</span><span class="spacer"></span><span class="small">新しいリリース済みモデルを登録しても、自動では切り替わりません</span></div>
 <div class="status"><span>準備完了</span><span>実行中ジョブ <span class="num">1</span></span><span>自動保存 <span class="num">10:42:08</span></span></div>
 </div></div>
 
@@ -1360,12 +1360,12 @@ table.rev{font-size:.92rem}
 - 列: モデルID、モデル、候補、実験、途中保存モデル、検証用データセット、検証 AP、OOF AP、リリース日時、割り当て中の分類、コメント。
 - 一覧と詳細はリリースの記録（release.json）だけから作り、実験や候補は引かない（実験が消えても表示できる）。モデル種類は記録の前処理設定・推論設定から判断する。
 - OOF AP 列は候補一覧と同じ規則で、学習時の評価条件と一致する（適用可否が matching の）ときだけ値を出し、推論設定が異なる・条件を確認できない・記録がないときは「対象外」と出す（理由はツールチップ）。
-- 選択すると右に詳細（実験・途中保存モデル、検証 AP と分類別の値、学習時 OOF AP（参考）、推論設定の値、検証用データセット、リリース日時、コメント）。学習時 OOF AP（参考）は数値を残し、条件（推論設定が学習時と異なります / 学習時の評価条件を確認できません）と、final.pt 自身の評価ではないことを併記する。「リリースの詳細を表示…」で前処理設定・推論設定・評価結果の全項目を表で出す。
+- 選択すると右に詳細（実験・途中保存モデル、検証 AP と分類別の値、学習時 OOF AP（参考）、推論設定の値、検証用データセット、リリース日時、コメント）。学習時 OOF AP（参考）は数値を残し、条件（推論設定が学習時と異なります / 学習時の評価条件を確認できません）と、final.pt 自身の評価ではないことを併記する。「リリースの詳細を表示」で前処理設定・推論設定・評価結果の全項目を表で出す。
 - [設定を変えて新しいリリースを作る]: 「リリース」メニューまたは右クリックから元の実験・final.ptで候補追加へ遷移する（上書きしない原則の導線）。</p>
 <p><strong>下: モデル振り分け</strong>
 - 表: 画像分類 | 現在の有効モデル | 変更後（コンボ: リリース済みモデル + 未割り当て）。行は、確定済みの全データセット版（学習・検証）に現れる分類と、振り分けにすでにある分類。
 - 変更がある行は色付けする。
-- [変更を適用…]: 変更点の一覧（分類A: model_007 → model_008）を出して確認後、画面を読み込んだ時点の revision を付けて反映する。別の操作で振り分けが変わっていたときは何も変えず、「振り分けが別の操作で変更されました。画面を開き直してください」と出して読み直す。未適用の変更があるうちは、タブを切り替えて戻っても読み込み時の振り分けと revision を保つ。
+- [変更を適用]: 変更点の一覧（分類A: model_007 → model_008）を出して確認後、画面を読み込んだ時点の revision を付けて反映する。別の操作で振り分けが変わっていたときは何も変えず、「振り分けが別の操作で変更されました。画面を開き直してください」と出して読み直す。未適用の変更があるうちは、タブを切り替えて戻っても読み込み時の振り分けと revision を保つ。
 - [変更を破棄] は「リリース」メニューまたは右クリックから実行する。
 - 変更履歴表: 日時、画像分類、変更前、変更後。
 - 注記: 「新しいリリース済みモデルを登録しても自動では切り替わりません」。</p>
@@ -1380,7 +1380,7 @@ table.rev{font-size:.92rem}
 <div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="spacer"></span></div>
 <div class="m-split" style="grid-template-columns:1.3fr 1fr">
 <div>
-<div class="m-toolbar" style="margin-top:0"><span class="btn">画像を追加…</span><span class="btn">フォルダを追加…</span><span class="btn">選択を削除</span><span class="spacer"></span><span class="small"><span class="num">3</span> 枚</span></div>
+<div class="m-toolbar" style="margin-top:0"><span class="btn">画像を追加</span><span class="btn">フォルダを追加</span><span class="btn">選択を削除</span><span class="spacer"></span><span class="small"><span class="num">3</span> 枚</span></div>
 <div class="table-wrap"><table>
 <thead><tr><th>ファイル名</th><th>画像分類</th><th>適用モデル（自動）</th><th>状態</th><th class="n">検出数</th></tr></thead>
 <tbody>
@@ -1390,8 +1390,8 @@ table.rev{font-size:.92rem}
 </tbody></table></div>
 <div class="panel" style="border-color:var(--error);background:var(--error-bg);color:var(--error);font-size:.84rem;margin-bottom:8px">⚠ 分類D にモデルが割り当てられていないため、a_003.png は推論できません。<span class="btn" style="margin-left:6px">振り分け画面へ</span></div>
 <div class="panel"><p class="ptitle">出力</p>
-<div class="row"><span>出力先</span><span><span class="input path" style="display:inline-block;min-width:200px">D:\results\2026-09-25</span> <span class="btn">参照…</span></span></div>
-<div class="row"><span>出力する内容</span><span>☑ インスタンスラベルマスク　☑ 粒子解析用二値マスク　☐ オーバーレイ画像</span></div>
+<div class="row"><span>出力先</span><span><span class="input path" style="display:inline-block;min-width:200px">D:\results\2026-09-25</span> <span class="btn">参照</span></span></div>
+<div class="row"><span>出力する内容</span><span>☑ 気泡ごとのラベル画像　☑ 粒子解析用の白黒画像（隣接気泡を分離済み）　☐ オーバーレイ画像</span></div>
 <div class="row"><span>形式</span><span>◉ PNG　○ TIFF</span></div>
 <div class="btns"><span class="btn primary">推論を実行（2 枚）</span></div></div>
 </div>

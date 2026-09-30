@@ -1,4 +1,4 @@
-"""マスク比較（比較・評価設計 11 章）: 評価の固定、確定版の原画像、未評価の拒否。"""
+"""抽出結果比較（比較・評価設計 11 章）: 評価の固定、確定版の原画像、未評価の拒否。"""
 
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
@@ -45,6 +45,10 @@ def test_opens_with_fixed_evaluations_and_reads_finalized_images(qtbot, monkeypa
     }
     page = _page(qtbot, backend)
     page.on_enter({"validation_version": "val_v003", "candidate_ids": ["RC-001", "RC-002"]})
+
+    assert page.display_toggle.alternate_button.text() == "抽出結果を重ねて表示"
+    page.ctx.display.set_value("二値マスク")
+    assert page.display_toggle.alternate_button.text() == "白黒の抽出結果"
 
     assert page.placeholder.isHidden()
     assert page.evaluation_ids == expected

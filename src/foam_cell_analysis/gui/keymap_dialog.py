@@ -109,7 +109,7 @@ class KeymapDialog(QDialog):
         set_style(self.duplicate_label, state="error")
         layout.addWidget(self.duplicate_label)
         row = QHBoxLayout()
-        for title, callback in (("書き出し…", self.export), ("読み込み…", self.import_map)):
+        for title, callback in (("書き出し", self.export), ("読み込み", self.import_map)):
             button = QPushButton(title)
             button.clicked.connect(callback)
             row.addWidget(button)
@@ -216,7 +216,7 @@ class KeymapWindow(QDialog):
         self.table.resizeColumnsToContents()
         self.table.horizontalHeader().setStretchLastSection(False)
         layout.addWidget(self.table)
-        self.change_button = QPushButton("変更…")
+        self.change_button = QPushButton("変更")
         self.change_button.clicked.connect(self.change)
         layout.addWidget(self.change_button)
         shortcut_map.changed.connect(self.refresh)
