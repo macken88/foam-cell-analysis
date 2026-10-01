@@ -423,6 +423,8 @@ class ReleasedModel:
     # リリースに使った評価と、その評価に対する最新の外部解析の集計（なければ None）
     evaluation_id: str = ""
     external_summary: dict[str, Any] | None = None
+    lifecycle_status: str = "active"
+    releasable: bool = True
 
 
 @dataclass

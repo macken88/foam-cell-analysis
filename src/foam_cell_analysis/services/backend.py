@@ -357,6 +357,9 @@ class Backend(Protocol):
     def reject_candidate(self, candidate_id: str) -> Candidate:
         """候補を非採用にする。評価中・評価待ちの候補はできない。"""
 
+    def restore_candidate(self, candidate_id: str) -> Candidate:
+        """非採用候補を候補一覧へ戻す。"""
+
     # ---- 評価（7 章）。EvaluationRunner が呼ぶ ----
 
     def set_evaluation_activity(self, is_evaluation_active: Callable[[str], bool]) -> None:
@@ -436,8 +439,19 @@ class Backend(Protocol):
     ) -> list[DataItem]:
         """検証版の画像を分類条件付きで返す。"""
 
-    def list_released_models(self) -> list[ReleasedModel]:
-        """リリース済みモデルを返す。"""
+    def list_released_models(
+        self, *, include_archived: bool = False, include_deleted: bool = False
+    ) -> list[ReleasedModel]:
+        """公開済みモデルを返す。既定は保管・削除済みを除く。"""
+
+    def set_release_archived(self, model_id: str, archived: bool) -> ReleasedModel:
+        """モデルを保管または通常一覧へ戻す。"""
+
+    def estimate_release_delete_bytes(self, model_id: str) -> int:
+        """削除で空く容量を実ファイルから見積もる。"""
+
+    def delete_released_model(self, model_id: str) -> int:
+        """リリース重みのみを削除し、公開記録は履歴として残す。"""
 
     # ---- 振り分け（14 章） ----
 

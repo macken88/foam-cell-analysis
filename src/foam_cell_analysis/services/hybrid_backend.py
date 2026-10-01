@@ -252,6 +252,9 @@ class HybridBackend:
     def reject_candidate(self, candidate_id):
         return self.comparison.reject_candidate(candidate_id)
 
+    def restore_candidate(self, candidate_id):
+        return self.comparison.restore_candidate(candidate_id)
+
     # ---- 評価（7 章） ----
 
     def prepare_evaluation_run(self, candidate_id):
@@ -369,8 +372,19 @@ class HybridBackend:
         """指定した評価で候補をリリースする（13.1）。"""
         return self.comparison.release_candidate(candidate_id, evaluation_id, comment)
 
-    def list_released_models(self):
-        return self.comparison.list_released_models()
+    def list_released_models(self, *, include_archived=False, include_deleted=False):
+        return self.comparison.list_released_models(
+            include_archived=include_archived, include_deleted=include_deleted
+        )
+
+    def set_release_archived(self, model_id, archived):
+        return self.comparison.set_release_archived(model_id, archived)
+
+    def estimate_release_delete_bytes(self, model_id):
+        return self.comparison.estimate_release_delete_bytes(model_id)
+
+    def delete_released_model(self, model_id):
+        return self.comparison.delete_released_model(model_id)
 
     # ---- 振り分け（14 章） ----
 
@@ -479,6 +493,7 @@ COMPARISON_METHODS = (
     "create_inference_config",
     "add_candidate",
     "reject_candidate",
+    "restore_candidate",
     "set_evaluation_activity",
     "prepare_evaluation_run",
     "record_evaluation_process",
@@ -494,6 +509,9 @@ COMPARISON_METHODS = (
     "export_particle_masks",
     "release_candidate",
     "list_released_models",
+    "set_release_archived",
+    "estimate_release_delete_bytes",
+    "delete_released_model",
     "get_routing_state",
     "get_routing",
     "apply_routing",

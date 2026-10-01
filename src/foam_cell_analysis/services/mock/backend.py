@@ -2366,6 +2366,31 @@ class MockBackend:
         candidate.status = "rejected"
         return candidate
 
+    def restore_candidate(self, candidate_id: str) -> Candidate:
+        candidate = self.candidates[candidate_id]
+        if candidate.status != "rejected":
+            raise ValueError("非採用の候補だけ一覧へ戻せます")
+        if "final" in self._pruned.get(
+            (candidate.experiment_id, candidate.source_attempt_number), set()
+        ):
+            raise ValueError("元の最終学習モデルは成果物の整理で削除されています")
+        duplicate = next(
+            (
+                other
+                for other in self.candidates.values()
+                if other.candidate_id != candidate_id
+                and other.status != "rejected"
+                and other.experiment_id == candidate.experiment_id
+                and other.source_attempt_number == candidate.source_attempt_number
+                and other.effective_params == candidate.effective_params
+            ),
+            None,
+        )
+        if duplicate is not None:
+            raise DuplicateCandidateError(duplicate.candidate_id)
+        candidate.status = "candidate"
+        return candidate
+
     # ---- 評価（7 章の模擬。EvaluationRunner の FakeEvaluationJob で動く） ----
 
     def set_evaluation_activity(self, is_evaluation_active: Callable[[str], bool]) -> None:
@@ -2408,8 +2433,8 @@ class MockBackend:
         candidate = self.candidates.get(candidate_id)
         if candidate is None:
             raise ValueError(f"比較候補がありません: {candidate_id}")
-        if candidate.status != "candidate":
-            raise ValueError("候補状態のモデルだけ評価できます")
+        if candidate.status not in {"candidate", "released"}:
+            raise ValueError("候補状態または公開済みのモデルだけ評価できます")
         validation_version = self._fixed_version(candidate)
         if validation_version not in {item.version for item in self.list_validation_versions()}:
             raise ValueError(f"検証用データセット {validation_version} がありません")
@@ -2734,9 +2759,42 @@ class MockBackend:
             if classification is None or item.classification == classification
         ]
 
-    def list_released_models(self) -> list[ReleasedModel]:
-        """リリース済みモデルを返す。"""
-        return list(self.released.values())
+    def list_released_models(
+        self, *, include_archived: bool = False, include_deleted: bool = False
+    ) -> list[ReleasedModel]:
+        """リリース済みモデルを返す。既定で保管・削除済みは隠す。"""
+        return [
+            model
+            for model in self.released.values()
+            if (include_archived or model.lifecycle_status != "archived")
+            and (include_deleted or model.lifecycle_status != "deleted")
+            and model.lifecycle_status != "deleting"
+        ]
+
+    def set_release_archived(self, model_id: str, archived: bool) -> ReleasedModel:
+        model = self.released[model_id]
+        if model.lifecycle_status in {"deleted", "deleting"}:
+            raise ValueError("削除済みモデルの保管状態は変更できません")
+        if archived and model_id in self.routing.values():
+            raise ValueError("振り分けに使用中のモデルは保管できません")
+        model.lifecycle_status = "archived" if archived else "active"
+        model.releasable = not archived
+        return model
+
+    def estimate_release_delete_bytes(self, model_id: str) -> int:
+        model = self.released[model_id]
+        if model.lifecycle_status in {"deleted", "deleting"}:
+            raise ValueError("このモデルは削除済みです")
+        if model_id in self.routing.values():
+            raise ValueError("振り分けに使用中のモデルは削除できません")
+        return 0
+
+    def delete_released_model(self, model_id: str) -> int:
+        self.estimate_release_delete_bytes(model_id)
+        model = self.released[model_id]
+        model.lifecycle_status = "deleted"
+        model.releasable = False
+        return 0
 
     # ---- 振り分け（14 章） ----
 
@@ -2771,7 +2829,9 @@ class MockBackend:
         for classification, model_id in changes.items():
             if classification not in classifications:
                 errors.append(f"振り分けの対象にない分類です: {classification}")
-            if model_id is not None and model_id not in self.released:
+            if model_id is not None and (
+                model_id not in self.released or not self.released[model_id].releasable
+            ):
                 errors.append(f"未登録のリリースモデルです: {model_id}")
         if errors:
             raise ValueError("、".join(errors))
@@ -2793,7 +2853,12 @@ class MockBackend:
     def resolve_model(self, classification: str | None) -> ReleasedModel | None:
         """分類から有効なモデルを返す。"""
         model_id = self.routing.get(classification or "")
-        return self.released.get(model_id) if model_id else None
+        model = self.released.get(model_id) if model_id else None
+        if model is None:
+            return None
+        if not model.releasable:
+            raise ValueError("振り分け先のモデルは保管または削除済みです")
+        return model
 
     # ---- 成果物の整理（19 章の模擬。大きさは固定値、状態だけを持つ） ----
 

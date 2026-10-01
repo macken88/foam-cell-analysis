@@ -1,5 +1,8 @@
 """hybrid の比較候補（ComparisonService の実データ）を比較画面に表示する。"""
 
+import json
+from pathlib import Path
+
 from foam_cell_analysis.gui.navigation import PageId
 from foam_cell_analysis.services.hybrid_backend import HybridBackend
 from tests.gui.test_stage_f_acceptance import _make_shell
@@ -30,6 +33,12 @@ def test_snapshot_candidate_oof_and_evaluation_render_without_experiment_lookup(
     assert page.table.item(0, 8).text() != "—"
     backend.release_candidate(candidate.candidate_id, "eval_001", "ready")
     assert backend.get_candidate(candidate.candidate_id).status == "released"
+    source = backend.comparison._read_candidate(candidate.candidate_id)["source"]
+    backend.comparison._weights_path(source).unlink()
+    backend.comparison.is_evaluation_active = lambda _candidate_id: True
+    prepared = backend.prepare_evaluation_run(candidate.candidate_id)
+    run_spec = json.loads((Path(prepared.run_dir) / "run_spec.json").read_text("utf-8"))
+    assert run_spec["weights"]["path"] == "releases/model_001/model.pt"
     home.hide()
     for window in manager._windows.values():
         window.close()

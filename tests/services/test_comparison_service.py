@@ -5,6 +5,7 @@ import csv
 import hashlib
 import json
 import shutil
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -358,6 +359,121 @@ def test_release_copies_weights_independently(env):
         service.save_external_analysis(cid, "eval_001", {})
     with pytest.raises(ValueError, match="候補状態"):
         service.release_candidate(cid, "eval_001")
+
+
+def test_released_candidate_can_be_reevaluated_without_changing_public_release(env):
+    service, _training = env
+    cid = service.add_candidate("exp_0001", 1, _default_config(service).config_id).candidate_id
+    _write_evaluation(service, cid, "eval_001")
+    service.release_candidate(cid, "eval_001", "公開時コメント")
+    release_path = service.releases_root / "model_001" / "release.json"
+    before_release = release_path.read_bytes()
+    before_weight = (release_path.parent / "model.pt").read_bytes()
+    original_weight = service._weights_path(service._read_candidate(cid)["source"])
+    original_weight.unlink()
+
+    # EvaluationRunner sets its busy callback before asking the backend to prepare the run.
+    service.is_evaluation_active = lambda _candidate_id: True
+    prepared = service.prepare_evaluation_run(cid)
+    service.is_evaluation_active = lambda _candidate_id: False
+    assert prepared.run_id.endswith("eval_002")
+    spec = json.loads((Path(prepared.run_dir) / "run_spec.json").read_text("utf-8"))
+    assert spec["weights"]["path"] == "releases/model_001/model.pt"
+    _write_evaluation(service, cid, "eval_002")
+    current = service.get_candidate_evaluation(cid)
+
+    assert current.evaluation_id == "eval_002"
+    assert service.get_candidate(cid).status == "released"
+    assert release_path.read_bytes() == before_release
+    assert (release_path.parent / "model.pt").read_bytes() == before_weight
+    assert service.get_release_record("model_001")["evaluation"]["evaluation_id"] == "eval_001"
+
+
+def test_release_archive_delete_preserves_history_and_blocks_routing(env):
+    service, _training = env
+    cid = service.add_candidate("exp_0001", 1, _default_config(service).config_id).candidate_id
+    _write_evaluation(service, cid, "eval_001")
+    service.release_candidate(cid, "eval_001")
+    release_path = service.releases_root / "model_001" / "release.json"
+    release_hash = _sha(release_path.read_bytes())
+    size = (release_path.parent / "model.pt").stat().st_size
+
+    service.set_release_archived("model_001", True)
+    assert service.list_released_models() == []
+    assert service.list_released_models(include_archived=True)[0].lifecycle_status == "archived"
+    with pytest.raises(ValueError, match="保管中"):
+        service.apply_routing({"分類A": "model_001"}, expected_revision=0)
+    assert service.set_release_archived("model_001", False).lifecycle_status == "active"
+    service.apply_routing({"分類A": "model_001"}, expected_revision=0)
+    with pytest.raises(ValueError, match="使用中"):
+        service.estimate_release_delete_bytes("model_001")
+    service.apply_routing({"分類A": None}, expected_revision=1)
+    service.is_evaluation_active = lambda _candidate_id: True
+    with pytest.raises(ValueError, match="評価中または評価待ち"):
+        service.estimate_release_delete_bytes("model_001")
+    service.is_evaluation_active = lambda _candidate_id: False
+    assert service.estimate_release_delete_bytes("model_001") == size
+    assert service.delete_released_model("model_001") == size
+
+    assert not (release_path.parent / "model.pt").exists()
+    assert _sha(release_path.read_bytes()) == release_hash
+    assert service.list_released_models() == []
+    archived = service.list_released_models(include_deleted=True)[0]
+    assert archived.lifecycle_status == "deleted"
+    assert archived.evaluation_id == "eval_001"
+    assert service.get_candidate(cid).status == "released"
+    assert service.get_candidate_prediction(cid, "eval_001", "val_v000_0").size > 0
+    with pytest.raises(ValueError, match="削除済み"):
+        service.get_release_record("model_001")
+    with pytest.raises(ValueError, match="保管中"):
+        service.apply_routing({"分類A": "model_001"}, expected_revision=2)
+
+
+def test_release_delete_failure_restores_archived_weight_and_state(env, monkeypatch):
+    service, _training = env
+    cid = service.add_candidate("exp_0001", 1, _default_config(service).config_id).candidate_id
+    _write_evaluation(service, cid, "eval_001")
+    service.release_candidate(cid, "eval_001")
+    service.set_release_archived("model_001", True)
+    weight = service.releases_root / "model_001" / "model.pt"
+    original_unlink = type(weight).unlink
+
+    def fail_staged_unlink(path, *args, **kwargs):
+        if path.name == "model.pt" and ".deleting" in path.parts:
+            raise PermissionError("simulated delete failure")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(type(weight), "unlink", fail_staged_unlink)
+    with pytest.raises(PermissionError, match="simulated"):
+        service.delete_released_model("model_001")
+
+    assert weight.is_file()
+    assert service.list_released_models() == []
+    assert service.list_released_models(include_archived=True)[0].lifecycle_status == "archived"
+
+
+def test_release_move_failure_restores_archived_state(env, monkeypatch):
+    service, _training = env
+    cid = service.add_candidate("exp_0001", 1, _default_config(service).config_id).candidate_id
+    _write_evaluation(service, cid, "eval_001")
+    service.release_candidate(cid, "eval_001")
+    service.set_release_archived("model_001", True)
+    weight = service.releases_root / "model_001" / "model.pt"
+    real_replace = comparison_service.os.replace
+
+    def fail_move(source, destination):
+        if Path(source) == weight:
+            raise PermissionError("simulated move failure")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(comparison_service.os, "replace", fail_move)
+    with pytest.raises(PermissionError, match="simulated move"):
+        service.delete_released_model("model_001")
+
+    assert weight.is_file()
+    assert service.list_released_models() == []
+    assert service.list_released_models(include_archived=True)[0].lifecycle_status == "archived"
+    assert not (service.releases_root / ".deleting" / "model_001").exists()
 
 
 def test_release_blocked_conditions(env):

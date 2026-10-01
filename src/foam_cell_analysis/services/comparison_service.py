@@ -18,6 +18,7 @@ import math
 import os
 import re
 import shutil
+import stat
 import sys
 import time
 import uuid
@@ -583,6 +584,7 @@ class ComparisonService:
         for path in self.releases_root.glob("*.tmp"):
             self._remove(path)
         self.migrate_candidate_pairs()
+        self.recover_release_deletions()
         return self.recover_releases()
 
     # ---- 旧候補の検証用データセットの組の補完（比較・評価設計 3.5） ----
@@ -1023,6 +1025,31 @@ class ComparisonService:
         self._write_candidate(record)
         return self._to_candidate(record)
 
+    def restore_candidate(self, candidate_id: str) -> Candidate:
+        """非採用候補を未決定に戻す。"""
+        record = self._read_candidate(candidate_id)
+        if record.get("status") != "rejected":
+            raise ValueError("この候補は一覧へ戻せません")
+        source = record.get("source") or {}
+        weights = source.get("weights") or {}
+        source_path = self._weights_path(source)
+        if (
+            not source_path.is_file()
+            or source_path.stat().st_size != weights.get("size")
+            or file_sha256(source_path) != weights.get("sha256")
+        ):
+            raise ValueError("元の学習モデルが見つからないか、記録と一致しません")
+        for other in self._candidate_records():
+            if (
+                other.get("candidate_id") != candidate_id
+                and other.get("status") != "rejected"
+                and other.get("fingerprint") == record.get("fingerprint")
+            ):
+                raise DuplicateCandidateError(other["candidate_id"])
+        record["status"] = "candidate"
+        self._write_candidate(record)
+        return self._to_candidate(record)
+
     def _to_candidate(self, record: dict[str, Any]) -> Candidate:
         """candidate.json を GUI の Candidate へ変換する。"""
         source = record.get("source") or {}
@@ -1334,8 +1361,8 @@ class ComparisonService:
             record = self._read_candidate(candidate_id)
         except KeyError as error:
             raise ValueError(f"比較候補がありません: {candidate_id}") from error
-        if record.get("status") != "candidate":
-            raise ValueError("候補状態のモデルだけ評価できます")
+        if record.get("status") not in {"candidate", "released"}:
+            raise ValueError("候補状態または公開済みのモデルだけ評価できます")
         training_version, version = self._fixed_pair(record)
         version = _check_name(version, "検証版")
         if version not in self.dataset_store.list_versions("val"):
@@ -1359,10 +1386,28 @@ class ComparisonService:
         item_ids = [item.item_id for item in items]
         input_fingerprint = compute_input_fingerprint(record["fingerprint"], dataset_sha, item_ids)
         weights = source["weights"]
-        run_relative = self._run_dir(source).relative_to(self.workspace_root)
-        weights_relative = PurePosixPath(
-            run_relative.as_posix(), PureWindowsPath(weights["path"]).as_posix()
-        ).as_posix()
+        weights_path = self._weights_path(source)
+        if record.get("status") == "released":
+            lifecycle = self._release_lifecycle(record.get("released_model_id") or "")
+            if lifecycle.get("status") in {"deleted", "deleting"}:
+                raise ValueError("公開モデルの重みは削除済みのため再評価できません")
+            published = self._published_release(record)
+            if published is None or published[0] != record.get("released_model_id"):
+                raise ValueError("公開済みモデルの参照を確認できないため再評価できません")
+            release = self.get_release_record(published[0])
+            release_weights = release.get("weights") or {}
+            if release_weights.get("sha256") != weights.get("sha256") or release_weights.get(
+                "size"
+            ) != weights.get("size"):
+                raise ValueError("公開モデルの重みが候補の元重みと一致しません")
+            weights_path = self._ensure_release_path_safe(
+                self.releases_root / published[0] / "model.pt", check_ancestors=False
+            )
+        if not weights_path.is_file() or weights_path.stat().st_size != weights["size"]:
+            raise ValueError("評価に使うモデル重みが見つからないか、サイズが一致しません")
+        weights_relative = (
+            weights_path.resolve().relative_to(self.workspace_root.resolve()).as_posix()
+        )
         root = self._evaluations_root(candidate_id) / version
         root.mkdir(parents=True, exist_ok=True)
         number = self._next_evaluation_number(candidate_id)
@@ -1773,7 +1818,9 @@ class ComparisonService:
         return sorted(releases, key=lambda item: _number(_MODEL_ID, item[0]))
 
     @staticmethod
-    def _released_model(value: dict[str, Any]) -> ReleasedModel:
+    def _released_model(
+        value: dict[str, Any], lifecycle: dict[str, Any] | None = None
+    ) -> ReleasedModel:
         """release.json だけから ReleasedModel を作る（13.4。実験は引かない）。"""
         source = value.get("source") or {}
         evaluation = value.get("evaluation") or {}
@@ -1810,20 +1857,234 @@ class ComparisonService:
                     evaluation.get("evaluation_id"),
                 )
             ),
+            lifecycle_status=str((lifecycle or {}).get("status") or "active"),
+            releasable=(lifecycle or {}).get("status", "active") == "active",
         )
 
-    def list_released_models(self) -> list[ReleasedModel]:
+    def list_released_models(
+        self, *, include_archived: bool = False, include_deleted: bool = False
+    ) -> list[ReleasedModel]:
         models = []
         for model_id, value in self._release_records():
             try:
-                models.append(self._released_model(value))
+                lifecycle = self._release_lifecycle(model_id)
+                status = lifecycle.get("status", "active")
+                if status == "archived" and not include_archived:
+                    continue
+                if status == "deleting" or (status == "deleted" and not include_deleted):
+                    continue
+                models.append(self._released_model(value, lifecycle))
             except (KeyError, TypeError, ValueError) as error:
                 logger.warning("リリース %s を読めません: %s", model_id, error)
         return models
 
-    def get_release_record(self, model_id: str) -> dict[str, Any]:
+    def _release_lifecycle_path(self, model_id: str) -> Path:
+        path = self.releases_root / _check_id(_MODEL_ID, model_id, "モデル ID") / "lifecycle.json"
+        return self._ensure_release_path_safe(path, check_ancestors=False)
+
+    def _release_lifecycle(self, model_id: str) -> dict[str, Any]:
+        path = self._release_lifecycle_path(model_id)
+        if not path.is_file():
+            return {"schema": 1, "status": "active"}
+        value = read_json(path)
+        if value.get("model_id") != model_id or value.get("status") not in {
+            "active",
+            "archived",
+            "deleting",
+            "deleted",
+        }:
+            raise ValueError(f"{model_id} の保管・削除状態の記録が不正です")
+        return value
+
+    def _write_release_lifecycle(self, model_id: str, value: dict[str, Any]) -> None:
+        value = {"schema": 1, "model_id": model_id, **value}
+        _write_json(self._release_lifecycle_path(model_id), value)
+
+    def _ensure_release_path_safe(self, path: Path, *, check_ancestors: bool = True) -> Path:
+        """releases 配下の対象まで reparse point をたどらず検証する。"""
+        root = self.releases_root.absolute()
+        target = path.absolute()
+        try:
+            relative = target.relative_to(root)
+        except ValueError as error:
+            raise ValueError("対象がリリース保存先の外にあります") from error
+        if check_ancestors:
+            current = Path(root.anchor)
+            for part in root.parts[1:]:
+                current /= part
+                if current.exists() or current.is_symlink():
+                    info = current.lstat()
+                    attributes = getattr(info, "st_file_attributes", 0)
+                    if stat.S_ISLNK(info.st_mode) or attributes & 0x400:
+                        raise ValueError("リリース保存先に reparse point があるため操作できません")
+        current = root
+        for part in relative.parts:
+            current /= part
+            if current.exists() or current.is_symlink():
+                info = current.lstat()
+                attributes = getattr(info, "st_file_attributes", 0)
+                if stat.S_ISLNK(info.st_mode) or attributes & 0x400:
+                    raise ValueError("リリース内に reparse point があるため操作できません")
+        return target
+
+    def set_release_archived(self, model_id: str, archived: bool) -> ReleasedModel:
+        """公開モデルを保管または通常一覧へ戻す。公開記録は変更しない。"""
+        model_id = _check_id(_MODEL_ID, model_id, "モデル ID")
+        lifecycle = self._release_lifecycle(model_id)
+        if lifecycle.get("status") in {"deleted", "deleting"}:
+            raise ValueError("削除済みまたは削除処理中のモデルは保管状態を変更できません")
+        self.get_release_record(model_id)
+        assignments = self._read_routing()["assignments"]
+        if archived and model_id in assignments.values():
+            raise ValueError("振り分けに使用中のモデルは保管できません")
+        self._write_release_lifecycle(model_id, {"status": "archived" if archived else "active"})
+        value = next(value for key, value in self._release_records() if key == model_id)
+        return self._released_model(value, self._release_lifecycle(model_id))
+
+    def estimate_release_delete_bytes(self, model_id: str) -> int:
+        """リリースが所有するモデル重みの実ファイル容量を返す。"""
+        model_id = _check_id(_MODEL_ID, model_id, "モデル ID")
+        lifecycle = self._release_lifecycle(model_id)
+        if lifecycle.get("status") in {"deleting", "deleted"}:
+            raise ValueError("このモデルは削除済みまたは削除処理中です")
+        if model_id in self._read_routing()["assignments"].values():
+            raise ValueError("振り分けに使用中のモデルは削除できません")
+        folder = self._ensure_release_path_safe(self.releases_root / model_id)
+        record = self.get_release_record(model_id)
+        candidate_id = (record.get("candidate") or {}).get("candidate_id")
+        if candidate_id and self.is_evaluation_active(candidate_id):
+            raise ValueError("公開モデルを評価中または評価待ちのため削除できません")
+        relative = (record.get("weights") or {}).get("path")
+        if relative != "model.pt":
+            raise ValueError("公開重みの保存先が想定と異なるため削除できません")
+        weight = self._ensure_release_path_safe(folder / "model.pt")
+        info = weight.lstat()
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("公開重みが通常ファイルでないため削除できません")
+        return info.st_size if info.st_nlink <= 1 else 0
+
+    def delete_released_model(self, model_id: str) -> int:
+        """公開重みだけを削除し、公開記録と履歴要約を保持する。"""
+        model_id = _check_id(_MODEL_ID, model_id, "モデル ID")
+        size = self.estimate_release_delete_bytes(model_id)
+        lifecycle = self._release_lifecycle(model_id)
+        previous_status = lifecycle.get("status", "active")
+        record = self.get_release_record(model_id)
+        folder = self._ensure_release_path_safe(self.releases_root / model_id)
+        weight = self._ensure_release_path_safe(folder / "model.pt")
+        digest = file_sha256(weight)
+        stage_root = self._ensure_release_path_safe(self.releases_root / ".deleting")
+        stage = self._ensure_release_path_safe(stage_root / model_id)
+        stage_root.mkdir(exist_ok=True)
+        stage.mkdir(exist_ok=True)
+        if any(stage.iterdir()):
+            raise ValueError("前回の削除処理が残っています。復旧後にもう一度お試しください")
+        self._write_release_lifecycle(
+            model_id,
+            {
+                "status": "deleting",
+                "started_at": _now(),
+                "previous_status": previous_status,
+                "size": weight.stat().st_size,
+                "sha256": digest,
+                "evaluation": copy.deepcopy(record.get("evaluation") or {}),
+            },
+        )
+        staged = self._ensure_release_path_safe(stage / "model.pt")
+        try:
+            os.replace(weight, staged)
+            if file_sha256(staged) != digest:
+                raise ValueError("削除対象の重みが移動前後で一致しません")
+            staged.unlink()
+            self._write_release_lifecycle(
+                model_id,
+                {
+                    "status": "deleted",
+                    "deleted_at": _now(),
+                    "size": weight.stat().st_size if weight.exists() else size,
+                    "sha256": digest,
+                    "evaluation": copy.deepcopy(record.get("evaluation") or {}),
+                },
+            )
+            try:
+                stage.rmdir()
+            except OSError:
+                logger.warning("削除済みリリース %s の空 staging を後で整理します", model_id)
+            return size
+        except BaseException:
+            if staged.exists() and not weight.exists():
+                try:
+                    os.replace(staged, weight)
+                except OSError:
+                    logger.exception("リリース %s の削除中断後に重みを戻せません", model_id)
+            if weight.exists():
+                try:
+                    self._write_release_lifecycle(model_id, {"status": previous_status})
+                    if stage.exists() and not any(stage.iterdir()):
+                        stage.rmdir()
+                except OSError:
+                    logger.exception("リリース %s の削除中断後に状態を戻せません", model_id)
+            raise
+
+    def recover_release_deletions(self) -> list[str]:
+        """削除途中の公開重みを安全に戻すか、完了記録へ進める。"""
+        recovered = []
+        for model_id, _record in self._release_records():
+            try:
+                lifecycle = self._release_lifecycle(model_id)
+                if lifecycle.get("status") != "deleting":
+                    continue
+                folder = self._ensure_release_path_safe(self.releases_root / model_id)
+                weight = self._ensure_release_path_safe(folder / "model.pt")
+                stage = self._ensure_release_path_safe(
+                    self.releases_root / ".deleting" / model_id / "model.pt"
+                )
+                if stage.exists() and not weight.exists():
+                    if file_sha256(stage) != lifecycle.get("sha256"):
+                        raise ValueError("削除途中の重みが記録と一致しません")
+                    os.replace(stage, weight)
+                    stage.parent.rmdir()
+                    self._write_release_lifecycle(
+                        model_id,
+                        {"status": lifecycle.get("previous_status", "active")},
+                    )
+                elif weight.exists() and not stage.exists():
+                    self._write_release_lifecycle(
+                        model_id,
+                        {"status": lifecycle.get("previous_status", "active")},
+                    )
+                elif not weight.exists() and not stage.exists():
+                    self._write_release_lifecycle(
+                        model_id,
+                        {
+                            "status": "deleted",
+                            "deleted_at": _now(),
+                            "size": lifecycle.get("size", 0),
+                            "sha256": lifecycle.get("sha256"),
+                            "evaluation": copy.deepcopy(lifecycle.get("evaluation") or {}),
+                        },
+                    )
+                else:
+                    raise ValueError("削除途中の重みが保存先と staging の両方にあります")
+                recovered.append(model_id)
+            except (OSError, ValueError) as error:
+                logger.warning("リリース %s の削除を復旧できません: %s", model_id, error)
+        return recovered
+
+    def get_release_record(self, model_id: str, *, allow_deleted: bool = False) -> dict[str, Any]:
         """release.json を読み、model.pt の存在と大きさを確かめて返す。読めなければ ValueError。"""
         folder = self.releases_root / _check_id(_MODEL_ID, model_id, "モデル ID")
+        lifecycle = self._release_lifecycle(model_id)
+        if lifecycle.get("status") == "deleted" and allow_deleted:
+            try:
+                value = read_json(folder / "release.json")
+            except (OSError, ValueError) as error:
+                raise ValueError(f"リリース {model_id} の履歴を読めません") from error
+            if value.get("model_id") != model_id:
+                raise ValueError(f"リリース {model_id} の記録が一致しません")
+            return value
+        if lifecycle.get("status") in {"deleted", "deleting"}:
+            raise ValueError(f"リリース {model_id} の重みは削除済みまたは削除処理中です")
         try:
             value = read_json(folder / "release.json")
         except (OSError, ValueError) as error:
@@ -1922,7 +2183,7 @@ class ComparisonService:
             return None
         model_id, release = published
         # モデルファイルの有無と大きさを確かめる（読めなければ ValueError）
-        self.get_release_record(model_id)
+        self.get_release_record(model_id, allow_deleted=True)
         try:
             self._mark_released(record, model_id)
         except OSError as error:
@@ -1931,7 +2192,7 @@ class ComparisonService:
                 f"もう一度登録すると状態を修復します: {error}"
             ) from error
         logger.info("候補 %s の公開済みリリース %s を再利用しました", candidate_id, model_id)
-        model = self._released_model(release)
+        model = self._released_model(release, self._release_lifecycle(model_id))
         setattr(model, RECOVERED_RELEASE_ATTR, True)
         return model
 
@@ -2123,13 +2384,24 @@ class ComparisonService:
         if value["revision"] != expected_revision:
             raise ValueError("振り分けが別の操作で変更されました。画面を開き直してください")
         classifications = set(self.list_routing_classifications())
-        released = {model_id for model_id, _release in self._release_records()}
+        released = {
+            model.model_id
+            for model in self.list_released_models(include_archived=False, include_deleted=False)
+        }
         errors = []
         for classification, model_id in changes.items():
             if not isinstance(classification, str) or classification not in classifications:
                 errors.append(f"振り分けの対象にない分類です: {classification}")
             if model_id is not None and model_id not in released:
-                errors.append(f"未登録のリリースモデルです: {model_id}")
+                known = next(
+                    (value for key, value in self._release_records() if key == model_id), None
+                )
+                if known is None:
+                    errors.append(f"未登録のリリースモデルです: {model_id}")
+                else:
+                    errors.append(
+                        f"保管中または削除済みのリリースモデルは振り分けに使えません: {model_id}"
+                    )
         if errors:
             raise ValueError("、".join(errors))
         assignments = dict(value["assignments"])
@@ -2175,7 +2447,18 @@ class ComparisonService:
         model_id = self._read_routing()["assignments"].get(classification)
         if model_id is None:
             return None
-        return self._released_model(self.get_release_record(model_id))
+        model = next(
+            (
+                item
+                for item in self.list_released_models(include_archived=True)
+                if item.model_id == model_id
+            ),
+            None,
+        )
+        if model is None or not model.releasable:
+            raise ValueError("振り分け先のモデルは保管または削除済みです")
+        self.get_release_record(model_id)
+        return model
 
     # ---- 参照保護 ----
 
