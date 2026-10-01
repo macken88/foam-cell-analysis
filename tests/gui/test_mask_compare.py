@@ -52,8 +52,17 @@ def test_opens_with_fixed_evaluations_and_reads_finalized_images(qtbot, monkeypa
 
     assert page.placeholder.isHidden()
     assert page.evaluation_ids == expected
-    assert len(page.views) == 3
+    assert len(page.views) == 2
     assert all(not view.scene().items() == [] for view in page.views)
+    prediction_calls_before_raw = len(prediction_calls)
+    QTest.mouseClick(page.display_toggle.raw_button, Qt.MouseButton.LeftButton)
+    assert not page.display_toggle.is_alternate
+    assert all(view.scene().items() for view in page.views)
+    assert all(count.text() == "原画像を表示中" for count in page.panel_counts[:2])
+    assert len(prediction_calls) == prediction_calls_before_raw
+    QTest.mouseClick(page.display_toggle.alternate_button, Qt.MouseButton.LeftButton)
+    assert page.display_toggle.is_alternate
+    assert all(count.text() == "検出 31 個" for count in page.panel_counts[:2])
     first = page.items[page.index].item_id
     QTest.mouseClick(page.next, Qt.MouseButton.LeftButton)
     second = page.items[page.index].item_id

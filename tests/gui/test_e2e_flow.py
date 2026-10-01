@@ -116,7 +116,10 @@ def test_training_candidate_release_and_routing_flow(shell, qtbot, monkeypatch):
     assert (
         shell.page(PageId.RELEASED_MODELS).model_table.horizontalHeaderItem(6).text() == "検証 AP"
     )
-    assert shell.page(PageId.RELEASED_MODELS).model_table.horizontalHeaderItem(7).text() == "OOF AP"
+    assert (
+        shell.page(PageId.RELEASED_MODELS).model_table.horizontalHeaderItem(7).text()
+        == "学習時 OOF AP"
+    )
     assert shell.page(PageId.RELEASED_MODELS).select_model(released.model_id)
     routing = shell.page(PageId.RELEASED_MODELS)
     control = routing._routing_controls["分類A"]

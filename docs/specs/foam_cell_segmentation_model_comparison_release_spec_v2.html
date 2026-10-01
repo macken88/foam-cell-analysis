@@ -69,7 +69,7 @@ pre{background:#111827;color:#f9fafb;padding:18px;border-radius:10px;overflow-x:
     ↓
 結果・コメントを手入力
     ↓
-リリース済みモデルとして登録
+候補を採用（正式リリース登録）
     ↓
 画像分類ごとのモデル振り分けへ割り当て</div>
 </section>
@@ -200,17 +200,17 @@ Type C → model_007</pre>
 <div class="title">モデル比較・リリース</div>
 <div class="body">
 <table>
-<thead><tr><th>選択</th><th>候補ID</th><th>モデル</th><th>実験</th><th>学習モデル</th><th>推論設定</th><th>検証版</th><th>検証 AP</th><th>OOF AP</th><th>状態</th><th>外部解析</th><th>コメント</th></tr></thead>
+<thead><tr><th>選択</th><th>候補ID</th><th>モデル</th><th>実験</th><th>学習モデル</th><th>推論設定</th><th>検証版</th><th>検証 AP</th><th>学習時 OOF AP</th><th>評価状態</th><th>採用</th><th>外部解析</th><th>コメント</th></tr></thead>
 <tbody>
-<tr><td>☑</td><td>RC-001</td><td>Mask R-CNN</td><td>exp_0042</td><td>試行 1 / final.pt</td><td>変更あり</td><td>val_v003</td><td>0.91</td><td>対象外</td><td>記録なし</td><td>候補</td><td>—</td></tr>
-<tr><td>☑</td><td>RC-002</td><td>Cellpose</td><td>exp_0051</td><td>試行 1 / final.pt</td><td>学習時と同じ</td><td>val_v003</td><td>0.89</td><td>0.87</td><td>候補</td><td>記録なし</td><td>—</td></tr>
-<tr><td>☐</td><td>RC-003</td><td>Mask R-CNN</td><td>exp_0060</td><td>試行 1 / final.pt</td><td>確認できません</td><td>val_v003</td><td>未評価</td><td>対象外</td><td>候補</td><td>旧記録あり</td><td>—</td></tr>
+<tr><td>☑</td><td>RC-001</td><td>Mask R-CNN</td><td>exp_0042</td><td>試行 1 / final.pt</td><td>変更あり</td><td>val_v003</td><td>0.91</td><td>0.79（参考）</td><td>評価済み</td><td>採用</td><td>記録なし</td><td>—</td></tr>
+<tr><td>☑</td><td>RC-002</td><td>Cellpose</td><td>exp_0051</td><td>試行 1 / final.pt</td><td>学習時と同じ</td><td>val_v003</td><td>0.89</td><td>0.87（参考）</td><td>未評価</td><td>未決定</td><td>記録なし</td><td>—</td></tr>
+<tr><td>☐</td><td>RC-003</td><td>Mask R-CNN</td><td>exp_0060</td><td>試行 1 / final.pt</td><td>確認できません</td><td>val_v003</td><td>未評価</td><td>0.76（参考）</td><td>結果破損（再評価してください）</td><td>非採用</td><td>旧記録あり</td><td>—</td></tr>
 </tbody>
 </table>
 <div class="btns">
-<span class="btn">候補追加</span><span class="btn">設定を変えて候補追加</span><span class="btn primary">評価実行</span><span class="btn">検証版: すべて</span><span class="btn">状態: すべて</span>
+<span class="btn">候補追加</span><span class="btn">設定を変えて候補追加</span><span class="btn primary">評価実行 / 評価中止</span><span class="btn">検証版: すべて</span><span class="btn">評価状態: すべて</span><span class="btn">採用状態: 候補・採用</span>
 </div>
-<div class="btns"><span class="btn">評価詳細</span><span class="btn">抽出結果比較</span><span class="btn">抽出結果出力</span><span class="btn primary">選択候補リリース</span></div>
+<div class="btns"><span class="btn">評価詳細</span><span class="btn">抽出結果比較</span><span class="btn">抽出結果出力</span><span class="btn">候補に戻す</span><span class="btn primary">選択候補を採用</span></div>
 </div>
 </div>
 </section>
@@ -219,27 +219,21 @@ Type C → model_007</pre>
 <div class="mock">
 <div class="title">抽出結果比較</div>
 <div class="body">
-<div class="section">
-<div class="row"><div>検証データセット</div><div class="input">val_v003</div></div>
-<div class="row"><div>画像分類</div><div class="input">分類A</div></div>
-<div class="row"><div>対象画像</div><div class="input">IMG-000123</div></div>
-<div class="row"><div>表示形式</div><div class="input">オーバーレイ / インスタンスラベル / 粒子解析用の白黒画像</div></div>
-</div>
+<div class="section"><div class="row"><div>表示</div><div class="input">原画像 / 抽出結果</div></div><div class="row"><div>候補数</div><div class="input">同じ固定検証版の評価済み候補 2〜4 件</div></div></div>
 <div class="preview">
-<div><strong>原画像</strong><div class="box">原画像</div></div>
-<div><strong>RC-001</strong><div class="box">抽出結果 A</div></div>
-<div><strong>RC-002</strong><div class="box">抽出結果 B</div></div>
-<div><strong>RC-005</strong><div class="box">抽出結果 C</div></div>
+<div><strong>RC-001 ▾</strong><div class="box">同期表示 A</div></div>
+<div><strong>RC-002 ▾</strong><div class="box">同期表示 B</div></div>
+<div><strong>RC-005 ▾</strong><div class="box">同期表示 C</div></div>
 </div>
-<div class="btns"><span class="btn">← 前の画像</span><span class="btn">次の画像 →</span></div>
-<div class="note">ズーム・パンは全表示枠で同期する。</div>
+<div class="btns"><span class="btn">+ 候補</span><span class="btn">候補を外す</span><span class="btn">← 前の画像</span><span class="btn">次の画像 →</span><span class="btn">全体表示</span></div>
+<div class="note">画像・候補の切替と再配置では倍率と画素中心を維持する。全体表示だけが倍率をリセットする。</div>
 </div>
 </div>
 </section>
 <section class="card">
-<h2>15. 画面モック：リリース登録</h2>
+<h2>15. 画面モック：候補を採用（正式リリース登録）</h2>
 <div class="mock">
-<div class="title">リリース済みモデル登録</div>
+<div class="title">候補を採用</div>
 <div class="body">
 <div class="section">
 <div class="row"><div>リリースモデル識別子</div><div class="input">model_007</div></div>
@@ -250,7 +244,7 @@ Type C → model_007</pre>
 <div class="row"><div>検証データセット</div><div class="input">val_v003</div></div>
 <div class="row"><div>コメント</div><div class="input">分類A 本番用モデル</div></div>
 </div>
-<div class="btns"><span class="btn">キャンセル</span><span class="btn primary">リリース済みモデルとして登録</span></div>
+<div class="btns"><span class="btn">キャンセル</span><span class="btn primary">採用</span></div>
 </div>
 </div>
 </section>
@@ -258,6 +252,7 @@ Type C → model_007</pre>
 <h2>16. 設計原則まとめ</h2>
 <ol><li>比較候補は完了済み実験のfinal.ptと推論設定の組み合わせで作る。</li><li>複数候補を選択し、同一画像上で抽出結果を比較する。</li><li>本アプリ内の後処理は隣接気泡の分離のみとし、通常のモデル設定には含めない。</li><li>検証用データセットAPと学習段階で算出済みのOOF APを併記する。</li><li>評価は全体、画像分類別、件数を基本とする。</li><li>外部粒子解析結果は必要に応じて手入力する。</li><li>検証用データセットは学習用データセットとは別に版管理する。</li><li>学習用データセットを確定する時に検証版との重複を確認する。</li><li>正式採用時はリリース済みモデルとして固定し、後から上書きしない。</li><li>画像分類はデータ側の共通メタデータとして扱い、本番モデルの割り当てはモデル振り分けで管理する。</li></ol>
 </section>
-<section class="card"><h2>17. 検証用APとOOF AP</h2><p>比較候補は完了済み実験の指定した試行のfinal.ptと推論設定の組み合わせに限る。候補作成時に、その試行の選択エポックにおける学習時のOOF評価と、その評価条件（学習時の評価パラメータ）を固定して保持する。</p><p>候補の実効推論条件が学習時の評価条件と一致する場合に限り、候補一覧のOOF APとして表示する。一致しない場合は「対象外（推論設定が学習時と異なる）」、判定に必要な記録がない場合は「条件を確認できません」と表示する。学習時のOOF評価は、候補詳細とリリース記録に参考値として保持する。保存済みのOOF予測（閾値適用済みのラベル画像）から、推論設定を変えたOOF評価を再計算することはしない。fold モデルによる再推論は今回の対象外とする。OOF AP は fold モデル群の評価であり、final.pt 自身の評価ではない。</p><p>検証用APは「評価を実行」で算出する。再評価しても過去の評価結果は残し、比較・出力・リリースでは使う評価を明示して固定する。外部粒子解析結果は、どの評価に対するものかを付けて手入力する。</p><p>候補詳細・リリースには検証用データセット名、採用した評価、OOFの実験ID・試行・選択エポック、全体・画像分類別のAPと対象件数を保存する。正式リリース済みモデルにも両方の評価を引き継ぐ。</p></section>
+<section class="card"><h2>17. 検証用APとOOF AP</h2><p>比較候補は完了済み実験の指定した試行のfinal.ptと推論設定の組み合わせに限る。候補作成時に、その試行の選択エポックにおける学習時のOOF評価と、その評価条件（学習時の評価パラメータ）を固定して保持する。</p><p>候補一覧と採用モデル一覧では学習時のOOF APを常に参考値として表示する。推論条件が異なる場合は薄色にして理由をツールチップで示し、条件を確認できない場合も同様に扱う。これは現在の再評価値ではなく、条件差のある数値を比較可能とは示さないため、OOF APによる最高値の強調もしない。保存済みのOOF予測（閾値適用済みのラベル画像）から、推論設定を変えたOOF評価を再計算することはしない。fold モデルによる再推論は今回の対象外とする。OOF AP は fold モデル群の評価であり、final.pt 自身の評価ではない。</p><p>検証用APは「評価を実行」で算出する。再評価しても過去の評価結果は残し、比較・出力・リリースでは使う評価を明示して固定する。外部粒子解析結果は、どの評価に対するものかを付けて手入力する。</p><p>候補詳細・リリースには検証用データセット名、採用した評価、OOFの実験ID・試行・選択エポック、全体・画像分類別のAPと対象件数を保存する。正式リリース済みモデルにも両方の評価を引き継ぐ。</p></section>
 </div><section class="card" id="comparison-2026-09-30"><h2>18. 2026-09-30 承認方針</h2><p>学習データセットは確定時にちょうど1つの RELEASED 検証版を記録し、候補はその組を固定して保持する。候補一覧の検証版選択は絞り込み専用で、評価先は候補ごとの固定版とする。評価・新規リリースは保存済みの組と評価版を照合する。画像の再読込や重複検査を評価ごとに繰り返さない。旧候補は元学習版を確認してから固定値を補完し、確認不能なら理由付きで評価・新規リリースを止める。</p><p>旧 schema 1 の <code>found</code> 評価は履歴閲覧に残すが、新規リリースには使用しない。schema 1 の <code>none</code>/<code>unknown</code> は候補固定版など他の条件を満たせば利用できる。旧形式 run_spec/result/preflight は読み取り互換を保ち、新 schema 2 では混入検査項目を出力しない。公開済みリリースは起動復旧時に元評価を維持し、新しいリリースを作らない。</p><p>候補一覧は検証版と状態で絞り込み、検証版を1つに絞った場合だけ検証 AP の最高値を強調する。抽出結果比較は同一検証版で評価済みの2〜4候補に限る。外部解析は画像ごとの円相当径中央値を µm または px で入力し、入力済み画像の平均と分類別平均を評価 ID とともに保存する。</p></section>
+<section class="card" id="adoption-retention-2026-10"><h2>19. 2026-10 採用・保管・比較の承認方針</h2><p>採用済み候補も固定検証版で再評価でき、比較には同一固定版の正常な最新評価を使う。公開済み release.json・公開評価・重みは再評価や再試行で上書きしない。同一候補の公開済みリリースがある場合は再試行でそれを再利用する。採用操作は通常の正式リリース登録を意味し、独立した比較採用評価 ID は保存しない。</p><p>候補一覧には学習時 OOF AP を常に参考値として表示し、推論設定 different/unknown は薄色と理由ツールチップで示す。OOF は再評価値ではなく、最高値強調しない。評価状態（未評価・評価待ち・評価中・評価済み・中止・失敗・結果破損）と採用（未決定・採用・非採用）は別列とし、採用済みの保管・削除履歴は「採用（保管）」「採用（削除済み）」で示す。結果が壊れた最新評価は「結果破損（再評価してください）」とし、実際に使用する以前の正常評価がある場合にだけ以前の評価として案内する。チェック、行選択、色は一体で、保管・削除済み採用モデルは既定で隠して履歴表示で確認する。</p><p>採用モデルの保管は可逆、削除は実ファイル容量の確認と明示確認を伴う。適用済みまたは未適用の振り分けで選ばれているモデルは保管・削除できない。状態変更後は振り分け選択肢を更新し、ほかの未適用変更を保つ。削除は当該公開フォルダ所有ファイルに限り、削除済み履歴として小さな公開記録と評価要約を保持する。独立した原画像枠は設けず、比較画面の2〜4候補パネルで原画像と抽出結果を同期表示する。候補追加・削除、画像切替、表示切替、再配置では倍率と画素座標の中心を維持し、画面に収まらない範囲だけ中心を補正する。全体表示だけ倍率を初期化する。</p></section>
 </body></html>

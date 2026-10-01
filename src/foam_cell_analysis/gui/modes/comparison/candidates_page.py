@@ -3,7 +3,7 @@
 import logging
 import re
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QEvent, QItemSelectionModel, Qt, QTimer
 from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import (
     QComboBox,
@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 
 from ....services.models import Candidate, EvaluationRecord
 from ...evaluation_runner import PREPARE_FAILED_TEXT
-from ...labels import candidate_status_label, config_key_label, format_score, model_type_label
+from ...labels import config_key_label, format_score, model_type_label
 from ...navigation import PageId
 from ...theme import Color, numeric_font, set_style
 from ...widgets.marks import STATUS_MARKS, TagDelegate
@@ -43,22 +43,36 @@ from .dialogs import (
 
 logger = logging.getLogger(__name__)
 
-BROKEN_TEXT = "評価結果が壊れています（再評価してください）"
+BROKEN_TEXT = "結果破損（再評価してください）"
 BROKEN_REASON = "評価結果のファイルが壊れています。再評価してください"
 NOT_APPLICABLE = "対象外"
-STATE_FILTERS = ("すべて", "候補", "評価中", "リリース済み", "非採用")
-COLUMN_AP, COLUMN_OOF, COLUMN_STATUS = 7, 8, 9
+STATE_FILTERS = (
+    "すべて",
+    "未評価",
+    "評価待ち",
+    "評価中",
+    "評価済み",
+    "中止",
+    "失敗",
+    "結果破損",
+)
+ADOPTION_FILTERS = ("候補・採用", "すべて", "未決定", "採用", "非採用")
+COLUMN_AP, COLUMN_OOF, COLUMN_STATUS, COLUMN_ADOPTION = 7, 8, 9, 10
 
 
 class _StatusMarks(dict):
     """「評価中 3 / 30」のような進捗付きの文字も、先頭の語で色を決める。"""
 
     def get(self, key, default=None):
-        return super().get(str(key).split(" ")[0], default)
+        text = str(key)
+        if text.startswith("失敗"):
+            text = "失敗"
+        return super().get(text.split(" ")[0], default)
 
 
 _MARKS = _StatusMarks(STATUS_MARKS)
 _MARKS.setdefault("評価待ち", STATUS_MARKS["待機"])
+_MARKS.setdefault("結果破損", STATUS_MARKS["失敗"])
 
 
 class CandidatesPage(BasePage):
@@ -76,6 +90,7 @@ class CandidatesPage(BasePage):
         # 状態列の再描画に使う候補情報（一覧を読み込んだときの値。進捗通知では読み直さない）
         self._row_candidates: dict[str, Candidate] = {}
         self._history_available: dict[str, bool] = {}
+        self._evaluation_states: dict[str, str] = {}
         # 占有の変化は runner の状態が確定してから（イベントループに戻ってから）状態列へ反映する
         self._status_timer = QTimer(self)
         self._status_timer.setSingleShot(True)
@@ -92,9 +107,12 @@ class CandidatesPage(BasePage):
             self.validation.addItem(version, version)
         self.state_filter = QComboBox()
         self.state_filter.addItems(list(STATE_FILTERS))
+        self.adoption_filter = QComboBox()
+        self.adoption_filter.addItems(list(ADOPTION_FILTERS))
+        self.selection_count = QLabel("0 件を選択")
         self.validation_menu = QMenu("検証用データセット", self)
         self.validation_actions = {}
-        self.state_menu = QMenu("候補の状態で絞り込み", self)
+        self.state_menu = QMenu("評価状態で絞り込み", self)
         self.state_actions = {}
         for version in versions:
             action = self.validation_menu.addAction(version)
@@ -115,9 +133,12 @@ class CandidatesPage(BasePage):
         row.addWidget(QLabel("状態:"))
         self.state_filter.setMaximumWidth(150)
         row.addWidget(self.state_filter)
+        row.addWidget(QLabel("採用:"))
+        self.adoption_filter.setMaximumWidth(130)
+        row.addWidget(self.adoption_filter)
         row.addStretch(1)
         self.release_reason = QLabel()
-        self.table = QTableWidget(0, 12)
+        self.table = QTableWidget(0, 13)
         self.table.setHorizontalHeaderLabels(
             [
                 "選択",
@@ -128,17 +149,20 @@ class CandidatesPage(BasePage):
                 "推論設定",
                 "検証版",
                 "検証 AP",
-                "OOF AP",
-                "状態",
+                "学習時 OOF AP",
+                "評価状態",
+                "採用",
                 "外部解析",
                 "コメント",
             ]
         )
         setup_table(
-            self.table, stretch_column=11, selection_mode=QTableWidget.SelectionMode.SingleSelection
+            self.table,
+            stretch_column=12,
+            selection_mode=QTableWidget.SelectionMode.ExtendedSelection,
         )
         self.table.setItemDelegateForColumn(COLUMN_STATUS, TagDelegate(_MARKS, self.table))
-        for column, width in enumerate((58, 72, 105, 82, 115, 92, 88, 66, 66, 78, 78)):
+        for column, width in enumerate((58, 72, 105, 82, 115, 92, 88, 66, 90, 95, 70, 78)):
             self.table.horizontalHeader().setSectionResizeMode(
                 column, QHeaderView.ResizeMode.Interactive
             )
@@ -153,7 +177,7 @@ class CandidatesPage(BasePage):
             ("detail", "評価詳細"),
             ("compare", "抽出結果比較"),
             ("export", "抽出結果出力"),
-            ("release", "選択候補リリース"),
+            ("release", "選択候補を採用"),
         ):
             button = QPushButton(label)
             button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
@@ -164,9 +188,14 @@ class CandidatesPage(BasePage):
         mark_primary(self.buttons["release"])
         self.candidate_actions["stop"] = QAction("評価中止", self)
         self.candidate_actions["reject"] = QAction("非採用にする", self)
+        self.candidate_actions["restore"] = QAction("候補に戻す", self)
+        self.buttons["restore"] = QPushButton("候補に戻す")
+        self.buttons["restore"].setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        bind_button_action(self.buttons["restore"], self.candidate_actions["restore"])
         self.candidate_actions["stop"].triggered.connect(self._stop_evaluation)
         self.candidate_actions["export"].triggered.connect(self._export_masks)
         self.candidate_actions["reject"].triggered.connect(self._reject)
+        self.candidate_actions["restore"].triggered.connect(self._restore)
         top_actions = QHBoxLayout()
         for key in ("add", "add_config", "evaluate"):
             top_actions.addWidget(self.buttons[key])
@@ -179,7 +208,8 @@ class CandidatesPage(BasePage):
         self.content_layout.addWidget(self.failure_note)
         self.content_layout.addWidget(self.table, 1)
         bottom_actions = QHBoxLayout()
-        for key in ("detail", "compare", "export"):
+        bottom_actions.addWidget(self.selection_count)
+        for key in ("detail", "compare", "export", "restore"):
             bottom_actions.addWidget(self.buttons[key])
         bottom_actions.addStretch(1)
         bottom_actions.addWidget(self.release_reason)
@@ -187,8 +217,13 @@ class CandidatesPage(BasePage):
         self.content_layout.addLayout(bottom_actions)
         self.validation.currentTextChanged.connect(self.refresh)
         self.state_filter.currentTextChanged.connect(self.refresh)
-        self.table.itemChanged.connect(lambda _item: self._update_buttons())
+        self.adoption_filter.currentTextChanged.connect(self.refresh)
+        self.table.itemChanged.connect(self._item_changed)
         self.table.itemClicked.connect(self._remember_clicked_candidate)
+        self.table.selectionModel().selectionChanged.connect(self._selection_changed)
+        self.table.viewport().installEventFilter(self)
+        self.table.installEventFilter(self)
+        self._selection_syncing = False
         self.candidate_actions["add"].triggered.connect(self._add_candidate)
         self.candidate_actions["add_config"].triggered.connect(self._add_config_candidate)
         self.candidate_actions["evaluate"].triggered.connect(self._evaluate)
@@ -207,6 +242,7 @@ class CandidatesPage(BasePage):
             "compare",
             "export",
             "reject",
+            "restore",
             "release",
         ):
             self.context_menu.addAction(self.candidate_actions[key])
@@ -252,9 +288,15 @@ class CandidatesPage(BasePage):
                     "history_detail",
                     "compare",
                     "export",
+                    "restore",
                 )
             ]
-            + [None, self.candidate_actions["reject"], self.candidate_actions["release"]],
+            + [
+                None,
+                self.candidate_actions["reject"],
+                self.candidate_actions["restore"],
+                self.candidate_actions["release"],
+            ],
         }
 
     def on_enter(self, params: dict) -> None:
@@ -321,7 +363,7 @@ class CandidatesPage(BasePage):
         return bool(runner is not None and runner.is_evaluation_active(candidate_id))
 
     def _status_text(self, candidate) -> str:
-        """状態列の文字。評価中は進捗（n / 全体）を付ける。"""
+        """評価状態。失敗後に成功結果が残っている場合も明示する。"""
         runner = self.runner
         candidate_id = candidate.candidate_id
         if runner is not None and runner.is_running(candidate_id):
@@ -331,7 +373,7 @@ class CandidatesPage(BasePage):
             return "評価中"
         if self._is_active(candidate_id):
             return "評価待ち"
-        return candidate_status_label(candidate.status)
+        return self._evaluation_states.get(candidate_id, "未評価")
 
     def _status_tooltip(self, text: str) -> str:
         if text.startswith("評価待ち"):
@@ -417,6 +459,88 @@ class CandidatesPage(BasePage):
             and self.table.item(row, 1)
         }
 
+    def _item_changed(self, item: QTableWidgetItem) -> None:
+        if item.column() == 0 and not self._selection_syncing:
+            self._sync_selection_from_checks()
+        self._update_buttons()
+
+    def _selection_changed(self, _selected, _deselected) -> None:
+        if self._selection_syncing:
+            return
+        selected = {index.row() for index in self.table.selectionModel().selectedRows()}
+        self._selection_syncing = True
+        self.table.blockSignals(True)
+        try:
+            for row in range(self.table.rowCount()):
+                item = self.table.item(row, 0)
+                if item is not None:
+                    item.setCheckState(
+                        Qt.CheckState.Checked if row in selected else Qt.CheckState.Unchecked
+                    )
+        finally:
+            self.table.blockSignals(False)
+            self._selection_syncing = False
+        self._update_buttons()
+
+    def _sync_selection_from_checks(self) -> None:
+        self._selection_syncing = True
+        selection = self.table.selectionModel()
+        try:
+            selection.clearSelection()
+            for row in range(self.table.rowCount()):
+                item = self.table.item(row, 0)
+                if item is not None and item.checkState() == Qt.CheckState.Checked:
+                    index = self.table.model().index(row, 0)
+                    selection.select(
+                        index,
+                        QItemSelectionModel.SelectionFlag.Select
+                        | QItemSelectionModel.SelectionFlag.Rows,
+                    )
+        finally:
+            self._selection_syncing = False
+        self._update_buttons()
+
+    def eventFilter(self, watched, event):
+        if watched is self.table.viewport() and event.type() in {
+            QEvent.Type.MouseButtonPress,
+            QEvent.Type.MouseButtonRelease,
+        }:
+            index = self.table.indexAt(event.position().toPoint())
+            if index.isValid() and index.column() == 0:
+                if event.type() == QEvent.Type.MouseButtonPress:
+                    self._check_press_row = index.row()
+                    return True
+                if getattr(self, "_check_press_row", None) == index.row():
+                    item = self.table.item(index.row(), 0)
+                    if item is not None:
+                        item.setCheckState(
+                            Qt.CheckState.Unchecked
+                            if item.checkState() == Qt.CheckState.Checked
+                            else Qt.CheckState.Checked
+                        )
+                        self.table.selectionModel().setCurrentIndex(
+                            self.table.model().index(index.row(), 0),
+                            QItemSelectionModel.SelectionFlag.NoUpdate,
+                        )
+                        self._sync_selection_from_checks()
+                    return True
+        if (
+            watched is self.table
+            and event.type() == QEvent.Type.KeyPress
+            and event.key() == Qt.Key.Key_Space
+            and self.table.currentColumn() == 0
+        ):
+            item = self.table.item(self.table.currentRow(), 0)
+            if item is not None:
+                item.setCheckState(
+                    Qt.CheckState.Unchecked
+                    if item.checkState() == Qt.CheckState.Checked
+                    else Qt.CheckState.Checked
+                )
+                self._sync_selection_from_checks()
+            return True
+        return super().eventFilter(watched, event)
+
     def _load_record(self, candidate_id: str, version: str) -> EvaluationRecord | None:
         if not version:
             return None
@@ -430,7 +554,9 @@ class CandidatesPage(BasePage):
         """選択中の検証版で候補評価を再表示する。"""
         if self._refresh_timer.isActive():
             self._refresh_timer.stop()
-        version, state = self.validation.currentData() or "", self.state_filter.currentText()
+        version = self.validation.currentData() or ""
+        state = self.state_filter.currentText()
+        adoption_state = self.adoption_filter.currentText()
         selected_ids = getattr(self, "_activation_selection", None)
         if selected_ids is None:
             selected_ids = self._checked_ids()
@@ -447,6 +573,12 @@ class CandidatesPage(BasePage):
         self.table.blockSignals(True)
         self.table.setRowCount(0)
         candidates = self.ctx.backend.list_candidates()
+        released_models = self.ctx.backend.list_released_models(
+            include_archived=True, include_deleted=True
+        )
+        self._release_lifecycle = {
+            model.model_id: model.lifecycle_status for model in released_models
+        }
         if version:
             candidates = [
                 candidate for candidate in candidates if candidate.validation_version == version
@@ -459,19 +591,39 @@ class CandidatesPage(BasePage):
             for candidate in candidates
         }
         self._history_available = {}
+        self._evaluation_states = {}
         for candidate in candidates:
             try:
+                evaluations = self.ctx.backend.list_candidate_evaluations(candidate.candidate_id)
                 self._history_available[candidate.candidate_id] = any(
                     record.validation_version != candidate.validation_version
                     and record.status == "completed"
                     and not record.broken
                     and record.evaluation is not None
-                    for record in self.ctx.backend.list_candidate_evaluations(
-                        candidate.candidate_id
-                    )
+                    for record in evaluations
                 )
+                fixed = [
+                    record
+                    for record in evaluations
+                    if record.validation_version == candidate.validation_version
+                ]
+                latest = fixed[-1] if fixed else None
+                if latest is None:
+                    eval_state = "未評価"
+                elif latest.status == "running":
+                    eval_state = "評価中"
+                elif latest.status in {"stopped", "cancelled"}:
+                    eval_state = "中止"
+                elif latest.status == "completed" and not latest.broken and latest.evaluation:
+                    eval_state = "評価済み"
+                elif latest.broken:
+                    eval_state = BROKEN_TEXT
+                else:
+                    eval_state = "失敗"
+                self._evaluation_states[candidate.candidate_id] = eval_state
             except (KeyError, ValueError, OSError):
                 self._history_available[candidate.candidate_id] = False
+                self._evaluation_states[candidate.candidate_id] = "失敗"
         usable = {
             candidate_id: record.evaluation.overall_map
             for candidate_id, record in self._records.items()
@@ -481,9 +633,24 @@ class CandidatesPage(BasePage):
         best_score = max((value for value in usable.values() if value is not None), default=None)
         for candidate in candidates:
             status_text = self._status_text(candidate)
-            if state != "すべて" and not status_text.startswith(
-                "評価" if state == "評価中" else state
-            ):
+            if state != "すべて" and not status_text.startswith(state):
+                continue
+            adoption_base = {
+                "candidate": "未決定",
+                "released": "採用",
+                "rejected": "非採用",
+            }.get(candidate.status, "未決定")
+            lifecycle = self._release_lifecycle.get(candidate.released_model_id, "active")
+            adoption_text = (
+                f"採用（{ {'archived': '保管', 'deleted': '削除済み'}.get(lifecycle) }）"
+                if adoption_base == "採用" and lifecycle in {"archived", "deleted"}
+                else adoption_base
+            )
+            if lifecycle in {"archived", "deleted"} and adoption_state != "すべて":
+                continue
+            if adoption_state == "候補・採用" and adoption_base == "非採用":
+                continue
+            if adoption_state not in {"候補・採用", "すべて"} and adoption_state != adoption_base:
                 continue
             model_type = (
                 candidate.snapshot.experiment_config.get("model", {}).get("type")
@@ -498,13 +665,10 @@ class CandidatesPage(BasePage):
             else:
                 ap_text = "未評価"
             oof = candidate.oof_evaluation
-            oof_matching = candidate.oof_applicability == "matching"
             if oof is None:
                 oof_text = "—"
-            elif oof_matching:
-                oof_text = format_score(oof.overall_map)
             else:
-                oof_text = NOT_APPLICABLE
+                oof_text = format_score(oof.overall_map)
             external = candidate.external_summary
             inference = configs.get(candidate.inference_config_id)
             trained_params = (
@@ -542,6 +706,7 @@ class CandidatesPage(BasePage):
                 ap_text,
                 oof_text,
                 status_text,
+                adoption_text,
                 external_text,
                 candidate.comment,
             ]
@@ -570,8 +735,20 @@ class CandidatesPage(BasePage):
                 if col == COLUMN_AP and value == BROKEN_TEXT:
                     item.setForeground(QColor(Color.ERROR))
                     item.setToolTip(BROKEN_REASON)
-                if col == COLUMN_OOF and value == NOT_APPLICABLE:
-                    item.setToolTip(candidate.oof_reason or "学習時の評価条件と一致しません")
+                if (
+                    col == COLUMN_OOF
+                    and oof is not None
+                    and candidate.oof_applicability != "matching"
+                ):
+                    item.setForeground(QColor(Color.SLATE))
+                    item.setToolTip(
+                        candidate.oof_reason
+                        or (
+                            "推論設定が学習時と異なるため、参考値です"
+                            if candidate.oof_applicability == "different"
+                            else "学習時の評価条件を確認できないため、参考値です"
+                        )
+                    )
                 if col == COLUMN_STATUS:
                     item.setToolTip(self._status_tooltip(value))
                 comparable_filter = bool(version)
@@ -591,14 +768,14 @@ class CandidatesPage(BasePage):
         if current_id:
             for row in range(self.table.rowCount()):
                 if self.table.item(row, 1).text() == current_id:
-                    self.table.setCurrentCell(
-                        row,
-                        min(
-                            current_column,
-                            self.table.columnCount() - 1,
+                    self.table.selectionModel().setCurrentIndex(
+                        self.table.model().index(
+                            row, min(current_column, self.table.columnCount() - 1)
                         ),
+                        QItemSelectionModel.SelectionFlag.NoUpdate,
                     )
                     break
+        self._sync_selection_from_checks()
         self.table.verticalScrollBar().setValue(scroll_value)
         fit_table_columns(self.table)
         self._update_buttons()
@@ -606,8 +783,14 @@ class CandidatesPage(BasePage):
     def _selected(self):
         selected = []
         for row in range(self.table.rowCount()):
-            if self.table.item(row, 0).checkState() == Qt.CheckState.Checked:
-                selected.append(self.ctx.backend.get_candidate(self.table.item(row, 1).text()))
+            check_item = self.table.item(row, 0)
+            candidate_item = self.table.item(row, 1)
+            if (
+                check_item is not None
+                and candidate_item is not None
+                and check_item.checkState() == Qt.CheckState.Checked
+            ):
+                selected.append(self.ctx.backend.get_candidate(candidate_item.text()))
         return selected
 
     def _usable_record(self, candidate_id: str) -> EvaluationRecord | None:
@@ -619,7 +802,10 @@ class CandidatesPage(BasePage):
     def _remember_clicked_candidate(self, item: QTableWidgetItem) -> None:
         """チェック欄をクリックした候補をキーボード操作対象にする。"""
         if item.column() == 0:
-            self.table.setCurrentCell(item.row(), 0)
+            self.table.selectionModel().setCurrentIndex(
+                self.table.model().index(item.row(), 0),
+                QItemSelectionModel.SelectionFlag.NoUpdate,
+            )
 
     def _set_action(self, key: str, reason: str) -> None:
         """reason が空なら有効、あれば無効にして理由をツールチップに出す。"""
@@ -629,6 +815,7 @@ class CandidatesPage(BasePage):
 
     def _update_buttons(self) -> None:
         selected = self._selected()
+        self.selection_count.setText(f"{len(selected)} 件を選択")
         one = len(selected) == 1
         version = self.validation.currentText()
         active = [c for c in selected if self._is_active(c.candidate_id)]
@@ -646,9 +833,15 @@ class CandidatesPage(BasePage):
         elif self.ctx.compute.external_block:
             evaluate_reason = self.ctx.compute.external_block
         elif not selected:
-            evaluate_reason = "候補を 1 つ以上選ぶと使えます"
-        elif any(c.status != "candidate" for c in selected):
-            evaluate_reason = "候補状態のモデルを選ぶと使えます"
+            evaluate_reason = "評価する候補を 1 件以上選択してください"
+        elif any(c.status not in {"candidate", "released"} for c in selected):
+            evaluate_reason = "非採用の候補は、先に一覧へ戻してください"
+        elif any(
+            c.released_model_id
+            and self._release_lifecycle.get(c.released_model_id) in {"deleting", "deleted"}
+            for c in selected
+        ):
+            evaluate_reason = "公開重みは削除済みです。設定を変えて候補追加してください"
         elif active:
             evaluate_reason = "評価中・評価待ちの候補が含まれています"
         runner = self.runner
@@ -672,16 +865,16 @@ class CandidatesPage(BasePage):
 
         detail_reason = ""
         if not one:
-            detail_reason = "評価済みの候補を 1 つ選ぶと使えます"
+            detail_reason = "評価詳細を表示する候補を 1 件選択してください"
         elif broken:
             detail_reason = BROKEN_REASON
         elif unevaluated:
-            detail_reason = "評価済みの候補を 1 つ選ぶと使えます"
+            detail_reason = "評価済みの候補を 1 件選択してください"
         self._set_action("detail", detail_reason)
 
         historical_reason = ""
         if not one:
-            historical_reason = "候補を 1 件選ぶと過去評価を表示できます"
+            historical_reason = "過去評価を表示する候補を 1 件選択してください"
         elif not self._history_available.get(selected[0].candidate_id, False):
             historical_reason = "別の検証版で完了した評価はありません"
         self._set_action("history_detail", historical_reason)
@@ -697,22 +890,24 @@ class CandidatesPage(BasePage):
 
         release_reason = ""
         if not one:
-            release_reason = "評価済みの候補を 1 つ選ぶとリリースできます"
+            release_reason = "採用する候補を 1 件選択してください"
+        elif selected[0].status == "released":
+            release_reason = "この候補はすでに採用済みです"
         elif selected[0].status != "candidate":
-            release_reason = "候補状態のモデルを選ぶとリリースできます"
+            release_reason = "非採用の候補は、先に一覧へ戻してください"
         elif active:
-            release_reason = "評価中・評価待ちの候補はリリースできません"
+            release_reason = "評価中・評価待ちの候補は採用できません"
         elif broken:
             release_reason = BROKEN_REASON
         elif unevaluated:
-            release_reason = "評価済みの候補を 1 つ選ぶとリリースできます"
+            release_reason = "評価済みの候補を 1 件選択してください"
         self._set_action("release", release_reason)
         self.release_reason.setText(release_reason)
         self.release_reason.setVisible(bool(release_reason))
 
         export_reason = ""
         if not selected:
-            export_reason = "候補を選ぶと使えます"
+            export_reason = "出力する候補を 1 件以上選択してください"
         elif broken:
             export_reason = BROKEN_REASON
         elif unevaluated:
@@ -722,7 +917,13 @@ class CandidatesPage(BasePage):
         rejectable = [
             c for c in selected if c.status == "candidate" and not self._is_active(c.candidate_id)
         ]
-        self._set_action("reject", "" if rejectable else "候補状態の行を 1 つ以上選ぶと使えます")
+        self._set_action(
+            "reject", "非採用にする候補を 1 件以上選択してください" if not rejectable else ""
+        )
+        restorable = [c for c in selected if c.status == "rejected"]
+        self._set_action(
+            "restore", "候補に戻す行を 1 件以上選択してください" if not restorable else ""
+        )
 
     # ---- 操作 ----
 
@@ -732,6 +933,7 @@ class CandidatesPage(BasePage):
             if dialog.duplicate_candidate_id:
                 self.validation.setCurrentIndex(0)
                 self.state_filter.setCurrentText("すべて")
+                self.adoption_filter.setCurrentText("すべて")
                 self.refresh()
                 for row in range(self.table.rowCount()):
                     if self.table.item(row, 1).text() == dialog.duplicate_candidate_id:
@@ -774,7 +976,7 @@ class CandidatesPage(BasePage):
         ids = [
             item.candidate_id
             for item in self._selected()
-            if item.status == "candidate" and not self._is_active(item.candidate_id)
+            if item.status in {"candidate", "released"} and not self._is_active(item.candidate_id)
         ]
         if runner is None or not ids:
             return
@@ -906,3 +1108,20 @@ class CandidatesPage(BasePage):
         answer = QMessageBox.question(self, "登録完了", "モデル振り分け画面を開きますか？")
         if answer == QMessageBox.StandardButton.Yes:
             self.ctx.navigator.navigate(PageId.RELEASED_MODELS, select=model.model_id)
+
+    def _restore(self) -> None:
+        for candidate in self._selected():
+            if candidate.status == "rejected":
+                try:
+                    self.ctx.backend.restore_candidate(candidate.candidate_id)
+                except ValueError as error:
+                    QMessageBox.warning(self, "候補に戻せません", str(error))
+                    break
+                except OSError:
+                    QMessageBox.warning(
+                        self,
+                        "候補に戻せません",
+                        "学習モデルのファイルを確認できません。状態を再読み込みします。",
+                    )
+                    break
+        self.refresh()

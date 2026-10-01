@@ -5,6 +5,7 @@ import logging
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
 from ...labels import (
     OOF_NOTE,
     config_key_label,
+    format_bytes,
     format_datetime,
     format_score,
     model_type_label,
@@ -46,10 +48,46 @@ from ...widgets.table import (
 
 logger = logging.getLogger(__name__)
 
+
+def _lifecycle_error_reason(error: ValueError, operation: str) -> str:
+    """表示可能な業務理由だけを返し、例外へ含まれるパスは隠す。"""
+    message = str(error)
+    safe_internal_reasons = (
+        (
+            "リリース保存先に reparse point があるため操作できません",
+            "リリース保存先に通常のフォルダではない項目があるため操作できません",
+        ),
+        (
+            "リリース内に reparse point があるため操作できません",
+            "リリース内に通常のファイルではない項目があるため操作できません",
+        ),
+        (
+            "削除途中の重みが保存先と staging の両方にあります",
+            "削除途中の重みが保存先と一時保存先の両方にあります",
+        ),
+    )
+    for internal_reason, display_reason in safe_internal_reasons:
+        if message == internal_reason:
+            return display_reason
+    safe_prefixes = (
+        "振り分けに使用中のモデルは",
+        "公開モデルを評価中または評価待ちのため",
+        "削除済みまたは削除処理中のモデルは",
+        "このモデルは削除済みまたは削除処理中です",
+        "公開重みの保存先が想定と異なるため",
+        "公開重みが通常ファイルでないため",
+        "前回の削除処理が残っています。復旧後にもう一度お試しください",
+        "削除対象の重みが移動前後で一致しません",
+        "削除途中の重みが記録と一致しません",
+    )
+    if any(message.startswith(prefix) for prefix in safe_prefixes):
+        return message
+    return "保管状態を変更できません" if operation == "archive" else "削除できません"
+
+
 OOF_REFERENCE_LABEL = "学習時 OOF AP（参考）"
 OOF_DIFFERENT_TEXT = "推論設定が学習時と異なります"
 OOF_UNKNOWN_TEXT = "学習時の評価条件を確認できません"
-OOF_NOT_APPLICABLE = "対象外"
 
 
 def oof_condition(model) -> str:
@@ -65,11 +103,9 @@ def oof_condition(model) -> str:
 
 
 def oof_list_text(model) -> str:
-    """一覧の OOF AP 列。適用できるときだけ数値を出す（候補一覧と同じ規則）。"""
+    """学習時 OOF AP を参考値として常に数値表示する。"""
     if model.oof_evaluation is None:
         return "—"
-    if oof_condition(model):
-        return OOF_NOT_APPLICABLE
     return format_score(model.oof_evaluation.overall_map)
 
 
@@ -128,12 +164,24 @@ class ReleasedModelsPage(BasePage):
         super().__init__(
             ctx,
             "リリース済みモデル・振り分け",
-            "リリース済みモデルは読み取り専用です。振り分けの変更は適用後に有効になります。",
+            "採用済みモデルの記録を確認し、保管・削除や振り分けを管理します。",
             parent,
             show_heading=show_heading,
         )
         splitter = QSplitter(Qt.Orientation.Vertical)
-        self.model_table = QTableWidget(0, 12)
+        self.show_history = QCheckBox("保管・削除済みも表示")
+        self.show_history.toggled.connect(self._load_models)
+        self.archive_button = QPushButton("保管")
+        self.delete_button = QPushButton("削除")
+        self.archive_button.clicked.connect(self._toggle_archive)
+        self.delete_button.clicked.connect(self._delete_release)
+        lifecycle_bar = QHBoxLayout()
+        lifecycle_bar.addWidget(self.show_history)
+        lifecycle_bar.addStretch(1)
+        lifecycle_bar.addWidget(self.archive_button)
+        lifecycle_bar.addWidget(self.delete_button)
+        self.content_layout.addLayout(lifecycle_bar)
+        self.model_table = QTableWidget(0, 13)
         self.model_table.setHorizontalHeaderLabels(
             [
                 "モデルID",
@@ -143,10 +191,11 @@ class ReleasedModelsPage(BasePage):
                 "途中保存モデル",
                 "検証用データセット",
                 "検証 AP",
-                "OOF AP",
+                "学習時 OOF AP",
                 "推論設定",
                 "リリース日時",
                 "割り当て中の分類",
+                "状態",
                 "コメント",
             ]
         )
@@ -175,6 +224,7 @@ class ReleasedModelsPage(BasePage):
         bind_button_action(self.new_release_button, self.release_actions["new"])
         self.detail_values: dict[str, QLabel] = {}
         for label in (
+            "採用状態",
             "実験・途中保存モデル",
             "検証 AP",
             OOF_REFERENCE_LABEL,
@@ -335,7 +385,13 @@ class ReleasedModelsPage(BasePage):
             if (item := self.model_table.item(index.row(), 0)) is not None
         }
         scroll_value = self.model_table.verticalScrollBar().value()
-        self._models = {model.model_id: model for model in self.ctx.backend.list_released_models()}
+        include_history = self.show_history.isChecked()
+        self._models = {
+            model.model_id: model
+            for model in self.ctx.backend.list_released_models(
+                include_archived=include_history, include_deleted=include_history
+            )
+        }
         assignments: dict[str, list[str]] = {model_id: [] for model_id in self._models}
         for classification, model_id in self._assignments.items():
             if model_id in assignments:
@@ -359,6 +415,12 @@ class ReleasedModelsPage(BasePage):
                 model.inference_config_id or "—",
                 format_datetime(model.released_at),
                 ", ".join(assignments[model.model_id]) or "なし",
+                {
+                    "active": "採用",
+                    "archived": "採用（保管）",
+                    "deleting": "削除処理中",
+                    "deleted": "採用（削除済み）",
+                }.get(model.lifecycle_status, "確認できません"),
                 model.comment,
             )
             for column, value in enumerate(values):
@@ -379,19 +441,22 @@ class ReleasedModelsPage(BasePage):
         rows = {model_rows[model_id] for model_id in selected_ids if model_id in model_rows}
         restore_row_selection(self.model_table, rows, model_rows.get(current_id))
         self.model_table.verticalScrollBar().setValue(scroll_value)
+        self._update_lifecycle_actions()
 
     def _show_model_detail(self) -> None:
         rows = self.model_table.selectionModel().selectedRows()
-        if not rows:
+        if len(rows) != 1:
             self._selected_model = None
             self.new_release_button.setEnabled(False)
             self.detail_button.setEnabled(False)
             self.set_menu_action_enabled(self.release_actions["new"], False)
             self.set_menu_action_enabled(self.release_actions["detail"], False)
-            self.release_actions["new"].setToolTip("リリース済みモデルの行を選ぶと使えます")
-            self.release_actions["detail"].setToolTip("リリース済みモデルの行を選ぶと使えます")
+            reason = "モデルを 1 件選択してください" if rows else "モデルを選択してください"
+            self.release_actions["new"].setToolTip(reason)
+            self.release_actions["detail"].setToolTip(reason)
             for index, value in enumerate(self.detail_values.values()):
                 value.setText("モデルを選択してください" if index == 0 else "—")
+            self._update_lifecycle_actions()
             return
         model_id = self.model_table.item(rows[0].row(), 0).text()
         model = self._models.get(model_id)
@@ -403,6 +468,12 @@ class ReleasedModelsPage(BasePage):
             for classification, (score, _count) in evaluation.per_class.items()
         )
         summary = {
+            "採用状態": {
+                "active": "採用",
+                "archived": "採用（保管）",
+                "deleting": "削除処理中",
+                "deleted": "採用（削除済み）",
+            }.get(model.lifecycle_status, "確認できません"),
             "実験・途中保存モデル": (
                 f"{model.experiment_id} ・ 試行 {model.source_attempt_number}/{model.checkpoint}"
             ),
@@ -425,6 +496,151 @@ class ReleasedModelsPage(BasePage):
         self.set_menu_action_enabled(self.release_actions["detail"], True)
         self.release_actions["new"].setToolTip("")
         self.release_actions["detail"].setToolTip("")
+        self._update_lifecycle_actions()
+
+    def _selected_release(self):
+        rows = self.model_table.selectionModel().selectedRows()
+        if len(rows) != 1:
+            return None
+        model_id = self.model_table.item(rows[0].row(), 0).text()
+        return self._models.get(model_id)
+
+    def _update_lifecycle_actions(self) -> None:
+        model = self._selected_release()
+        pending_ids = {
+            control.currentData()
+            for classification, control in self._routing_controls.items()
+            if control.currentData()
+            and control.currentData() != self._assignments.get(classification)
+        }
+        routed = bool(
+            model
+            and (model.model_id in self._assignments.values() or model.model_id in pending_ids)
+        )
+        pending_routed = bool(model and model.model_id in pending_ids)
+        can_archive = model is not None and model.lifecycle_status in {"active", "archived"}
+        if model is None:
+            self.archive_button.setText("保管")
+            self.archive_button.setToolTip("保管するモデルを選択してください")
+            archive_reason = "保管するモデルを選択してください"
+        elif model.lifecycle_status == "deleted":
+            self.archive_button.setText("保管")
+            archive_reason = "削除済みモデルは保管状態を変更できません"
+        elif model.lifecycle_status == "deleting":
+            self.archive_button.setText("保管")
+            archive_reason = "削除処理が終わるまでお待ちください"
+        elif pending_routed:
+            self.archive_button.setText(
+                "保管から戻す" if model.lifecycle_status == "archived" else "保管"
+            )
+            archive_reason = "未適用の振り分けを適用または破棄してから保管してください"
+        elif routed and model.lifecycle_status == "active":
+            self.archive_button.setText("保管")
+            archive_reason = "振り分けを解除してから保管してください"
+        else:
+            self.archive_button.setText(
+                "保管から戻す" if model.lifecycle_status == "archived" else "保管"
+            )
+            archive_reason = ""
+        self.archive_button.setEnabled(bool(can_archive and not archive_reason))
+        self.archive_button.setToolTip(archive_reason)
+        delete_reason = "削除するモデルを1件選択してください"
+        if model is not None:
+            if model.lifecycle_status == "deleted":
+                delete_reason = "このモデルは削除済みです"
+            elif model.lifecycle_status == "deleting":
+                delete_reason = "削除処理が終わるまでお待ちください"
+            elif pending_routed:
+                delete_reason = "未適用の振り分けを適用または破棄してから削除してください"
+            elif model.model_id in self._assignments.values():
+                delete_reason = "振り分けを解除してから削除してください"
+            else:
+                try:
+                    self.ctx.backend.estimate_release_delete_bytes(model.model_id)
+                    delete_reason = ""
+                except ValueError as error:
+                    delete_reason = _lifecycle_error_reason(error, "delete")
+                except OSError:
+                    delete_reason = "公開モデルのファイルを確認できません"
+        self.delete_button.setEnabled(not delete_reason)
+        self.delete_button.setToolTip(delete_reason)
+
+    def _toggle_archive(self) -> None:
+        self._update_lifecycle_actions()
+        if not self.archive_button.isEnabled():
+            return
+        model = self._selected_release()
+        if model is None:
+            return
+        pending = {key: control.currentData() for key, control in self._routing_controls.items()}
+        try:
+            self.ctx.backend.set_release_archived(
+                model.model_id, model.lifecycle_status != "archived"
+            )
+        except ValueError as error:
+            message = _lifecycle_error_reason(error, "archive")
+            self._refresh_lifecycle_views(pending)
+            QMessageBox.warning(self, "保管状態を変更できません", message)
+            return
+        except OSError:
+            self._refresh_lifecycle_views(pending)
+            QMessageBox.warning(
+                self,
+                "保管状態を変更できません",
+                "保管状態を保存できませんでした。状態を再読み込みしました。",
+            )
+            return
+        self._refresh_lifecycle_views(pending)
+
+    def _delete_release(self) -> None:
+        self._update_lifecycle_actions()
+        if not self.delete_button.isEnabled():
+            return
+        model = self._selected_release()
+        if model is None:
+            return
+        pending = {key: control.currentData() for key, control in self._routing_controls.items()}
+        try:
+            size = self.ctx.backend.estimate_release_delete_bytes(model.model_id)
+        except ValueError as error:
+            self._refresh_lifecycle_views(pending)
+            QMessageBox.warning(self, "削除できません", _lifecycle_error_reason(error, "delete"))
+            return
+        except OSError:
+            self._refresh_lifecycle_views(pending)
+            QMessageBox.warning(self, "削除できません", "公開モデルのファイルを確認できません")
+            return
+        answer = QMessageBox.question(
+            self,
+            "公開モデルの重みを削除",
+            f"{model.model_id} の公開モデル重みを削除します。\n"
+            f"空く容量: {format_bytes(size)}\n"
+            "リリース記録と評価履歴は残ります。元に戻せません。続けますか？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.ctx.backend.delete_released_model(model.model_id)
+        except ValueError as error:
+            self._refresh_lifecycle_views(pending)
+            QMessageBox.warning(self, "削除できません", _lifecycle_error_reason(error, "delete"))
+            return
+        except OSError:
+            self._refresh_lifecycle_views(pending)
+            QMessageBox.warning(
+                self, "削除できません", "公開モデルのファイルを削除できませんでした"
+            )
+            return
+        self.show_history.setChecked(True)
+        self._refresh_lifecycle_views(pending)
+
+    def _refresh_lifecycle_views(self, pending_values: dict[str, str | None]) -> None:
+        """公開モデルの状態とrouting候補を更新し、可能な未適用値を保持する。"""
+        self._load_models()
+        self._load_routing(pending_values=pending_values)
+        self._load_history()
 
     def _show_detail_dialog(self) -> None:
         """選択中モデルの全設定を読み取り専用で表示する。"""
@@ -433,6 +649,15 @@ class ReleasedModelsPage(BasePage):
         model = self._selected_model
         rows = [
             ("モデルID", model.model_id),
+            (
+                "採用状態",
+                {
+                    "active": "採用",
+                    "archived": "採用（保管）",
+                    "deleting": "削除処理中",
+                    "deleted": "採用（削除済み）",
+                }.get(model.lifecycle_status, "確認できません"),
+            ),
             ("モデル", model_type_label(model.model_type) if model.model_type else "—"),
             ("候補ID", model.candidate_id),
             ("実験識別子", model.experiment_id),
@@ -592,7 +817,7 @@ class ReleasedModelsPage(BasePage):
 
     def _create_new_release(self) -> None:
         rows = self.model_table.selectionModel().selectedRows()
-        if not rows:
+        if len(rows) != 1:
             return
         model = self._models[self.model_table.item(rows[0].row(), 0).text()]
         self.ctx.navigator.navigate(
@@ -602,7 +827,7 @@ class ReleasedModelsPage(BasePage):
             checkpoint=model.checkpoint,
         )
 
-    def _load_routing(self) -> None:
+    def _load_routing(self, pending_values: dict[str, str | None] | None = None) -> None:
         self._baseline = {key: self._assignments.get(key) for key in self._classifications}
         self._routing_controls.clear()
         self.routing_table.setRowCount(len(self._classifications))
@@ -611,6 +836,11 @@ class ReleasedModelsPage(BasePage):
             for row, classification in enumerate(self._classifications):
                 self.routing_table.setItem(row, 0, QTableWidgetItem(classification))
                 current = self._baseline[classification]
+                desired = (
+                    pending_values.get(classification, current)
+                    if pending_values is not None
+                    else current
+                )
                 current_item = QTableWidgetItem(current or "未割り当て")
                 if current is None:
                     current_item.setForeground(QColor(Color.ERROR))
@@ -619,12 +849,19 @@ class ReleasedModelsPage(BasePage):
                 combo.setMinimumWidth(180)
                 combo.setAccessibleName(f"{classification}の変更後モデル")
                 combo.addItem("未割り当て", None)
-                for model_id in self._models:
-                    combo.addItem(model_id, model_id)
+                for model_id, model in self._models.items():
+                    if model.lifecycle_status == "active":
+                        combo.addItem(model_id, model_id)
                 if current is not None and combo.findData(current) < 0:
                     # 読めないリリースに割り当てられている分類も、今の値を残して表示する
                     combo.addItem(f"{current}（読み込めません）", current)
-                combo.setCurrentIndex(combo.findData(current))
+                if desired is not None and combo.findData(desired) < 0:
+                    desired = current
+                    self.ctx.status.show_message(
+                        f"{classification} の未適用振り分け先は利用できないため、"
+                        "現在の割り当てに戻しました"
+                    )
+                combo.setCurrentIndex(combo.findData(desired))
                 combo.currentIndexChanged.connect(lambda _index: self._update_routing_rows())
                 self._routing_controls[classification] = combo
                 container = QWidget()
@@ -661,12 +898,13 @@ class ReleasedModelsPage(BasePage):
         self.discard_button.setEnabled(bool(changes))
         self.set_menu_action_enabled(self.apply_action, bool(changes))
         self.set_menu_action_enabled(self.release_actions["discard"], bool(changes))
-        self.apply_action.setToolTip("振り分けを変更すると使えます" if not changes else "")
+        self.apply_action.setToolTip("振り分けの変更先を選択してください" if not changes else "")
         self.release_actions["discard"].setToolTip(
             "破棄する振り分け変更はありません" if not changes else ""
         )
         self.change_count_label.setText(f"{len(changes)} 件の変更があります" if changes else "")
         self.change_count_label.setVisible(bool(changes))
+        self._update_lifecycle_actions()
 
     def build_change_rows(self) -> list[tuple[str, str | None, str | None]]:
         """確認ダイアログに渡す振り分け差分を作る。"""

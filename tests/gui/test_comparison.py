@@ -78,18 +78,20 @@ def test_mask_comparison_slots_and_navigation(qtbot):
     page = MaskComparisonPage(ctx)
     qtbot.addWidget(page)
     page.on_enter({"validation_version": "val_v003", "candidate_ids": ["RC-001", "RC-002"]})
-    assert len(page.views) == 3
+    assert len(page.views) == 2
     assert len(page.items) > 1
     original = page.index
     QTest.mouseClick(page.next, Qt.MouseButton.LeftButton)
     assert page.index == (original + 1) % len(page.items)
-    assert not page.views[0].scene().items() == []
+    assert all(view.scene().items() for view in page.views)
     assert all(view.horizontalScrollBarPolicy().name == "ScrollBarAlwaysOff" for view in page.views)
-    # 原画像スロットと各候補の予測スロットを描画し、画像移動後も表示を更新する。
-    assert len(page.views) == 1 + len(page.candidate_ids)
-    assert page.views[0].scene().items()
-    assert all(view.scene().items() for view in page.views[1:])
-    page._move(1)
+    # 原画像/抽出結果の切替後も全候補枠が表示を更新する。
+    QTest.mouseClick(page.display_toggle.raw_button, Qt.MouseButton.LeftButton)
+    assert all(view.scene().items() for view in page.views)
+    assert all(label.text() == "原画像を表示中" for label in page.panel_counts[:2])
+    QTest.mouseClick(page.display_toggle.alternate_button, Qt.MouseButton.LeftButton)
+    assert all(label.text().startswith("検出 ") for label in page.panel_counts[:2])
+    QTest.mouseClick(page.next, Qt.MouseButton.LeftButton)
     assert all(view.scene().items() for view in page.views)
 
 
@@ -101,6 +103,184 @@ def test_mask_comparison_refuses_five_candidates_without_truncation(qtbot):
     page.on_enter({"validation_version": "val_v003", "candidate_ids": ids})
     assert page.candidate_ids == []
     assert "2〜4 件" in page.block_reason
+
+
+def test_comparison_candidates_can_be_added_removed_and_reselected(qtbot, monkeypatch):
+    import numpy as np
+
+    ctx = make_context()
+    config = ctx.backend.create_inference_config(
+        "mask_rcnn", {**ctx.backend.default_inference_params("mask_rcnn"), "box_score_thresh": 0.31}
+    )
+    fourth = ctx.backend.add_candidate("exp_0042", 1, config.config_id)
+    ctx.backend._add_completed_evaluation(
+        fourth.candidate_id, "val_v003", ctx.backend._evaluation(0.87)
+    )
+    ctx.backend._add_completed_evaluation("RC-003", "val_v003", ctx.backend._evaluation(0.86))
+    monkeypatch.setattr(
+        ctx.backend,
+        "get_dataset_item_image",
+        lambda *_args: np.zeros((1800, 2400), dtype=np.uint8),
+    )
+    monkeypatch.setattr(
+        ctx.backend,
+        "get_candidate_prediction",
+        lambda *_args: np.zeros((1800, 2400), dtype=np.uint16),
+    )
+    page = MaskComparisonPage(ctx)
+    qtbot.addWidget(page)
+    page.show()
+    qtbot.wait(30)
+    page.on_enter({"validation_version": "val_v003", "candidate_ids": ["RC-001", "RC-002"]})
+    qtbot.wait(50)
+    assert len(page.views) == 2
+    first_view = page.views[0]
+    QTest.keyClick(first_view, Qt.Key.Key_Plus)
+    QTest.mousePress(first_view.viewport(), Qt.MouseButton.LeftButton, pos=QPoint(120, 100))
+    QTest.mouseMove(first_view.viewport(), QPoint(180, 140), delay=10)
+    QTest.mouseRelease(first_view.viewport(), Qt.MouseButton.LeftButton, pos=QPoint(180, 140))
+    qtbot.wait(20)
+    original_zoom = first_view.zoom
+    original_center = first_view.mapToScene(first_view.viewport().rect().center())
+
+    calls = {"list": 0, "evaluation": 0}
+    original_list = ctx.backend.list_candidates
+    original_evaluation = ctx.backend.get_candidate_evaluation
+
+    def count_list(*args, **kwargs):
+        calls["list"] += 1
+        return original_list(*args, **kwargs)
+
+    def count_evaluation(*args, **kwargs):
+        calls["evaluation"] += 1
+        return original_evaluation(*args, **kwargs)
+
+    monkeypatch.setattr(ctx.backend, "list_candidates", count_list)
+    monkeypatch.setattr(ctx.backend, "get_candidate_evaluation", count_evaluation)
+    QTest.mouseClick(page.add_candidate_button, Qt.MouseButton.LeftButton)
+    qtbot.wait(30)
+    assert len(page.views) == 3
+    assert first_view.zoom == pytest.approx(original_zoom)
+    assert first_view.mapToScene(first_view.viewport().rect().center()).x() == pytest.approx(
+        original_center.x(), abs=8
+    )
+    third = page.candidate_ids[2]
+    assert third == "RC-003"
+    selector = page.selectors[2]
+    QTest.mouseClick(selector, Qt.MouseButton.LeftButton)
+    QTest.keyClick(selector, Qt.Key.Key_End)
+    QTest.keyClick(selector, Qt.Key.Key_Enter)
+    assert page.candidate_ids[2] == fourth.candidate_id
+    assert page.evaluation_ids[fourth.candidate_id]
+    inactive_view = page.views[2]
+    QTest.mouseClick(page.remove_buttons[2], Qt.MouseButton.LeftButton)
+    qtbot.wait(30)
+    assert len(page.candidate_ids) == 2
+    assert len(page.views) == 2
+    QTest.keyClick(first_view, Qt.Key.Key_Plus)
+    QTest.mousePress(first_view.viewport(), Qt.MouseButton.LeftButton, pos=QPoint(130, 110))
+    QTest.mouseMove(first_view.viewport(), QPoint(170, 155), delay=10)
+    QTest.mouseRelease(first_view.viewport(), Qt.MouseButton.LeftButton, pos=QPoint(170, 155))
+    qtbot.wait(20)
+    current_zoom = first_view.zoom
+    current_center = first_view.mapToScene(first_view.viewport().rect().center())
+    QTest.mouseClick(page.add_candidate_button, Qt.MouseButton.LeftButton)
+    qtbot.wait(50)
+    assert page.views[2] is inactive_view
+    assert all(view.zoom == pytest.approx(current_zoom) for view in page.views)
+    for view in page.views:
+        center = view.mapToScene(view.viewport().rect().center())
+        assert center.x() == pytest.approx(current_center.x(), abs=8)
+        assert center.y() == pytest.approx(current_center.y(), abs=8)
+    QTest.mouseClick(page.add_candidate_button, Qt.MouseButton.LeftButton)
+    qtbot.wait(30)
+    assert len(page.candidate_ids) == 4
+    assert first_view.zoom == pytest.approx(current_zoom)
+    page.resize(600, 700)
+    qtbot.wait(50)
+    positions = [page.grid.getItemPosition(index)[:2] for index in range(4)]
+    assert positions == [(0, 0), (0, 1), (1, 0), (1, 1)]
+    page.resize(1600, 800)
+    qtbot.wait(50)
+    positions = [page.grid.getItemPosition(index)[:2] for index in range(4)]
+    assert positions == [(0, 0), (0, 1), (0, 2), (0, 3)]
+    assert calls == {"list": 0, "evaluation": 0}
+    center_before_relayout = first_view.mapToScene(first_view.viewport().rect().center())
+    zoom_before_relayout = first_view.zoom
+    page.resize(700, 850)
+    qtbot.wait(70)
+    center_after_relayout = first_view.mapToScene(first_view.viewport().rect().center())
+    from foam_cell_analysis.gui.widgets.image_view import ViewSynchronizer
+
+    expected_center = ViewSynchronizer.clamp_center(first_view, center_before_relayout)
+    assert first_view.zoom == pytest.approx(zoom_before_relayout)
+    assert center_after_relayout.x() == pytest.approx(expected_center.x(), abs=8)
+    assert center_after_relayout.y() == pytest.approx(expected_center.y(), abs=8)
+
+
+def test_comparison_preserves_zoom_when_switching_images_of_different_sizes(qtbot, monkeypatch):
+    import numpy as np
+
+    ctx = make_context()
+    page = MaskComparisonPage(ctx)
+    qtbot.addWidget(page)
+    item_ids = [item.item_id for item in ctx.backend.list_validation_items("val_v003")]
+    dimensions = {item_ids[0]: (2200, 1500), item_ids[1]: (1500, 1100)}
+
+    def image(_version, item_id, _channel):
+        height, width = dimensions[item_id]
+        return np.zeros((height, width), dtype=np.uint8)
+
+    def prediction(candidate_id, evaluation_id, item_id):
+        height, width = dimensions[item_id]
+        return np.zeros((height, width), dtype=np.uint16)
+
+    monkeypatch.setattr(ctx.backend, "get_dataset_item_image", image)
+    monkeypatch.setattr(ctx.backend, "get_candidate_prediction", prediction)
+    page.on_enter({"validation_version": "val_v003", "candidate_ids": ["RC-001", "RC-002"]})
+    page.show()
+    qtbot.wait(50)
+    view = page.views[0]
+    for _ in range(4):
+        QTest.keyClick(view, Qt.Key.Key_Plus)
+    QTest.mousePress(view.viewport(), Qt.MouseButton.LeftButton, pos=QPoint(240, 200))
+    QTest.mouseMove(view.viewport(), QPoint(80, 50), delay=10)
+    QTest.mouseRelease(view.viewport(), Qt.MouseButton.LeftButton, pos=QPoint(80, 50))
+    QTest.mousePress(view.viewport(), Qt.MouseButton.LeftButton, pos=QPoint(220, 300))
+    QTest.mouseMove(view.viewport(), QPoint(100, 40), delay=10)
+    QTest.mouseRelease(view.viewport(), Qt.MouseButton.LeftButton, pos=QPoint(100, 40))
+    qtbot.wait(30)
+    zoom = view.zoom
+    old_center = view.mapToScene(view.viewport().rect().center())
+    assert old_center.x() > dimensions[item_ids[0]][1] * 0.65
+    assert old_center.y() > dimensions[item_ids[0]][0] * 0.7
+
+    def expected_center_for(view, desired):
+        rect = view.scene().sceneRect()
+        scale = view.transform().m11()
+        half_w = view.viewport().width() / (2 * scale)
+        half_h = view.viewport().height() / (2 * scale)
+        min_x, max_x = rect.left() + half_w, rect.right() - half_w
+        min_y, max_y = rect.top() + half_h, rect.bottom() - half_h
+        x = rect.center().x() if min_x > max_x else min(max(desired.x(), min_x), max_x)
+        y = rect.center().y() if min_y > max_y else min(max(desired.y(), min_y), max_y)
+        return x, y
+
+    QTest.mouseClick(page.next, Qt.MouseButton.LeftButton)
+    qtbot.wait(30)
+    assert view.zoom == pytest.approx(zoom)
+    center = view.mapToScene(view.viewport().rect().center())
+    expected_x, expected_y = expected_center_for(view, old_center)
+    assert center.x() == pytest.approx(expected_x, abs=8)
+    assert center.y() == pytest.approx(expected_y, abs=8)
+
+    QTest.mouseClick(page.previous, Qt.MouseButton.LeftButton)
+    qtbot.wait(30)
+    returned_center = view.mapToScene(view.viewport().rect().center())
+    expected_x, expected_y = expected_center_for(view, old_center)
+    assert view.zoom == pytest.approx(zoom)
+    assert returned_center.x() == pytest.approx(expected_x, abs=8)
+    assert returned_center.y() == pytest.approx(expected_y, abs=8)
 
 
 def test_comparison_entry_resolves_candidate_fixed_version_when_not_supplied(qtbot, monkeypatch):
@@ -138,10 +318,12 @@ def test_candidate_table_defaults_to_all_versions_and_uses_checkboxes(qtbot):
     page = CandidatesPage(ctx)
     qtbot.addWidget(page)
     assert page.validation.currentText() == "すべて"
-    assert page.table.columnCount() == 12
+    assert page.table.columnCount() == 13
     assert page.table.horizontalHeaderItem(0).text() == "選択"
     assert page.table.horizontalHeaderItem(7).text() == "検証 AP"
-    assert page.table.horizontalHeaderItem(8).text() == "OOF AP"
+    assert page.table.horizontalHeaderItem(8).text() == "学習時 OOF AP"
+    assert page.table.horizontalHeaderItem(9).text() == "評価状態"
+    assert page.table.horizontalHeaderItem(10).text() == "採用"
     page.resize(1200, 700)
     page.show()
     QTest.qWait(50)
@@ -170,6 +352,101 @@ def test_add_config_action_requires_exactly_one_selected_candidate(qtbot):
     assert action.isEnabled()
     _click_checkbox(page, "RC-001")
     assert not action.isEnabled()
+
+
+def test_checkbox_and_row_selection_stay_coherent_after_refresh(qtbot):
+    ctx = make_context()
+    page = CandidatesPage(ctx)
+    qtbot.addWidget(page)
+    page.resize(1200, 700)
+    page.show()
+    QTest.qWait(50)
+    _click_checkbox(page, "RC-001")
+    _click_checkbox(page, "RC-002")
+    checked = {candidate.candidate_id for candidate in page._selected()}
+    selected_rows = {
+        page.table.item(index.row(), 1).text()
+        for index in page.table.selectionModel().selectedRows()
+    }
+    assert checked == selected_rows
+    assert page.selection_count.text() == "2 件を選択"
+    page.refresh()
+    checked = {candidate.candidate_id for candidate in page._selected()}
+    selected_rows = {
+        page.table.item(index.row(), 1).text()
+        for index in page.table.selectionModel().selectedRows()
+    }
+    assert checked == selected_rows
+
+    row = _row(page, "RC-003")
+    rect = page.table.visualItemRect(page.table.item(row, 1))
+    QTest.mouseClick(page.table.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
+    assert {candidate.candidate_id for candidate in page._selected()} == {"RC-003"}
+    first = page.table.visualItemRect(page.table.item(_row(page, "RC-001"), 1))
+    QTest.mouseClick(
+        page.table.viewport(),
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.ControlModifier,
+        first.center(),
+    )
+    assert {candidate.candidate_id for candidate in page._selected()} == {"RC-001", "RC-003"}
+    second = page.table.visualItemRect(page.table.item(_row(page, "RC-002"), 1))
+    QTest.mouseClick(
+        page.table.viewport(),
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.ShiftModifier,
+        second.center(),
+    )
+    checked = {candidate.candidate_id for candidate in page._selected()}
+    selected_rows = {
+        page.table.item(index.row(), 1).text()
+        for index in page.table.selectionModel().selectedRows()
+    }
+    assert checked == selected_rows
+
+
+def test_archived_released_candidates_are_hidden_and_deleted_rows_explain_recheck_limit(qtbot):
+    ctx = make_context()
+    backend = ctx.backend
+    state = backend.get_routing_state()
+    backend.apply_routing({"分類A": None, "分類C": None}, expected_revision=state.revision)
+    backend.set_release_archived("model_007", True)
+    page = CandidatesPage(ctx)
+    qtbot.addWidget(page)
+    page.show()
+    qtbot.wait(30)
+    assert "RC-001" not in {page.table.item(row, 1).text() for row in range(page.table.rowCount())}
+
+    QTest.mouseClick(page.adoption_filter, Qt.MouseButton.LeftButton)
+    QTest.keyClick(page.adoption_filter, Qt.Key.Key_Down)
+    QTest.keyClick(page.adoption_filter, Qt.Key.Key_Enter)
+    assert page.adoption_filter.currentText() == "すべて"
+    assert "RC-001" in {page.table.item(row, 1).text() for row in range(page.table.rowCount())}
+    assert page.table.item(_row(page, "RC-001"), 10).text() == "採用（保管）"
+    backend.delete_released_model("model_007")
+    page.refresh()
+    assert page.table.item(_row(page, "RC-001"), 10).text() == "採用（削除済み）"
+    _click_checkbox(page, "RC-001")
+    assert not page.buttons["evaluate"].isEnabled()
+    assert "削除済み" in page.buttons["evaluate"].toolTip()
+    assert "設定を変えて候補追加してください" in page.buttons["evaluate"].toolTip()
+    assert page.candidate_actions["add_config"].isEnabled()
+
+
+def test_rejected_candidate_has_lower_toolbar_restore_button(qtbot):
+    ctx = make_context()
+    ctx.backend.reject_candidate("RC-003")
+    page = CandidatesPage(ctx)
+    qtbot.addWidget(page)
+    page.show()
+    QTest.mouseClick(page.adoption_filter, Qt.MouseButton.LeftButton)
+    QTest.keyClick(page.adoption_filter, Qt.Key.Key_Down)
+    QTest.keyClick(page.adoption_filter, Qt.Key.Key_Enter)
+    _click_checkbox(page, "RC-003")
+    assert page.buttons["restore"].isVisible()
+    assert page.buttons["restore"].isEnabled()
+    QTest.mouseClick(page.buttons["restore"], Qt.MouseButton.LeftButton)
+    assert ctx.backend.get_candidate("RC-003").status == "candidate"
 
 
 def test_add_config_presets_values_and_keeps_source_candidate(shell, qtbot, monkeypatch):
@@ -218,7 +495,7 @@ def test_oof_ap_is_shown_only_when_inference_matches_training(qtbot):
     page = CandidatesPage(ctx)
     qtbot.addWidget(page)
     seeded = page.table.item(_row(page, "RC-003"), 8)
-    assert seeded.text() == "対象外"
+    assert float(seeded.text()) > 0
     assert seeded.toolTip() == "推論設定が学習時と異なります"
     value = page.table.item(_row(page, matching.candidate_id), 8).text()
     assert value not in {"対象外", "—"}
@@ -234,7 +511,8 @@ def test_evaluate_from_menu_completes_and_shows_validation_ap(shell, qtbot):
     qtbot.waitUntil(lambda: page.table.item(_row(page, "RC-003"), 7).text() != "未評価")
     row = _row(page, "RC-003")
     float(page.table.item(row, 7).text())
-    assert page.table.item(row, 9).text() == "候補"
+    assert page.table.item(row, 10).text() == "未決定"
+    assert page.table.item(row, 9).text() == "評価済み"
     assert page.table.item(row, 0).checkState() == Qt.CheckState.Checked
 
 
@@ -271,7 +549,8 @@ def test_stop_evaluation_from_menu(shell, qtbot, monkeypatch):
     assert [outcome.status for outcome in outcomes] == ["stopped"]
     row = _row(page, "RC-003")
     assert page.table.item(row, 7).text() == "未評価"
-    assert page.table.item(row, 9).text() == "候補"
+    assert page.table.item(row, 10).text() == "未決定"
+    assert page.table.item(row, 9).text() == "中止"
     assert not page.candidate_actions["stop"].isEnabled()
 
 
@@ -367,7 +646,7 @@ def test_detail_dialog_opens_and_saves_external_result(shell, qtbot, monkeypatch
     assert (
         saved["values"][backend.list_validation_items(record.validation_version)[0].item_id] == 12.3
     )
-    assert page.table.item(_row(page, "RC-003"), 10).text().startswith("12.3")
+    assert page.table.item(_row(page, "RC-003"), 11).text().startswith("12.3")
 
 
 def test_mask_export_dialog_completes_and_shows_summary(shell, qtbot, monkeypatch, tmp_path):
@@ -422,7 +701,7 @@ def test_release_flow_via_dialog(shell, qtbot, monkeypatch):
     QTest.mouseClick(page.buttons["release"], Qt.MouseButton.LeftButton)
     assert observed["evaluation_id"] == record.evaluation_id
     assert backend.get_candidate("RC-003").status == "released"
-    assert page.table.item(_row(page, "RC-003"), 9).text() == "リリース済み"
+    assert page.table.item(_row(page, "RC-003"), 10).text() == "採用"
 
 
 def test_release_dialog_refuses_found_contamination(qtbot):
@@ -432,8 +711,10 @@ def test_release_dialog_refuses_found_contamination(qtbot):
     record.schema = 1
     dialog = ReleaseDialog(ctx, ctx.backend.get_candidate("RC-001"), record)
     qtbot.addWidget(dialog)
+    assert dialog.windowTitle() == "候補を採用"
+    assert dialog.ok_button.text() == "採用"
     assert not dialog.ok_button.isEnabled()
-    assert "リリースできません" in dialog.ok_button.toolTip()
+    assert "採用できません" in dialog.ok_button.toolTip()
 
 
 def test_blocked_compute_disables_evaluation(shell):
@@ -452,7 +733,7 @@ def test_release_button_explains_missing_evaluation(qtbot):
     page.table.item(_row(page, "RC-003"), 0).setCheckState(Qt.CheckState.Checked)
 
     assert not page.buttons["release"].isEnabled()
-    assert page.buttons["release"].toolTip() == "評価済みの候補を 1 つ選ぶとリリースできます"
+    assert page.buttons["release"].toolTip() == "評価済みの候補を 1 件選択してください"
 
 
 def test_candidate_dialog_builds_model_specific_fields(qtbot):
@@ -750,9 +1031,10 @@ def test_progress_updates_do_not_reread_candidate_files(qapp, qtbot, tmp_path, m
     assert snapshots
     assert opened == []
     assert {first: "評価中 1 / 2", second: "評価待ち"} in snapshots
-    assert {first: "候補", second: "評価中 2 / 2"} in snapshots
+    assert {first: BROKEN_TEXT, second: "評価中 2 / 2"} in snapshots
+    assert page.table.item(_row(page, first), 9).text() == BROKEN_TEXT
     assert page.table.item(_row(page, second), 7).text() == "0.900"
-    assert page.table.item(_row(page, second), 9).text() == "候補"
+    assert page.table.item(_row(page, second), 10).text() == "未決定"
     assert not page.candidate_actions["stop"].isEnabled()
     _click_checkbox(page, second)
     assert page.table.item(_row(page, first), 0).checkState() == Qt.CheckState.Checked

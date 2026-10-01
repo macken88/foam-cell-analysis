@@ -198,7 +198,7 @@ table.rev{font-size:.92rem}
 .mock .h-title{display:flex;align-items:baseline;justify-content:space-between;padding:4px 0 10px}
 .mock .h-title b{font-size:1.15rem;font-weight:700}
 .mock .h-sec{font-size:.8rem;color:var(--slate);margin:8px 0 4px}
-.mock .pipe{display:grid;grid-template-columns:repeat(3,1fr);background:var(--slide);border:1px solid var(--rule)}
+.mock .pipe{display:grid;grid-template-columns:repeat(2,1fr);background:var(--slide);border:1px solid var(--rule)}
 .mock .stage{position:relative;padding:26px 16px 14px;border-right:1px solid var(--rule-soft);cursor:pointer}
 .mock .stage:last-child{border-right:0}
 .mock .stage:hover{background:#F6F8F9}
@@ -419,7 +419,7 @@ table.rev{font-size:.92rem}
 <tr><td>データ準備・モデル学習・比較／ファイル・ツール・ヘルプ</td><td>ファイル末尾: ホームに戻る・ウィンドウを閉じる。ツール: データ準備・比較はキー割り当て・原画像と切り替える表示、モデル学習はデータ拡張を設定・キー割り当て。ヘルプ: キー割り当て一覧。</td></tr>
 <tr><td>データ準備／ファイル・編集・表示・データセット</td><td>ファイル: 画像を取り込む・正解ラベル版を追加 ― Excel に出力・Excel から取り込む ― アーカイブを作成。編集: 元に戻す・やり直す ― すべて選択・選択を解除・検索 ― 用途・画像分類・品質を変更。画像分類は存在する分類名と 1〜9 のキーを表示する。表示: タブ ― 絞り込み ― 原画像表示・前の画像・次の画像 ― 拡大・縮小・全体表示。データセット: 自動振り分け・連続振り分け ― エラー画像表示・確定 ― 版履歴のサムネイル確認。版履歴タブではサムネイル確認だけを有効にする。</td></tr>
 <tr><td>モデル学習／ファイル・編集・表示・学習</td><td>ファイル: 新しい実験・下書き保存 ― 実験一覧の設定 YAML。編集: 学習キューの複製・削除 ― 上へ移動・下へ移動 ― 設定を開いて編集・実験一覧の下書きを編集。表示: タブ ― 設定プレビュー YAML ― 学習キュー用の列・実験一覧用の列・実験群／モデル／状態の絞り込み。学習: 設定を検証・キューに追加・学習開始 ― キューをすべて実行・この学習の後で停止・今すぐ停止・終了・中断した行を削除 ― 今すぐ停止・同じ設定でやり直す ― 設定を複製して新規実験・複製してキューに追加 ― 選択した実験を比較・結果を開く・モデル比較へ送る ― 実験を削除。</td></tr>
-<tr><td>モデル比較・リリース／ファイル・表示・候補・リリース</td><td>候補一覧の上段に候補追加・設定変更して候補追加・評価実行/中止と検証版/状態フィルタを配置。下段に評価詳細・抽出結果比較・抽出結果出力、右端に選択候補リリースを配置する。候補固定版以外の旧評価は読み取り専用で閲覧する。</td></tr>
+<tr><td>モデル比較・リリース／ファイル・表示・候補・採用</td><td>候補一覧の上段に候補追加・設定変更して候補追加・評価実行/中止と検証版/評価状態/採用状態フィルタを配置。下段に評価詳細・抽出結果比較・抽出結果出力・候補に戻す、右端に選択候補を採用を配置する。候補固定版以外の旧評価は読み取り専用で閲覧する。</td></tr>
 <tr><td>本番推論／ヘルプ</td><td>キー割り当て一覧。</td></tr>
 </tbody></table></div>
 
@@ -447,7 +447,7 @@ table.rev{font-size:.92rem}
 <tr><td>実験一覧</td><td>モデル比較へ送る → 送る</td><td><strong>モデル比較・リリース</strong> ／ リリース候補</td><td><code>action="add_candidate", experiment_id, checkpoint</code></td></tr>
 <tr><td>学習設定</td><td>学習開始</td><td>モデル学習 ／ 実験一覧</td><td><code>select=exp_id</code></td></tr>
 <tr><td>リリース候補</td><td>抽出結果比較（2件以上選択）</td><td>モデル比較・リリース ／ 抽出結果比較</td><td><code>candidate_ids=[...]</code></td></tr>
-<tr><td>リリース候補</td><td>リリース登録完了 → 「振り分けを開く」</td><td>モデル比較・リリース ／ リリース済みモデル・振り分け</td><td><code>select=model_id</code></td></tr>
+<tr><td>リリース候補</td><td>採用完了 → 「振り分けを開く」</td><td>モデル比較・リリース ／ リリース済みモデル・振り分け</td><td><code>select=model_id</code></td></tr>
 <tr><td>リリース済みモデル</td><td>設定を変えて新しいリリースを作る</td><td>モデル比較・リリース ／ リリース候補</td><td><code>action="add_candidate", …</code></td></tr>
 <tr><td>本番推論</td><td>振り分けが未設定の分類がある → 「振り分け画面へ」</td><td><strong>モデル比較・リリース</strong> ／ リリース済みモデル・振り分け</td><td>—</td></tr>
 <tr><td>どのウィンドウ</td><td><code>Ctrl</code>+<code>H</code></td><td>ホーム</td><td>—</td></tr>
@@ -1216,32 +1216,32 @@ table.rev{font-size:.92rem}
 <div class="mock"><div class="mock-title">モデル比較・リリース — 気泡インスタンスセグメンテーション</div>
 <div class="mock-body">
 <div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span class="on">リリース候補</span><span>抽出結果比較</span><span>リリース済みモデル・振り分け</span></span><span class="spacer"></span></div>
-<div class="m-toolbar"><span class="btn">候補追加</span><span class="btn">設定を変えて候補追加</span><span class="btn primary">評価実行</span><span class="sel-combo">検証用データセット: すべて ▾</span><span class="sel-combo">状態: すべて ▾</span></div>
+<div class="m-toolbar"><span class="btn">候補追加</span><span class="btn">設定を変えて候補追加</span><span class="btn primary">評価実行 / 評価中止</span><span class="sel-combo">検証版: すべて ▾</span><span class="sel-combo">評価状態: すべて ▾</span><span class="sel-combo">採用状態: 候補・採用 ▾</span></div>
 <div class="table-wrap"><table>
-<thead><tr><th>選択</th><th>候補ID</th><th>モデル</th><th>実験</th><th>学習モデル</th><th>推論設定</th><th>検証版</th><th class="n">検証 AP</th><th class="n">OOF AP</th><th>状態</th><th>外部解析</th><th>コメント</th></tr></thead>
-<tbody><tr class="sel"><td class="ck">☑</td><td class="num">RC-001</td><td>Mask R-CNN</td><td class="num">exp_0042</td><td>試行 1 / final.pt</td><td>変更あり</td><td>val_v003</td><td class="n"><b>0.913</b></td><td class="n">対象外</td><td><span class="tag idle">候補</span></td><td>あり</td><td>—</td></tr><tr class="sel"><td class="ck">☑</td><td class="num">RC-002</td><td>Cellpose</td><td class="num">exp_0051</td><td>試行 1 / final.pt</td><td>学習時と同じ</td><td>val_v003</td><td class="n">0.890</td><td class="n">0.882</td><td><span class="tag idle">候補</span></td><td>—</td><td>—</td></tr><tr class=""><td class="ck">☐</td><td class="num">RC-003</td><td>Mask R-CNN</td><td class="num">exp_0060</td><td>試行 1 / final.pt</td><td>確認できません</td><td>val_v003</td><td class="n"><span class="small">未評価</span></td><td class="n">対象外</td><td><span class="tag idle">候補</span></td><td>—</td><td>—</td></tr><tr class=""><td class="ck">☐</td><td class="num">RC-000</td><td>Mask R-CNN</td><td class="num">exp_0031</td><td>試行 1 / final.pt</td><td>変更あり</td><td>val_v003</td><td class="n">0.884</td><td class="n">対象外</td><td><span class="tag okk">リリース済み</span></td><td>あり</td><td>—</td></tr></tbody></table></div>
-<div class="m-toolbar"><span class="btn">評価詳細</span><span class="btn">抽出結果比較</span><span class="btn">抽出結果出力</span><span class="spacer"></span><span class="small">評価済みの候補を 1 つ選ぶとリリースできます</span><span class="btn dis">選択候補リリース</span></div>
+<thead><tr><th>選択</th><th>候補ID</th><th>モデル</th><th>実験</th><th>学習モデル</th><th>推論設定</th><th>検証版</th><th class="n">検証 AP</th><th class="n">学習時 OOF AP</th><th>評価状態</th><th>採用</th><th>外部解析</th><th>コメント</th></tr></thead>
+<tbody><tr class="sel"><td class="ck">☑</td><td class="num">RC-001</td><td>Mask R-CNN</td><td class="num">exp_0042</td><td>試行 1 / final.pt</td><td>変更あり</td><td>val_v003</td><td class="n"><b>0.913</b></td><td class="n">0.79（参考）</td><td><span class="tag idle">評価済み</span></td><td>採用</td><td>あり</td><td>—</td></tr><tr class="sel"><td class="ck">☑</td><td class="num">RC-002</td><td>Cellpose</td><td class="num">exp_0051</td><td>試行 1 / final.pt</td><td>学習時と同じ</td><td>val_v003</td><td class="n">0.890</td><td class="n">0.882（参考）</td><td><span class="tag idle">評価済み</span></td><td>未決定</td><td>—</td><td>—</td></tr><tr class=""><td class="ck">☐</td><td class="num">RC-003</td><td>Mask R-CNN</td><td class="num">exp_0060</td><td>試行 1 / final.pt</td><td>確認できません</td><td>val_v003</td><td class="n"><span class="small">未評価</span></td><td class="n">0.76（参考）</td><td><span class="tag idle">未評価</span></td><td>非採用</td><td>旧記録あり</td><td>—</td></tr></tbody></table></div>
+<div class="m-toolbar"><span class="btn">評価詳細</span><span class="btn">抽出結果比較</span><span class="btn">抽出結果出力</span><span class="btn">候補に戻す</span><span class="spacer"></span><span class="small">評価済み候補を 1 件選んで採用します</span><span class="btn dis">選択候補を採用</span></div>
 <div class="status"><span>RC-003 を追加しました</span><span>実行中ジョブ <span class="num">1</span></span><span>自動保存 <span class="num">10:42:08</span></span></div>
 </div></div>
 <ul>
-<li>検証 AP・OOF AP の値を右寄せする。最高値強調は検証版を1つに絞った場合の検証 AP だけに適用する。OOF AP は候補と学習条件を比較できる場合だけ数値で表示する。</li>
+<li>検証 AP・学習時 OOF AP の値を右寄せする。OOF AP は条件が異なる場合も参考値として表示し、条件差は薄色と日本語ツールチップで示す。OOF の最高値は強調しない。</li>
 <li>設定変更して候補追加は候補1件選択時だけ有効にし、無効理由をツールチップに示す。選択した候補を保持して新規未評価候補を追加する。</li>
-<li>「選択候補リリース」は評価済み候補1件で有効にする。比較は同じ固定検証版で評価済みの2〜4件に限り、5件以上を切り捨てない。</li>
+<li>「選択候補を採用」は評価済み候補1件で有効にする。採用操作は正式リリース登録を呼ぶ。比較は同じ固定検証版で評価済みの2〜4件に限り、5件以上を切り捨てない。</li>
 </ul>
 
 <ul>
 <li>候補の評価版は候補作成時に固定した検証版である。検証版フィルタは候補を絞るだけで、評価先を変更しない。</li>
-<li>OOF AP は、学習時の OOF AP をこの候補と比べられるとき（推論設定が学習時の評価と同じ）だけ値を出し、それ以外は「対象外」と出す。</li>
-<li>状態: 候補 / 評価待ち / 評価中 / リリース済み / 非採用。評価待ち・評価中は評価の実行状況から決める。</li>
+<li>学習時 OOF AP は参考値として常に表示し、推論設定 different/unknown は薄色と日本語理由ツールチップで示す。OOF による最高値強調はしない。</li>
+<li>評価状態と採用状態は独立した列で表示する。評価状態は未評価 / 評価待ち / 評価中 / 評価済み / 中止 / 失敗 / 結果破損、採用状態は未決定 / 採用 / 非採用 / 採用（保管） / 採用（削除済み）。</li>
 <li>推論設定列は「学習時と同じ」「変更あり」「確認できません」を表示し、差分はツールチップで確認する。</li>
 <li>ボタンの有効条件:</li>
-<li>評価を実行: 1件以上（リリース済み・非採用を除く）。評価プロセスで全体・分類別 AP と件数を求める。</li>
+<li>評価を実行: 1件以上（非採用・削除済みを除く）。公開済み候補も固定検証版で再評価でき、公開記録は変更しない。</li>
 <li>評価を中止: 評価待ち・評価中の候補。候補メニューと右クリックに置く。</li>
 <li>詳細評価を見る: 1件（評価済み）。</li>
 <li>抽出結果比較: 同じ固定検証版で評価済みの2〜4件。5件以上は切り捨てず、理由を案内する。</li>
-<li>粒子解析用画像の出力: 1件以上。</li>
-<li>非採用にする: 候補の状態のもの。確認あり。</li>
-<li>選択候補をリリース: 1件、評価済み、状態が候補のもの。</li>
+<li>抽出結果出力: 1件以上。</li>
+<li>候補に戻す: 非採用候補1件を候補状態へ戻す。</li>
+<li>選択候補を採用: 評価済み候補1件を正式にリリースする。公開記録は変更しない。</li>
 </ul>
 <h3 id="sec7-2">7.2 候補追加ダイアログ</h3>
 <ul>
@@ -1261,14 +1261,14 @@ table.rev{font-size:.92rem}
 <li>旧自由形式の値は新しい画像別データと混同しない。</li>
 <li>保存で backend に反映する。リリース済み候補は読み取り専用。</li>
 </ul>
-<h3 id="sec7-4">7.4 粒子解析用画像の出力ダイアログ（仕様 5〜6章）</h3>
+<h3 id="sec7-4">7.4 抽出結果出力ダイアログ（仕様 5〜6章）</h3>
 <ul>
 <li>出力先フォルダ、出力内容（気泡ごとのラベル画像 / 粒子解析用の白黒画像（隣接気泡を分離済み）、複数選択）、ファイル形式（PNG / TIFF）、対象（検証用データセット全体 / 画像分類で絞り込み）。</li>
 <li>「後処理は隣接気泡の分離のみ（8近傍接触の境界を背景化）」と注記する。</li>
 <li>実際にファイルを出力する（バックエンド設計 12章）。完了時に出力フォルダと、消失・分断した粒子の件数を出し、フォルダを開けるようにする。</li>
 </ul>
-<h3 id="sec7-5">7.5 リリース登録ダイアログ（仕様 15章）</h3>
-<pre><code>リリース済みモデル登録
+<h3 id="sec7-5">7.5 候補を採用するダイアログ（正式リリース登録）</h3>
+<pre><code>候補を採用
 リリースモデル識別子: model_008（自動採番）
 リリース候補       : RC-001
 実験               : exp_0042
@@ -1278,10 +1278,10 @@ table.rev{font-size:.92rem}
 評価結果           : AP 0.91（分類A 0.93 / 分類B 0.85 / 分類C 0.90）
 コメント           : [分類A 本番用モデル]
 ※ 登録後は変更できません。本番で使うには「モデル振り分け」で明示的に割り当てます。
-                    [キャンセル] [リリース済みモデルとして登録]
+                    [キャンセル] [採用]
 </code></pre>
 <ul>
-<li>登録に使う評価（evaluation_id）は開いた時点で固定する。候補固定版と違う評価や旧 schema 1 で混入が見つかった評価は新規登録に使えない。重みのコピー中は進行状況を出す。</li>
+<li>採用に使う評価（evaluation_id）は開いた時点で固定する。候補固定版と違う評価や旧 schema 1 で混入が見つかった評価は採用できない。重みのコピー中は進行状況を出す。</li>
 <li>登録後、候補の状態を「リリース済み」にし、「モデル振り分け画面を開きますか？」を聞く（はい → <code>RELEASED_MODELS</code>、<code>select=model_id</code>）。</li>
 </ul>
 <hr />
@@ -1293,9 +1293,9 @@ table.rev{font-size:.92rem}
 <div class="mock-body">
 <div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span>リリース候補</span><span class="on">抽出結果比較</span><span>リリース済みモデル・振り分け</span></span><span class="spacer"></span></div>
 <div class="m-toolbar"><span class="small">検証用データセット <span class="num">val_v003</span></span><span class="sel-combo">画像分類: すべて ▾</span><span class="sel-combo num">IMG-000123 ▾</span><span class="small num">12 / 233</span>
-<span class="spacer"></span><span class="mtabs"><span>原画像</span><span class="on">オーバーレイ</span></span></div>
-<div class="m-split" style="grid-template-columns:repeat(3,1fr)">
-<div><div class="img" style="aspect-ratio:4/3"><svg><use href="#foam-raw"/></svg><span class="cap">原画像</span></div></div>
+<span class="spacer"></span><span class="mtabs"><span>原画像</span><span class="on">抽出結果</span></span><span class="btn">+ 候補</span><span class="btn">候補を外す</span></div>
+<div class="m-split" style="grid-template-columns:repeat(2,1fr)">
+
 <div><div class="img" style="aspect-ratio:4/3"><svg><use href="#foam-ovl"/></svg><span class="cap">RC-001 Mask R-CNN</span><span class="cap2">検出 <span class="num">11</span></span></div></div>
 <div><div class="img" style="aspect-ratio:4/3"><svg><use href="#foam-ovl2"/></svg><span class="cap">RC-002 Cellpose</span><span class="cap2">検出 <span class="num">10</span></span></div></div>
 </div>
@@ -1303,8 +1303,8 @@ table.rev{font-size:.92rem}
 <div class="status"><span>準備完了</span><span>実行中ジョブ <span class="num">1</span></span><span>自動保存 <span class="num">10:42:08</span></span></div>
 </div></div>
 <ul>
-<li>表示枠の見出し（候補 ID・モデル）と検出数は、画像の上に小さく重ねる。枠の外に見出し行を置かないことで、画像を大きく取る。</li>
-<li>表示形式は「原画像」と「抽出結果表示」の二択で、全枠に同時に効く。永続化された旧設定値は互換維持する。</li>
+<li>候補 ID・モデル名と検出数は viewport の外側に固定した見出し・フッターへ置く。</li>
+<li>独立した原画像枠は設けず、「原画像 / 抽出結果」を全候補で同期切替する。永続化された旧設定値は互換維持する。</li>
 <li>比べる画像は、選択中の確定済み検証用データセット版から読む（作業中データは読まない）。</li>
 <li>画面を開いた時点で、同じ固定検証版の候補ごとに採用する評価（evaluation_id）を固定し、予測はその評価の保存済み予測を読む。開いている間に新しい評価ができても、画面を開き直すまで表示は変えない。</li>
 <li>画面へ直接入って候補が指定されていない場合は候補一覧へ戻る案内を表示する。候補が指定されていれば、候補に固定された共通検証版から比較対象を解決する。</li>
@@ -1315,7 +1315,7 @@ table.rev{font-size:.92rem}
 </ul>
 
 <ul>
-<li>候補数 + 1（原画像）の表示枠を横並びにする。5枠を超える場合は 2 段にする。</li>
+<li>候補枠は2〜4件。広い時は横並び、幅が不足する時は2列へ再配置し、等幅を保つ。候補セレクターから差し替え、追加、削除ができる。</li>
 <li>全表示枠のズーム・パンを <code>ViewSynchronizer</code> で同期する。</li>
 <li>画像分類の選択肢は、その検証版に現れる分類。絞り込むと、対象画像の候補が絞られる。</li>
 <li>表示のキャッシュのキーには、検証版・evaluation_id・表示形式を含める。</li>
@@ -1356,10 +1356,10 @@ table.rev{font-size:.92rem}
 <div class="status"><span>準備完了</span><span>実行中ジョブ <span class="num">1</span></span><span>自動保存 <span class="num">10:42:08</span></span></div>
 </div></div>
 
-<p><strong>上: リリース済みモデル一覧</strong>（読み取り専用）
+<p><strong>上: 採用モデル一覧</strong>（参照と保管・削除などの管理）
 - 列: モデルID、モデル、候補、実験、途中保存モデル、検証用データセット、検証 AP、OOF AP、リリース日時、割り当て中の分類、コメント。
 - 一覧と詳細はリリースの記録（release.json）だけから作り、実験や候補は引かない（実験が消えても表示できる）。モデル種類は記録の前処理設定・推論設定から判断する。
-- OOF AP 列は候補一覧と同じ規則で、学習時の評価条件と一致する（適用可否が matching の）ときだけ値を出し、推論設定が異なる・条件を確認できない・記録がないときは「対象外」と出す（理由はツールチップ）。
+- 「学習時 OOF AP」列は参考値を常に表示する。推論条件 different/unknown は薄色にし、日本語理由のツールチップを付ける。OOF値は再評価値ではなく、条件違いの最高値強調もしない。
 - 選択すると右に詳細（実験・途中保存モデル、検証 AP と分類別の値、学習時 OOF AP（参考）、推論設定の値、検証用データセット、リリース日時、コメント）。学習時 OOF AP（参考）は数値を残し、条件（推論設定が学習時と異なります / 学習時の評価条件を確認できません）と、final.pt 自身の評価ではないことを併記する。「リリースの詳細を表示」で前処理設定・推論設定・評価結果の全項目を表で出す。
 - [設定を変えて新しいリリースを作る]: 「リリース」メニューまたは右クリックから元の実験・final.ptで候補追加へ遷移する（上書きしない原則の導線）。</p>
 <p><strong>下: モデル振り分け</strong>
@@ -1471,10 +1471,10 @@ table.rev{font-size:.92rem}
 </ul>
 </section>
 </div>
-<section id="comparison-screen-2026-09-30"><h2>モデル比較・リリース画面の更新（2026-09-30）</h2><pre>[候補追加] [設定を変えて候補追加] [評価実行 / 評価中止]
-検証用データセット: [すべて ▾]    状態: [すべて ▾]
-┌ 候補一覧: 選択 / 候補 / モデル / 学習 / 検証版 / 推論設定 / 検証AP / OOF AP / 状態 / 外部解析 ┐
+<section id="comparison-screen-2026-10"><h2>モデル比較・リリース画面の更新（2026-10）</h2><pre>[候補追加] [設定を変えて候補追加] [評価実行 / 評価中止]
+検証版: [すべて ▾]    評価状態: [すべて ▾]    採用状態: [候補・採用 ▾]
+┌ チェック / 候補 / 推論設定 / 固定検証版 / 検証 AP / 学習時 OOF AP / 評価状態 / 採用 ┐
 └─────────────────────────────────────────────────────────────────────┘
-[評価詳細] [抽出結果比較] [抽出結果出力]                       [選択候補リリース]</pre><p>候補の検証版は行ごとに表示し、上部の選択は一覧の絞り込みだけに使う。AP の最高値は検証版を1つに絞っている時だけ強調する。抽出結果比較は同一検証版の評価済み2〜4候補が条件であり、画面へ直接入った場合にも案内と候補一覧へ戻る操作を示す。画像別外部解析の値表は評価詳細内に固定行で表示する。操作名は「抽出結果比較」「抽出結果出力」とする。</p></section>
+[評価詳細] [抽出結果比較] [抽出結果出力] [候補に戻す]                 [選択候補を採用]</pre><p>チェック数、行選択、行色は同期する。学習時 OOF AP は条件差があっても参考値として表示し、different/unknown は薄色と日本語理由ツールチップを付ける。公開済み候補も固定検証版で再評価できるが、公開記録と公開評価は保持する。採用は正式なリリース登録を意味し、比較採用評価 ID を別管理しない。採用済みモデルは保管・削除済みを既定で隠し、履歴表示で確認できる。比較画面では独立した原画像枠を設けず、2〜4候補の画像枠を原画像 / 抽出結果で同期切替する。幅に応じて横一列または2列グリッドとし、候補・画像を切り替えても倍率と画素座標中心を維持する。</p></section>
 </body>
 </html>

@@ -49,7 +49,7 @@ def comparison_block_reason(backend, validation_version: str | None, candidate_i
             continue
         if record is None:
             reasons.append(f"{candidate_id} はこの検証用データセットで未評価です")
-        elif record.broken or record.status != "completed":
+        elif record.broken or record.status != "completed" or record.evaluation is None:
             reasons.append(f"{candidate_id} の評価結果が壊れています。評価をやり直してください")
     return "\n".join(reasons)
 
@@ -73,6 +73,8 @@ class MaskComparisonPage(BasePage):
         self.items = []
         self.index = 0
         self._model_names: dict[str, str] = {}
+        self._eligible_cache = []
+        self._relayout_generation = 0
         self._image_cache: OrderedDict = OrderedDict()
         self._pixmap_cache: OrderedDict = OrderedDict()
         self._render_signature = None
@@ -96,6 +98,9 @@ class MaskComparisonPage(BasePage):
         self.display_toggle.alternate_selected.connect(self._toggle_display)
         mode_row = QHBoxLayout()
         mode_row.addWidget(self.display_toggle)
+        self.add_candidate_button = QPushButton("候補を追加")
+        self.add_candidate_button.clicked.connect(self._add_candidate)
+        mode_row.addWidget(self.add_candidate_button)
         mode_row.addStretch(1)
         self.previous = QPushButton("← 前の画像")
         self.next = QPushButton("次の画像 →")
@@ -119,6 +124,13 @@ class MaskComparisonPage(BasePage):
             self.view_actions[key] = action
         self.grid = QGridLayout()
         self.views: list[ImageView] = []
+        self.panel_widgets: list[QWidget] = []
+        self.panel_views: list[ImageView] = []
+        self.selectors: list[QComboBox] = []
+        self.panel_titles: list[QLabel] = []
+        self.panel_counts: list[QLabel] = []
+        self.remove_buttons: list[QPushButton] = []
+        self._initial_fit_pending = True
         area = QWidget()
         area.setLayout(self.grid)
         self.placeholder = QLabel(NO_CANDIDATES_TEXT)
@@ -137,6 +149,175 @@ class MaskComparisonPage(BasePage):
         self.fit.clicked.connect(self._fit_all)
         self.classification.currentTextChanged.connect(self._load_items)
         self.item_select.currentIndexChanged.connect(self._select_item)
+
+    def _eligible_candidates(self, *, exclude: set[str] | None = None):
+        excluded = exclude or set()
+        return [
+            (candidate, record)
+            for candidate, record in self._eligible_cache
+            if candidate.candidate_id not in excluded
+        ]
+
+    def _refresh_eligible_candidates(self) -> None:
+        eligible = []
+        if self.validation:
+            for candidate in self.ctx.backend.list_candidates():
+                if candidate.validation_version != self.validation or candidate.status not in {
+                    "candidate",
+                    "released",
+                }:
+                    continue
+                try:
+                    record = self.ctx.backend.get_candidate_evaluation(
+                        candidate.candidate_id, self.validation
+                    )
+                except (KeyError, ValueError, OSError):
+                    continue
+                if (
+                    record is not None
+                    and record.status == "completed"
+                    and not record.broken
+                    and record.evaluation
+                ):
+                    eligible.append((candidate, record))
+        self._eligible_cache = eligible
+
+    def _update_candidate_controls(self) -> None:
+        choices = self._eligible_candidates(exclude=set(self.candidate_ids))
+        self.add_candidate_button.setEnabled(
+            not self.block_reason and len(self.candidate_ids) < 4 and bool(choices)
+        )
+        self.add_candidate_button.setToolTip(
+            "比較候補は4件までです"
+            if len(self.candidate_ids) >= 4
+            else "同じ検証版で評価済みの未選択候補がありません"
+            if not choices
+            else ""
+        )
+        for index, button in enumerate(self.remove_buttons):
+            button.setEnabled(index < len(self.candidate_ids) and len(self.candidate_ids) > 2)
+            button.setToolTip(
+                "比較候補は2件以上必要です"
+                if index < len(self.candidate_ids) and len(self.candidate_ids) <= 2
+                else ""
+            )
+        for index, selector in enumerate(self.selectors):
+            if index >= len(self.candidate_ids):
+                selector.hide()
+                continue
+            current = self.candidate_ids[index]
+            options = [
+                (candidate.candidate_id, candidate.candidate_id)
+                for candidate, _ in self._eligible_candidates(
+                    exclude={cid for cid in self.candidate_ids if cid != current}
+                )
+            ]
+            selector.blockSignals(True)
+            selector.clear()
+            selector.addItems([label for label, _ in options])
+            selector.setCurrentText(current)
+            selector.blockSignals(False)
+            selector.show()
+
+    def _add_candidate(self) -> None:
+        if len(self.candidate_ids) >= 4:
+            return
+        choices = self._eligible_candidates(exclude=set(self.candidate_ids))
+        if not choices:
+            return
+        candidate, record = choices[0]
+        self.candidate_ids.append(candidate.candidate_id)
+        self.evaluation_ids[candidate.candidate_id] = record.evaluation_id
+        self._model_names[candidate.candidate_id] = self._model_name(candidate.candidate_id)
+        self._update_candidate_controls()
+        self._relayout_panels()
+        self._render_current()
+
+    def _remove_candidate(self, index: int) -> None:
+        if len(self.candidate_ids) <= 2 or index >= len(self.candidate_ids):
+            return
+        removed = self.candidate_ids.pop(index)
+        self.evaluation_ids.pop(removed, None)
+        self._update_candidate_controls()
+        self._relayout_panels()
+        self._render_current()
+
+    def _candidate_changed(self, panel_index: int, candidate_id: str) -> None:
+        if panel_index >= len(self.candidate_ids) or not candidate_id:
+            return
+        if candidate_id in self.candidate_ids and candidate_id != self.candidate_ids[panel_index]:
+            self._update_candidate_controls()
+            return
+        record = next(
+            (
+                item_record
+                for item_candidate, item_record in self._eligible_cache
+                if item_candidate.candidate_id == candidate_id
+            ),
+            None,
+        )
+        if record is None or record.broken or record.status != "completed" or not record.evaluation:
+            self._update_candidate_controls()
+            return
+        previous = self.candidate_ids[panel_index]
+        self.candidate_ids[panel_index] = candidate_id
+        self.evaluation_ids.pop(previous, None)
+        self.evaluation_ids[candidate_id] = record.evaluation_id
+        self._model_names[candidate_id] = self._model_name(candidate_id)
+        self._update_candidate_controls()
+        self._render_current()
+
+    def _relayout_panels(self) -> None:
+        previous_sync = getattr(self, "synchronizer", None)
+        reference = self.views[0] if self.views else None
+        center = previous_sync.last_center if previous_sync is not None else None
+        zoom = previous_sync.last_zoom if previous_sync is not None else None
+        if center is None and reference is not None and reference._pixmap_item is not None:
+            center = reference.mapToScene(reference.viewport().rect().center())
+            zoom = reference.zoom
+        zoom = zoom or 1.0
+        while self.grid.count():
+            self.grid.takeAt(0)
+        active_count = len(self.candidate_ids)
+        self.views = []
+        for index, panel in enumerate(self.panel_widgets):
+            active = index < active_count and not self.block_reason
+            panel.setVisible(active)
+            if active:
+                self.views.append(self.panel_views[index])
+        for image_view in self.panel_views:
+            if image_view not in self.views and hasattr(image_view, "_synchronizer"):
+                del image_view._synchronizer
+                image_view.set_image(None)
+        cols = active_count if self.area.width() >= active_count * 310 else 2
+        cols = max(1, min(cols, active_count))
+        for index, panel in enumerate(self.panel_widgets[:active_count]):
+            self.grid.addWidget(panel, index // cols, index % cols)
+        for column in range(4):
+            self.grid.setColumnStretch(column, 1 if column < cols else 0)
+        self.synchronizer = ViewSynchronizer(
+            self.views,
+            last_state=(center, zoom) if center is not None else None,
+        )
+        if center is not None and self.views:
+            self._relayout_generation += 1
+            generation = self._relayout_generation
+
+            def restore_view_state():
+                if generation != self._relayout_generation or not self.views:
+                    return
+                first = self.views[0]
+                first._syncing = True
+                first.resetTransform()
+                first.scale(zoom, zoom)
+                first._scale = zoom
+                ViewSynchronizer._center_on_scene_point(
+                    first, ViewSynchronizer.clamp_center(first, center)
+                )
+                first._syncing = False
+                self.synchronizer.sync_from(first)
+
+            QTimer.singleShot(0, restore_view_state)
 
     def _menu_text(self, label: str, key: str) -> str:
         return f"{label}\t{self.shortcuts.display_key(self.shortcuts[key])}"
@@ -164,6 +345,7 @@ class MaskComparisonPage(BasePage):
         self._image_cache.clear()
         self._pixmap_cache.clear()
         self._render_signature = None
+        self._initial_fit_pending = True
         self.index = 0
         if not self.candidate_ids:
             self.block_reason = NO_CANDIDATES_TEXT
@@ -171,6 +353,8 @@ class MaskComparisonPage(BasePage):
             self.block_reason = (
                 "比較する候補を 2〜4 件選んでください。候補一覧へ戻って選び直してください"
             )
+        elif len(set(self.candidate_ids)) != len(self.candidate_ids):
+            self.block_reason = "同じ候補は重ねて比較できません。候補一覧へ戻って選び直してください"
         else:
             versions = {
                 self.ctx.backend.get_candidate(candidate_id).validation_version
@@ -183,6 +367,7 @@ class MaskComparisonPage(BasePage):
                     self.ctx.backend, self.validation, self.candidate_ids
                 )
         self.evaluation_ids = {}
+        self._refresh_eligible_candidates()
         if not self.block_reason:
             for candidate_id in self.candidate_ids:
                 record = self.ctx.backend.get_candidate_evaluation(candidate_id, self.validation)
@@ -198,8 +383,16 @@ class MaskComparisonPage(BasePage):
             candidate_id: self._model_name(candidate_id) for candidate_id in self.candidate_ids
         }
         self._build_views()
+        self._update_candidate_controls()
         self._load_classifications()
         self._load_items()
+        if not self.block_reason:
+            QTimer.singleShot(0, self._fit_initial)
+
+    def _fit_initial(self) -> None:
+        if self._initial_fit_pending:
+            self._initial_fit_pending = False
+            self._fit_all()
 
     def refresh_on_activate(self) -> None:
         """選択済み候補、固定した評価、検証版、分類、画像位置を保って再描画する。"""
@@ -247,25 +440,42 @@ class MaskComparisonPage(BasePage):
             item = self.grid.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        self.views, self.labels = [], []
-        specs = [("原画像", None)] + [
-            (candidate_id, candidate_id) for candidate_id in self.candidate_ids
-        ]
-        if self.block_reason:
-            specs = []
-        for position, (_title, _candidate_id) in enumerate(specs):
+        self.views, self.panel_widgets, self.panel_views = [], [], []
+        self.selectors, self.panel_titles, self.panel_counts, self.remove_buttons = [], [], [], []
+        for position in range(4):
             panel = QWidget()
             layout = QVBoxLayout(panel)
+            header = QHBoxLayout()
+            selector = QComboBox()
+            selector.setMinimumWidth(120)
+            title = QLabel()
+            title.setWordWrap(True)
+            remove = QPushButton("候補を外す")
+            header.addWidget(selector)
+            header.addWidget(title, 1)
+            header.addWidget(remove)
+            layout.addLayout(header)
             view = ImageView()
             view.setMinimumSize(220, 230)
             view.set_scrollbars_visible(False)
             layout.addWidget(view, 1)
-            self.grid.addWidget(panel, 0, position)
-            self.views.append(view)
+            count = QLabel()
+            layout.addWidget(count)
+            self.panel_widgets.append(panel)
+            self.panel_views.append(view)
+            self.selectors.append(selector)
+            self.panel_titles.append(title)
+            self.panel_counts.append(count)
+            self.remove_buttons.append(remove)
+            selector.currentTextChanged.connect(
+                lambda candidate_id, index=position: self._candidate_changed(index, candidate_id)
+            )
+            remove.clicked.connect(
+                lambda _checked=False, index=position: self._remove_candidate(index)
+            )
             view.installEventFilter(self)
             view.viewport().installEventFilter(self)
-        self.candidate_for_view = [None, *self.candidate_ids]
-        self.synchronizer = ViewSynchronizer(self.views)
+        self._relayout_panels()
 
     def _load_items(self, _value=None) -> None:
         classification = self.classification.currentText()
@@ -311,7 +521,8 @@ class MaskComparisonPage(BasePage):
             self._render_signature = None
             return
         item = self.items[self.index]
-        mode = self._display_mode()
+        show_predictions = self.display_toggle.is_alternate
+        mode = self._display_mode() if show_predictions else DisplayMode.IMAGE
         channel = DEFAULT_CHANNEL if DEFAULT_CHANNEL in item.channels else item.channels[0]
         evaluations = tuple(self.evaluation_ids.get(cid) for cid in self.candidate_ids)
         signature = (
@@ -322,30 +533,37 @@ class MaskComparisonPage(BasePage):
             self.ctx.display.value,
             tuple(self.candidate_ids),
             evaluations,
+            show_predictions,
         )
         self.position.setText(f"({self.index + 1} / {len(self.items)})")
         if signature == self._render_signature:
             return
         image = self._original_image(item.item_id, channel)
         for index, view in enumerate(self.views):
-            candidate_id = self.candidate_for_view[index]
-            if candidate_id is None:
-                title = "原画像"
-            else:
-                title = f"{candidate_id}　{self._model_names.get(candidate_id, '')}".rstrip()
+            candidate_id = self.candidate_ids[index]
+            self.panel_titles[index].setText(self._model_names.get(candidate_id, ""))
             entry = None
             if image is not None:
-                entry = self._cached_pixmap(item.item_id, channel, candidate_id, image, mode)
+                entry = self._cached_pixmap(
+                    item.item_id,
+                    channel,
+                    candidate_id if show_predictions else None,
+                    image,
+                    mode,
+                )
             if entry is None:
                 view.set_image(None)
-                note = "原画像を読み込めません" if image is None else "予測を読み込めません"
-                view.set_overlay_labels(title, note)
+                note = "原画像を読み込めません" if image is None else "抽出結果を読み込めません"
+                self.panel_counts[index].setText(note)
                 continue
             pixmap, count = entry
-            view.set_image(pixmap)
-            view.set_overlay_labels(title, f"検出 {count} 個" if candidate_id else "")
+            first_fit = self._initial_fit_pending and index == 0
+            reference = self.views[0] if index > 0 or view._pixmap_item is None else None
+            view.set_image(pixmap, fit=first_fit, reference=reference)
+            self.panel_counts[index].setText(
+                f"検出 {count} 個" if show_predictions else "原画像を表示中"
+            )
         self._render_signature = signature
-        QTimer.singleShot(0, self.synchronizer.fit_all)
 
     def _original_image(self, item_id: str, channel: str):
         """確定済みの検証版から原画像を読む（作業中データは読まない）。"""
@@ -401,6 +619,9 @@ class MaskComparisonPage(BasePage):
         self.display_toggle.set_alternate(not self.display_toggle.is_alternate)
 
     def eventFilter(self, watched, event) -> bool:
+        if watched is self.area and event.type() == QEvent.Type.Resize:
+            QTimer.singleShot(0, self._relayout_panels)
+            return False
         if event.type() == QEvent.Type.KeyPress:
             if isinstance(self.focusWidget(), QComboBox):
                 return super().eventFilter(watched, event)
@@ -458,6 +679,8 @@ class MaskComparisonPage(BasePage):
 
     def _fit_all(self) -> None:
         self.synchronizer.fit_all()
+        for view in self.views:
+            view._fit_on_resize = False
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if self.shortcuts.matches("previous_image", event):

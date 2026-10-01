@@ -896,7 +896,7 @@ class ReleaseDialog(QDialog):
         self.evaluation_id = record.evaluation_id
         self.model = None
         self.job: WorkerJob | None = None
-        self.setWindowTitle("リリース済みモデル登録")
+        self.setWindowTitle("候補を採用")
         self.setMinimumSize(560, 360)
         legacy_evaluation = record.schema == 1
         contamination = str(record.contamination.get("status") or "")
@@ -934,7 +934,7 @@ class ReleaseDialog(QDialog):
             )
         elif legacy_evaluation and contamination == "found":
             self.contamination_note.setText(
-                "学習データと同じ画像が検証用データセットにあるため、リリースできません。"
+                "学習データと同じ画像が検証用データセットにあるため、採用できません。"
             )
             set_style(self.contamination_note, state="error")
         self.contamination_note.setVisible(bool(self.contamination_note.text()))
@@ -952,7 +952,7 @@ class ReleaseDialog(QDialog):
         )
         self.ok_button = self.buttons.button(QDialogButtonBox.StandardButton.Ok)
         self.cancel_button = self.buttons.button(QDialogButtonBox.StandardButton.Cancel)
-        self.ok_button.setText("リリース済みモデルとして登録")
+        self.ok_button.setText("採用")
         self.cancel_button.setText("キャンセル")
         mark_primary(self.ok_button)
         self.buttons.accepted.connect(self._submit)
@@ -978,7 +978,7 @@ class ReleaseDialog(QDialog):
         )
         backend = self.ctx.backend
         self.job = WorkerJob(
-            "リリース登録",
+            "採用",
             lambda _progress, _cancelled: backend.release_candidate(
                 candidate_id, evaluation_id, comment
             ),
@@ -1004,7 +1004,7 @@ class ReleaseDialog(QDialog):
             if is_recovered_release(self.model):
                 QMessageBox.information(
                     self,
-                    "リリース済みモデル登録",
+                    "採用",
                     f"前回の登録で {self.model.model_id} として公開済みでした。"
                     "候補の状態を修復しました。"
                     "コメントは前回の登録内容のままです。",
@@ -1012,7 +1012,7 @@ class ReleaseDialog(QDialog):
             self.accept()
             return
         self.ok_button.setEnabled(True)
-        self.error.setText(user_message(job.error, "リリース登録に失敗しました"))
+        self.error.setText(user_message(job.error, "候補を採用できませんでした"))
         self.error.show()
 
     def reject(self) -> None:
