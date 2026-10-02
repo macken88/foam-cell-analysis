@@ -107,6 +107,7 @@ td.nowrap{white-space:nowrap}
 <div class="table-wrap"><table class="keys">
 <tr><th>場所</th><th>役割</th><th>依存</th></tr>
 <tr><td><code>services/comparison_service.py</code></td><td>推論設定・候補・外部解析・評価の準備と確定・リリース・振り分けの保存と復元。公開 API の窓口</td><td>Qt・torch 非依存</td></tr>
+<tr><td><code>services/external_analysis.py</code></td><td>外部解析（9.4）の入力検証・集計。標準ライブラリのみを使い、保存は行わない</td><td><code>math</code>、<code>typing.Any</code></td></tr>
 <tr><td><code>jobs/protocol.py</code></td><td>学習と評価に共通のイベント外形（v, run_id, seq, time, type）、JSON / JSON Lines の読み書き、原子的な書き込み（<code>training/protocol.py</code> から移す）</td><td>標準ライブラリ</td></tr>
 <tr><td><code>jobs/lifecycle.py</code></td><td>終端状態の判定（15.3 の純粋関数）とプロセス識別（pid + 作成時刻）</td><td>標準ライブラリ</td></tr>
 <tr><td><code>inference/protocol.py</code></td><td>評価用の run_spec・イベント必須項目・result.json の検証</td><td>torch 非依存</td></tr>
@@ -454,6 +455,7 @@ per_class = {"分類A": {"ap": float | null, "n_images": int}, ...}
 
 <h3>9.4 外部解析結果</h3>
 <p>external.json の新形式 records は評価 ID と固定検証版に結び付いた、全対象画像の円相当径中央値のスナップショットです。service が平均・分類別平均・入力済み/全画像数を計算して追記し、部分貼付は未入力欄を保持し、空欄のセルは値の削除として保存します。</p>
+<p>保存と評価 ID・固定検証版との照合は ComparisonService が担当し、値の入力検証と集計は <code>services/external_analysis.py</code> の純粋なヘルパーが担当します。</p>
 <pre><code>{
   "record_id": "ext_001",
   "evaluation_id": "eval_002", "validation_version": "val_v000",

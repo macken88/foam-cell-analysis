@@ -1,7 +1,7 @@
 # foam-cell-analysis
 
 気泡インスタンスセグメンテーションアプリ（データ準備・モデル学習・モデル比較/リリース・本番推論）。
-仕様書は [docs/specs/](docs/specs/) を参照。
+文書の入口は [docs/index.html](docs/index.html) です。仕様書は [docs/specs/](docs/specs/) を参照。
 
 ## セットアップ（pip のみ、Python 3.12）
 
@@ -43,6 +43,11 @@ pytest
 バックエンドは起動引数 `--backend mock|hybrid`、環境変数 `FOAM_BACKEND=mock|hybrid` の順に指定できます。
 起動引数が環境変数より優先されます。どちらも指定しない場合は hybrid です。
 画面確認だけを行う場合は `foam-cell-analysis --backend mock` を使います。
+
+hybridでは学習と比較・評価の保存処理を、それぞれ永続化サービスが担当します。
+学習用・検証用データ版の一覧・画像・マスクはDatasetStoreから実データを読み込みます。
+取り込み・版登録などデータ準備の編集操作と本番推論はMockBackendの模擬処理です。
+本番推論の実処理への接続は未完了です。
 
 ## 学習デバッグ用のダミーデータ
 

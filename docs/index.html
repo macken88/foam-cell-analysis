@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>foam-cell-analysis 文書案内</title>
+<style>
+:root{color-scheme:light;--ink:#203342;--muted:#586b78;--line:#d5e0e5;--paper:#f4f7f7;--card:#fff;--accent:#176b68}
+*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.8 "Yu Gothic UI",Meiryo,sans-serif}
+main{width:min(100% - 32px,980px);margin:40px auto 72px}header,.group{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:24px 28px;margin:0 0 18px}
+h1,h2,p{margin-top:0}h1{font-size:clamp(1.6rem,5vw,2.2rem);line-height:1.35}h2{font-size:1.2rem;margin-bottom:10px}p:last-child{margin-bottom:0}.lead,.note{color:var(--muted)}ul{margin:0;padding-left:1.3em}li{margin:.28em 0}a{color:var(--accent);overflow-wrap:anywhere}a:focus-visible{outline:3px solid #b24d18;outline-offset:3px;border-radius:2px}code{font-size:.92em}
+@media(max-width:520px){main{width:calc(100% - 20px);margin:16px auto 40px}header,.group{padding:18px 16px;border-radius:9px}}
+</style>
+</head>
+<body>
+<main>
+<header>
+<h1>foam-cell-analysis 文書案内</h1>
+<p class="lead">気泡インスタンスセグメンテーションアプリの概要、仕様、設計、実装の対応をたどるための索引です。</p>
+<p>アプリはデータ準備、モデル学習、モデル比較・リリース、本番推論を扱います。実装とモックの境界は<a href="design/implementation_map.html">実装マップ</a>を参照してください。</p>
+</header>
+<section class="group">
+<h2>仕様書</h2>
+<ul>
+<li><a href="specs/foam_cell_segmentation_app_overview_v2.html">アプリ全体概要</a></li>
+<li><a href="specs/foam_cell_segmentation_data_preparation_spec_v2.html">データ準備仕様</a></li>
+<li><a href="specs/foam_cell_segmentation_model_training_spec_ja_v2.html">モデル学習仕様</a></li>
+<li><a href="specs/foam_cell_segmentation_model_comparison_release_spec_v2.html">モデル比較・リリース仕様</a></li>
+</ul>
+</section>
+<section class="group">
+<h2>設計書</h2>
+<ul>
+<li><a href="design/training_backend_design.html#s1">学習バックエンド設計</a></li>
+<li><a href="design/comparison_inference_backend_design.html#s1">比較・評価バックエンド設計</a></li>
+<li><a href="design/gui_screen_design.html#sec1">GUI画面設計</a></li>
+<li><a href="design/implementation_map.html">実装マップ</a></li>
+</ul>
+</section>
+<section class="group">
+<h2>開発ルール</h2>
+<ul>
+<li><a href="../AGENTS.md">AGENTS.md</a>: 作業範囲、ブランチ、テスト、報告の共通ルール</li>
+<li><a href="agents/delegation.md">Codexへの委任手順</a></li>
+<li><a href="agents/gui-guidelines.md">GUI設計・文言・レビューの指針</a></li>
+</ul>
+</section>
+<p class="note">docs/tasksはGit管理外のローカル作業計画です。正式な仕様ではありません。この索引から作業メモへのリンクは設けていません。</p>
+</main>
+</body>
+</html>
