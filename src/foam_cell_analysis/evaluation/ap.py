@@ -97,3 +97,50 @@ def aggregate(
         "per_image": {key: value[0] for key, value in per_image.items()},
         "pooled_ap_reference": float(pooled) if values else None,
     }
+
+
+def instance_table(truth: np.ndarray, prediction: np.ndarray) -> list[dict[str, Any]]:
+    """正解・予測の各インスタンスの面積と、相手側で最も IoU が高いものを返す。
+
+    行は正解側（side="true"）、予測側（side="pred"）の順で、それぞれラベル昇順。
+    label は元のラベル値のまま。重なる相手がなければ best_iou=0.0、best_label=None。
+    """
+    true_values = np.asarray(truth)
+    pred_values = np.asarray(prediction)
+    if true_values.ndim != 2 or pred_values.ndim != 2:
+        raise ValueError("ラベル画像は 2 次元である必要があります")
+    if true_values.shape != pred_values.shape:
+        raise ValueError("正解と予測の画像サイズが一致しません")
+    true_ids, true_index = np.unique(true_values.ravel(), return_inverse=True)
+    pred_ids, pred_index = np.unique(pred_values.ravel(), return_inverse=True)
+    # 0（背景）は最小値なので、存在すれば先頭に来る。
+    true_bg = 1 if true_ids.size and true_ids[0] == 0 else 0
+    pred_bg = 1 if pred_ids.size and pred_ids[0] == 0 else 0
+    n_true, n_pred = true_ids.size, pred_ids.size
+    pair = np.bincount(true_index * n_pred + pred_index, minlength=n_true * n_pred)
+    pair = pair.reshape(n_true, n_pred)
+    true_area = pair.sum(axis=1)
+    pred_area = pair.sum(axis=0)
+    inter = pair[true_bg:, pred_bg:].astype(np.float64)
+    union = true_area[true_bg:, None] + pred_area[None, pred_bg:] - inter
+    iou = np.divide(inter, union, out=np.zeros_like(inter), where=union > 0)
+
+    def rows(side: str, ids, areas, table, other_ids) -> list[dict[str, Any]]:
+        result = []
+        for number, label in enumerate(ids):
+            best = int(table[number].argmax()) if table.shape[1] else 0
+            best_iou = float(table[number, best]) if table.shape[1] else 0.0
+            result.append(
+                {
+                    "side": side,
+                    "label": int(label),
+                    "area": int(areas[number]),
+                    "best_iou": best_iou,
+                    "best_label": int(other_ids[best]) if best_iou > 0 else None,
+                }
+            )
+        return result
+
+    return rows("true", true_ids[true_bg:], true_area[true_bg:], iou, pred_ids[pred_bg:]) + rows(
+        "pred", pred_ids[pred_bg:], pred_area[pred_bg:], iou.T, true_ids[true_bg:]
+    )

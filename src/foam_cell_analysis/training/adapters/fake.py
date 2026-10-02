@@ -20,12 +20,13 @@ class FakeAdapter:
         self.model = None
         self.optimizer = None
         self.device = None
+        self.eval_params: dict[str, Any] = {"threshold": 0.5}
 
     def build(self, model_config: dict[str, Any], device: Any) -> None:
         from torch import nn
 
-        del model_config
         self.device = device
+        self.eval_params = {"threshold": 0.5} | dict(model_config.get("eval_params") or {})
         self.model = nn.Sequential(
             nn.Conv2d(1, 4, kernel_size=3, padding=1),
             nn.ReLU(),
@@ -132,7 +133,9 @@ class FakeAdapter:
                 tensor = torch.from_numpy(np.asarray(image, dtype=np.float32))[None, None].to(
                     self.device
                 )
-                foreground = torch.sigmoid(self.model(tensor))[0, 0].cpu().numpy() >= 0.5
+                foreground = torch.sigmoid(self.model(tensor))[0, 0].cpu().numpy() >= float(
+                    self.eval_params["threshold"]
+                )
                 predictions.append(self._components(foreground))
         return predictions
 
@@ -145,3 +148,22 @@ class FakeAdapter:
         buffer = BytesIO()
         torch.save(self.state_dict(), buffer)
         return buffer.tell()
+
+
+def build_for_inference(
+    model_config: dict[str, Any],
+    weights_path: str | Path,
+    device: Any = "cpu",
+    eval_params: dict[str, Any] | None = None,
+) -> FakeAdapter:
+    """保存済み state_dict から推論専用の FakeAdapter を復元する。"""
+    import torch
+
+    config = dict(model_config)
+    config["eval_params"] = dict(config.get("eval_params") or {}) | dict(eval_params or {})
+    adapter = FakeAdapter()
+    adapter.build(config, device)
+    state = torch.load(weights_path, map_location=device, weights_only=True)
+    adapter.model.load_state_dict(state)
+    adapter.model.eval()
+    return adapter

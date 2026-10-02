@@ -79,6 +79,12 @@ class JobManager(QObject):
         super().__init__(parent)
         self._jobs: list[FakeJob] = []
         self._training_runner = None
+        self._evaluation_runner = None
+
+    def set_evaluation_runner(self, runner) -> None:
+        """評価の実行状態を runner から受け取り、実行中ジョブの件数に含める。"""
+        self._evaluation_runner = runner
+        runner.busy_changed.connect(lambda _busy: self.jobs_changed.emit(self.running_count))
 
     def set_training_runner(self, runner) -> None:
         """学習の占有状態を runner から受け取る。"""
@@ -88,7 +94,8 @@ class JobManager(QObject):
     @property
     def running_count(self) -> int:
         training_count = int(bool(self._training_runner and self._training_runner.is_busy))
-        return len(self._jobs) + training_count
+        evaluation_count = int(bool(self._evaluation_runner and self._evaluation_runner.is_busy))
+        return len(self._jobs) + training_count + evaluation_count
 
     @property
     def training_jobs(self) -> list[QObject]:

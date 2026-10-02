@@ -1,6 +1,7 @@
 import csv
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -15,7 +16,14 @@ def _workspace(root):
     folder = root / "datasets" / "train_v000"
     folder.mkdir(parents=True)
     (folder / "dataset_info.json").write_text(
-        json.dumps({"purpose": "train", "status": "RELEASED", "dataset_version": "train_v000"}),
+        json.dumps(
+            {
+                "purpose": "train",
+                "status": "RELEASED",
+                "dataset_version": "train_v000",
+                "base_validation_version": "val_v000",
+            }
+        ),
         encoding="utf-8",
     )
     metadata_fields = [
@@ -40,6 +48,37 @@ def _workspace(root):
                     "classification": "A" if group % 2 else "B",
                     "quality": "良",
                     "mask_revision": "r1",
+                }
+            )
+    validation = root / "datasets" / "val_v000"
+    validation.mkdir()
+    (validation / "dataset_info.json").write_text(
+        json.dumps({"purpose": "val", "status": "RELEASED", "dataset_version": "val_v000"}),
+        encoding="utf-8",
+    )
+    with (validation / "metadata.csv").open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(
+            stream, fieldnames=["item_id", "source_relpath", "channel", "classification"]
+        )
+        writer.writeheader()
+        for index in range(2):
+            writer.writerow(
+                {
+                    "item_id": f"val_v000_{index}",
+                    "source_relpath": f"val/{index}.png",
+                    "channel": "A",
+                    "classification": "A",
+                }
+            )
+    with (validation / "manifest.csv").open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=["item_id", "image_path", "image_sha256"])
+        writer.writeheader()
+        for index in range(2):
+            writer.writerow(
+                {
+                    "item_id": f"val_v000_{index}",
+                    "image_path": f"images/{index}.png",
+                    "image_sha256": f"{index + 1:064x}",
                 }
             )
     with (folder / "manifest.csv").open("w", encoding="utf-8", newline="") as stream:
@@ -734,6 +773,24 @@ def _completed_service(tmp_path, service_factory=None):
     return service, experiment
 
 
+def test_protocol_error_after_hello_concludes_as_failed_error(tmp_path):
+    _workspace(tmp_path)
+    service = TrainingService(tmp_path, process_alive=lambda _record: False)
+    config = service.default_experiment_config("mask_rcnn")
+    config["data"]["cv"]["n_folds"] = 2
+    experiment = service.add_training_queue_item(config)
+    prepared = service.prepare_training_run(experiment.experiment_id, experiment.experiment_id)
+    message = "学習プロセスのプロトコルエラー: イベントの共通項目がありません: seq"
+
+    outcome = service.conclude_training_run(
+        experiment.experiment_id, 1, JobExit(returncode=1, message=message, protocol_error=True)
+    )
+
+    assert (outcome.status, outcome.reason, outcome.message) == ("failed", "error", message)
+    status = json.loads((Path(prepared.run_dir) / "status.json").read_text(encoding="utf-8"))
+    assert status["status"] == "failed" and status["message"] == message
+
+
 def test_delete_experiment_removes_only_its_folder_and_refuses_running(tmp_path):
     service, experiment = _completed_service(tmp_path)
     expid = experiment.experiment_id
@@ -776,7 +833,10 @@ def test_hybrid_refuses_to_delete_experiment_referenced_by_candidate(tmp_path):
 
     backend, experiment = _completed_service(tmp_path, HybridBackend)
     expid = experiment.experiment_id
-    candidate = backend.add_candidate(expid, "final.pt", "infer_v005")
+    config = backend.create_inference_config(
+        "mask_rcnn", backend.default_inference_params("mask_rcnn")
+    )
+    candidate = backend.add_candidate(expid, 1, config.config_id)
 
     info = backend.experiment_deletion_info(expid)
     assert not info.allowed
@@ -800,3 +860,318 @@ def test_deleted_experiment_number_is_not_reused(tmp_path):
     reloaded = TrainingService(tmp_path, process_alive=lambda _record: False)
     assert int(service.next_experiment_id()[-4:]) > deleted_number
     assert int(reloaded.next_experiment_id()[-4:]) > deleted_number
+
+
+def _write_fold_checkpoints(run_dir):
+    """fold の定期保存・選択モデルと一時ファイルを置く。"""
+    files = {
+        "checkpoints/fold_1/epoch_010.pt": b"periodic1",
+        "checkpoints/fold_2/epoch_010.pt": b"periodic2",
+        "checkpoints/fold_1/selected.pt": b"selected",
+        "tmp_pred/fold_1/epoch_005/i0.png": b"pred",
+        "tmp_ckpt/fold_1/epoch_005.pt": b"tmpckpt",
+    }
+    for relative, content in files.items():
+        path = run_dir / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    sidecar = run_dir / "checkpoints/fold_1/epoch_010.pt.json"
+    sidecar.write_text(json.dumps({"sha256": "a" * 64}), encoding="utf-8")
+    return files
+
+
+def _groups(plan):
+    return {(group.attempt, group.category): group for group in plan}
+
+
+def _deleting_entry(path, category):
+    return {
+        "path": path,
+        "category": category,
+        "size": 1,
+        "sha256": None,
+        "state": "deleting",
+        "requested_at": "2026-09-29T00:00:00+09:00",
+        "deleted_at": None,
+    }
+
+
+def test_cleanup_plan_detects_categories_and_prune_records_deleted(tmp_path):
+    service, experiment = _completed_service(tmp_path)
+    expid = experiment.experiment_id
+    run_dir = tmp_path / "experiments" / expid / "runs" / "attempt_001"
+    _write_fold_checkpoints(run_dir)
+
+    groups = _groups(service.artifact_cleanup_plan([expid]))
+    assert groups[(1, "fold_periodic")].n_files == 2
+    assert groups[(1, "fold_periodic")].size_bytes == len(b"periodic1") + len(b"periodic2")
+    assert groups[(1, "fold_selected")].deletable
+    assert groups[(1, "final")].deletable
+    temporary = groups[(1, "temporary")]
+    assert temporary.n_files == 2 and not temporary.deletable and temporary.reason
+
+    result = service.prune_artifacts([expid], ["fold_periodic", "final", "temporary"])
+
+    assert result.n_files == 3
+    assert result.freed_bytes == len(b"periodic1") + len(b"periodic2") + len(b"weights")
+    assert [group.category for group in result.skipped] == ["temporary"]
+    assert not (run_dir / "checkpoints/fold_1/epoch_010.pt").exists()
+    assert not (run_dir / "checkpoints/final.pt").exists()
+    assert (run_dir / "checkpoints/final.pt.json").exists()
+    assert (run_dir / "checkpoints/fold_1/epoch_010.pt.json").exists()
+    assert (run_dir / "checkpoints/fold_1/selected.pt").exists()
+    assert (run_dir / "tmp_ckpt/fold_1/epoch_005.pt").exists()
+    record = json.loads((run_dir / "pruned.json").read_text(encoding="utf-8"))
+    entries = {entry["path"]: entry for entry in record["entries"]}
+    assert set(entries) == {
+        "checkpoints/fold_1/epoch_010.pt",
+        "checkpoints/fold_2/epoch_010.pt",
+        "checkpoints/final.pt",
+    }
+    assert all(entry["state"] == "deleted" and entry["deleted_at"] for entry in entries.values())
+    assert entries["checkpoints/final.pt"]["sha256"] == hashlib.sha256(b"weights").hexdigest()
+    assert entries["checkpoints/fold_1/epoch_010.pt"]["sha256"] == "a" * 64
+    assert entries["checkpoints/fold_2/epoch_010.pt"]["sha256"] is None
+    status = json.loads((run_dir / "status.json").read_text(encoding="utf-8"))
+    assert status["status"] == "completed"
+    assert "checkpoints/final.pt" in service.pruned_paths(expid, 1)
+    with pytest.raises(ValueError, match="成果物の整理で削除されています"):
+        service.create_candidate_snapshot(expid, attempt=1)
+
+    # 欠けたチェックポイントがあっても、履歴の作り直しと状態の復元は失敗しない
+    restored = TrainingService(tmp_path, process_alive=lambda _record: False)
+    restored.recover()
+    assert restored.get_experiment(expid).status == "completed"
+    assert "checkpoints/final.pt" in restored.pruned_paths(expid, 1)
+
+
+def test_cleanup_temporary_only_for_stopped_or_failed_attempt(tmp_path):
+    service, experiment = _queued_service(tmp_path)
+    expid = experiment.experiment_id
+    prepared = service.prepare_training_run(expid, expid)
+    run_dir = Path(prepared.run_dir)
+    _write_fold_checkpoints(run_dir)
+    service.request_training_stop(expid, 1, "user_stop")
+    assert service.conclude_training_run(expid, 1).status == "stopped"
+    service.finish_training_queue_item(expid, "stopped")
+
+    group = _groups(service.artifact_cleanup_plan([expid]))[(1, "temporary")]
+    assert group.deletable
+    result = service.prune_artifacts([expid], ["temporary"])
+    assert result.n_files == 2 and not result.skipped
+    assert not [path for path in run_dir.glob("tmp_*/**/*") if path.is_file()]
+    assert (run_dir / "checkpoints/fold_1/epoch_010.pt").exists()
+    assert json.loads((run_dir / "status.json").read_text(encoding="utf-8"))["status"] == "stopped"
+
+
+def test_cleanup_refuses_running_queued_and_unconcluded_attempts(tmp_path):
+    service, experiment = _queued_service(tmp_path)
+    expid = experiment.experiment_id
+    prepared = service.prepare_training_run(expid, expid)
+    run_dir = Path(prepared.run_dir)
+    _write_valid_result(run_dir)
+    _write_fold_checkpoints(run_dir)
+
+    running = service.prune_artifacts([expid], list(service.ARTIFACT_CATEGORIES))
+    assert running.n_files == 0
+    assert running.skipped and all("学習中" in group.reason for group in running.skipped)
+    assert (run_dir / "checkpoints/final.pt").exists()
+
+    # 実験が学習中でなくても、status.json のない試行は確定していないので消さない
+    service.experiments[expid].status = "stopped"
+    service.queue["rows"] = []
+    unconcluded = service.prune_artifacts([expid], ["final"])
+    assert unconcluded.n_files == 0
+    assert "確定していない" in unconcluded.skipped[0].reason
+    assert (run_dir / "checkpoints/final.pt").exists()
+
+    assert service.conclude_training_run(expid, 1, JobExit(returncode=0)).status == "completed"
+    service.add_training_retry_reservation(expid)
+    queued = service.prune_artifacts([expid], ["final"])
+    assert queued.n_files == 0
+    assert "待機中" in queued.skipped[0].reason
+    assert (run_dir / "checkpoints/final.pt").exists()
+    assert not (run_dir / "pruned.json").exists()
+
+
+def test_cleanup_counts_hard_linked_selected_checkpoint_once(tmp_path):
+    service, experiment = _completed_service(tmp_path)
+    expid = experiment.experiment_id
+    run_dir = tmp_path / "experiments" / expid / "runs" / "attempt_001"
+    periodic = run_dir / "checkpoints" / "fold_1" / "epoch_010.pt"
+    periodic.parent.mkdir(parents=True)
+    periodic.write_bytes(b"x" * 100)
+    selected = periodic.with_name("selected.pt")
+    try:
+        os.link(periodic, selected)
+    except OSError:
+        pytest.skip("この環境ではハードリンクを作れません")
+
+    groups = _groups(service.artifact_cleanup_plan([expid]))
+    assert groups[(1, "fold_selected")].size_bytes == 100
+    assert groups[(1, "fold_selected")].shared_bytes == 100
+    assert groups[(1, "fold_periodic")].shared_bytes == 100
+    assert groups[(1, "final")].shared_bytes == 0
+    assert service.estimate_freed_bytes([expid], ["fold_selected"]) == 0
+    assert service.estimate_freed_bytes([expid], ["fold_selected", "fold_periodic"]) == 100
+
+    only_selected = service.prune_artifacts([expid], ["fold_selected"])
+    assert (only_selected.n_files, only_selected.freed_bytes) == (1, 0)
+    assert periodic.read_bytes() == b"x" * 100
+
+    selected.unlink(missing_ok=True)
+    os.link(periodic, selected)
+    both = service.prune_artifacts([expid], ["fold_selected", "fold_periodic"])
+    assert (both.n_files, both.freed_bytes) == (2, 100)
+    assert not periodic.exists() and not selected.exists()
+
+
+def test_cleanup_keeps_final_protected_by_comparison(tmp_path):
+    service, experiment = _completed_service(tmp_path)
+    expid = experiment.experiment_id
+    run_dir = tmp_path / "experiments" / expid / "runs" / "attempt_001"
+    calls = []
+
+    def protected(experiment_id, attempt):
+        calls.append((experiment_id, attempt))
+        return "比較候補 RC-001 が参照しています"
+
+    result = service.prune_artifacts([expid], ["final"], protected_final=protected)
+    assert calls == [(expid, 1)]
+    assert result.n_files == 0
+    assert result.skipped[0].reason == "比較候補 RC-001 が参照しています"
+    assert (run_dir / "checkpoints/final.pt").exists()
+    assert service.create_candidate_snapshot(expid, attempt=1).weights_size == len(b"weights")
+
+    result = service.prune_artifacts([expid], ["final"], protected_final=lambda *_args: "")
+    assert result.n_files == 1
+    assert not (run_dir / "checkpoints/final.pt").exists()
+
+
+def test_recovery_finishes_deleting_entries(tmp_path):
+    service, experiment = _completed_service(tmp_path)
+    expid = experiment.experiment_id
+    run_dir = tmp_path / "experiments" / expid / "runs" / "attempt_001"
+    _write_fold_checkpoints(run_dir)
+    record = {
+        "schema": 1,
+        "entries": [
+            _deleting_entry("checkpoints/final.pt", "final"),
+            _deleting_entry("checkpoints/fold_1/selected.pt", "fold_selected"),
+            _deleting_entry("../../../outside.pt", "final"),
+        ],
+    }
+    (run_dir / "pruned.json").write_text(json.dumps(record), encoding="utf-8")
+    outside = tmp_path / "experiments" / "outside.pt"
+    outside.write_bytes(b"x")
+    # 手順 2 の途中で止まり、final.pt だけ先に消えていた場合
+    (run_dir / "checkpoints/final.pt").unlink()
+
+    restored = TrainingService(tmp_path, process_alive=lambda _record: False)
+    restored.recover()
+
+    record = json.loads((run_dir / "pruned.json").read_text(encoding="utf-8"))
+    states = {entry["path"]: entry["state"] for entry in record["entries"]}
+    assert states["checkpoints/final.pt"] == "deleted"
+    assert states["checkpoints/fold_1/selected.pt"] == "deleted"
+    assert states["../../../outside.pt"] == "deleting"
+    assert not (run_dir / "checkpoints/fold_1/selected.pt").exists()
+    assert outside.read_bytes() == b"x"
+    status = json.loads((run_dir / "status.json").read_text(encoding="utf-8"))
+    assert status["status"] == "completed"
+    assert restored.get_experiment(expid).status == "completed"
+
+
+def test_cleanup_never_deletes_through_links_outside_run_dir(tmp_path):
+    service, experiment = _completed_service(tmp_path)
+    expid = experiment.experiment_id
+    run_dir = tmp_path / "experiments" / expid / "runs" / "attempt_001"
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    (outside_dir / "epoch_010.pt").write_bytes(b"outside")
+    (outside_dir / "selected.pt").write_bytes(b"outside")
+    link = run_dir / "checkpoints" / "fold_3"
+    try:
+        link.symlink_to(outside_dir, target_is_directory=True)
+    except OSError:
+        _winapi = pytest.importorskip("_winapi")
+        _winapi.CreateJunction(str(outside_dir), str(link))
+
+    plan = _groups(service.artifact_cleanup_plan([expid]))
+    assert (1, "fold_periodic") not in plan
+    assert (1, "fold_selected") not in plan
+    service.prune_artifacts([expid], list(service.ARTIFACT_CATEGORIES))
+    assert (outside_dir / "epoch_010.pt").read_bytes() == b"outside"
+    assert (outside_dir / "selected.pt").read_bytes() == b"outside"
+
+
+def test_candidate_snapshot_uses_explicit_attempt_and_records_weights(tmp_path):
+    service, experiment = _completed_service(tmp_path)
+    expid = experiment.experiment_id
+    service.add_training_retry_reservation(expid)
+    row = service.take_next_training_queue_item()
+    prepared = service.prepare_training_run(expid, row.queue_id, retry=True)
+    run_dir = Path(prepared.run_dir)
+    (run_dir / "error.json").write_text(json.dumps({"message": "x"}), encoding="utf-8")
+    assert service.conclude_training_run(expid, 2, JobExit(returncode=1)).status == "failed"
+
+    with pytest.raises(ValueError, match="完了した実験のみ"):
+        service.create_candidate_snapshot(expid)
+    with pytest.raises(ValueError, match="完了していません"):
+        service.create_candidate_snapshot(expid, attempt=2)
+
+    snapshot = service.create_candidate_snapshot(expid, attempt=1)
+    assert snapshot.attempt == 1
+    assert snapshot.run_id == f"{expid}/attempt_001"
+    assert snapshot.weights_size == len(b"weights")
+    assert snapshot.weights_sha256 == hashlib.sha256(b"weights").hexdigest()
+    assert snapshot.training_eval_params["box_detections_per_img"] == 300
+    assert snapshot.preprocessing["method"] == "percentile"
+    assert snapshot.training_dataset["version"] == "train_v000"
+
+    first = tmp_path / "experiments" / expid / "runs" / "attempt_001" / "checkpoints" / "final.pt"
+    first.write_bytes(b"changed weights")
+    with pytest.raises(ValueError, match="大きさ"):
+        service.create_candidate_snapshot(expid, attempt=1)
+
+
+def test_recovery_does_not_resume_pruning_through_linked_attempt_dir(tmp_path):
+    service, experiment = _completed_service(tmp_path)
+    expid = experiment.experiment_id
+    runs = tmp_path / "experiments" / expid / "runs"
+    outside_dir = tmp_path / "outside_attempt"
+    outside_dir.mkdir()
+    victim = outside_dir / "victim.pt"
+    victim.write_bytes(b"outside")
+    record = {"schema": 1, "entries": [_deleting_entry("victim.pt", "final")]}
+    (outside_dir / "pruned.json").write_text(json.dumps(record), encoding="utf-8")
+    link = runs / "attempt_009"
+    try:
+        link.symlink_to(outside_dir, target_is_directory=True)
+    except OSError:
+        _winapi = pytest.importorskip("_winapi")
+        _winapi.CreateJunction(str(outside_dir), str(link))
+
+    TrainingService(tmp_path, process_alive=lambda _record: False).recover()
+
+    assert victim.read_bytes() == b"outside"
+    states = json.loads((outside_dir / "pruned.json").read_text("utf-8"))["entries"]
+    assert states[0]["state"] == "deleting"
+
+
+def test_experiment_folder_that_is_a_junction_to_another_experiment_is_ignored(tmp_path):
+    service, experiment = _completed_service(tmp_path)
+    expid = experiment.experiment_id
+    target = tmp_path / "experiments" / expid
+    link = tmp_path / "experiments" / "exp_9999"
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        _winapi = pytest.importorskip("_winapi")
+        try:
+            _winapi.CreateJunction(str(target), str(link))
+        except OSError:
+            pytest.skip("リンクを作れない環境です")
+
+    assert service._attempt_dirs(expid)
+    assert service._attempt_dirs("exp_9999") == []

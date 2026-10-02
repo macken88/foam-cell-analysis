@@ -2,27 +2,33 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Protocol
 
 import numpy as np
 
 from .models import (
+    ArtifactGroup,
     AugmentationProfile,
     Candidate,
     CandidateSnapshot,
     DataItem,
     DatasetVersion,
-    Evaluation,
+    EvaluationOutcome,
+    EvaluationProgress,
+    EvaluationRecord,
     Experiment,
     ExperimentDeletionInfo,
-    ExternalResult,
     ImportCandidate,
     InferenceConfig,
     JobExit,
     PreparedRun,
+    PruneResult,
     ReleasedModel,
     RoutingHistory,
+    RoutingState,
     TrainingOutcome,
     ValidationReport,
     WorkingDataset,
@@ -34,6 +40,32 @@ def normalization_for_weights(weights: str) -> tuple[list[float], list[float]]:
     if weights not in {"coco", "imagenet"}:
         raise ValueError(f"未対応の事前学習済み重みです: {weights}")
     return [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
+
+
+@dataclass
+class MaskExportParams:
+    """抽出結果出力の条件（比較・評価設計 12 章）。
+
+    画面は出力ダイアログを開いた時点の評価 ID と対象 ID を固定して渡す。
+    item_ids が None なら各評価の対象画像すべてを出力する。
+    """
+
+    output_parent: str
+    # (candidate_id, evaluation_id) の組。候補ごとに採用した評価を指定する
+    selections: list[tuple[str, str]]
+    contents: set[str] = field(default_factory=lambda: {"label", "binary"})
+    file_format: str = "png"
+    item_ids: list[str] | None = None
+
+    @classmethod
+    def from_value(cls, value: MaskExportParams | dict[str, Any]) -> MaskExportParams:
+        """辞書でも受け取れるようにする。"""
+        if isinstance(value, cls):
+            return value
+        data = dict(value)
+        data["selections"] = [tuple(item) for item in data.get("selections", [])]
+        data["contents"] = set(data.get("contents", {"label", "binary"}))
+        return cls(**data)
 
 
 class Backend(Protocol):
@@ -173,8 +205,10 @@ class Backend(Protocol):
     def get_dataset_item_mask(self, version: str, item_id: str, revision: str) -> np.ndarray:
         """確定済み学習版のラベル画像を返す。"""
 
-    def get_candidate_prediction(self, candidate_id: str, item_id: str) -> np.ndarray:
-        """候補モデルの予測ラベルを返す。"""
+    def get_candidate_prediction(
+        self, candidate_id: str, evaluation_id: str, item_id: str
+    ) -> np.ndarray:
+        """評価（evaluation_id）で保存した候補の予測ラベルを返す（11 章）。"""
 
     def get_inference_result(self, filename: str, model_id: str) -> tuple[np.ndarray, np.ndarray]:
         """ファイル名とモデルの合成推論結果を返す。"""
@@ -306,66 +340,154 @@ class Backend(Protocol):
     def list_inference_configs(self, model_type: str | None = None) -> list[InferenceConfig]:
         """推論設定一覧を返す。"""
 
+    def default_inference_params(self, model_type: str) -> dict[str, Any]:
+        """推論設定の初期値（学習時の評価パラメータと同じ値）を返す。"""
+
     def create_inference_config(self, model_type: str, params: dict[str, Any]) -> InferenceConfig:
-        """新しい推論設定を保存する。"""
+        """範囲を検証して推論設定を保存する。同じ設定があればそれを返す（5.1）。"""
 
     def add_candidate(
-        self, experiment_id: str, checkpoint: str, inference_config_id: str, comment: str = ""
+        self, experiment_id: str, attempt: int, inference_config_id: str, comment: str = ""
     ) -> Candidate:
-        """重複確認後に比較候補を追加する。"""
+        """試行を明示して比較候補を追加する。重複は ValueError（5.3）。"""
 
-    def add_candidate_from_snapshot(
-        self, snapshot: CandidateSnapshot, inference_config_id: str, comment: str = ""
-    ) -> Candidate:
-        """固定試行の実測結果スナップショットを比較候補へ加える。"""
-
-    def start_evaluation(
-        self, candidate_ids: list[str], validation_version: str
-    ) -> list[Candidate]:
-        """評価対象を評価中状態にする。"""
-
-    def evaluate_candidate(
-        self, candidate_id: str, validation_version: str = "val_v003"
-    ) -> Evaluation:
-        """全体・分類別評価を記録し候補状態に戻す。"""
-
-    def save_external_results(
-        self,
-        candidate_id: str,
-        results: list[ExternalResult | dict[str, Any]],
-        software: str = "",
-        date: str = "",
-        comment: str = "",
-    ) -> Candidate:
-        """外部解析結果とコメントを保存する。"""
+    def create_candidate_snapshot(self, experiment_id: str, attempt: int) -> CandidateSnapshot:
+        """候補元の学習時推論設定を取得する。取得不能なら不明値として返す。"""
 
     def reject_candidate(self, candidate_id: str) -> Candidate:
-        """候補を非採用にする。"""
+        """候補を非採用にする。評価中・評価待ちの候補はできない。"""
+
+    def restore_candidate(self, candidate_id: str) -> Candidate:
+        """非採用候補を候補一覧へ戻す。"""
+
+    # ---- 評価（7 章）。EvaluationRunner が呼ぶ ----
+
+    def set_evaluation_activity(self, is_evaluation_active: Callable[[str], bool]) -> None:
+        """候補が評価中・評価待ちかを答える関数を受け取る（EvaluationRunner から渡す）。"""
+
+    def prepare_evaluation_run(self, candidate_id: str) -> PreparedRun:
+        """候補に固定した検証用の版で評価を 1 回分準備する（評価の唯一の作成口。7.1）。"""
+
+    def record_evaluation_process(
+        self, candidate_id: str, evaluation_id: str, pid: int, creation_time: float
+    ) -> None:
+        """評価プロセスの識別情報を復旧用に保存する。"""
+
+    def request_evaluation_stop(self, candidate_id: str, evaluation_id: str, reason: str) -> None:
+        """プロセスを止める前に中断要求を保存する。"""
+
+    def apply_evaluation_event(
+        self, candidate_id: str, evaluation_id: str, event: dict[str, Any]
+    ) -> EvaluationProgress | None:
+        """評価イベントを検証して進捗へ反映する。成功は確定しない。"""
+
+    def conclude_evaluation_run(
+        self, candidate_id: str, evaluation_id: str, job_exit: JobExit | None = None
+    ) -> EvaluationOutcome:
+        """評価の終端状態を確定する（7.5）。"""
+
+    def get_evaluation_progress(self, candidate_id: str) -> EvaluationProgress | None:
+        """実行中の評価の進捗を返す。"""
+
+    def get_candidate_evaluation(
+        self, candidate_id: str, validation_version: str | None = None
+    ) -> EvaluationRecord | None:
+        """採用する評価（7.7）を返す。版を省くと候補に固定した検証用の版を使う。"""
+
+    def list_candidate_evaluations(
+        self, candidate_id: str, validation_version: str | None = None
+    ) -> list[EvaluationRecord]:
+        """その候補・検証版の全評価を番号順に返す。版を省くと全ての版の履歴を返す。"""
+
+    # ---- 外部解析・出力・リリース ----
+
+    def list_external_results(self, candidate_id: str) -> list[dict[str, Any]]:
+        """外部解析結果の記録を古い順に返す。"""
+
+    def save_external_analysis(
+        self,
+        candidate_id: str,
+        evaluation_id: str,
+        values: dict[str, float | None],
+        *,
+        unit: str = "µm",
+        software: str = "",
+        software_version: str = "",
+        analyzed_on: str = "",
+        comment: str | None = None,
+    ) -> Candidate:
+        """画像ごとの円相当径の中央値を、評価 ID に結び付けて新しい記録として追記する（9.4）。"""
+
+    def export_particle_masks(
+        self,
+        request: MaskExportParams | dict[str, Any],
+        progress: Callable[[int, int], None],
+        is_cancelled: Callable[[], bool],
+    ) -> Any:
+        """抽出結果（ラベル画像・白黒画像）を出力して ExportResult を返す（12 章）。
+
+        ワーカースレッドから呼ぶ。
+        """
 
     def release_candidate(
-        self, candidate_id: str, comment: str = "", validation_version: str = "val_v003"
+        self, candidate_id: str, evaluation_id: str, comment: str = ""
     ) -> ReleasedModel:
-        """評価済み候補をリリース登録する。"""
+        """指定した評価で候補をリリース登録する（13.1）。"""
 
     def list_validation_items(
-        self, validation_version: str = "val_v003", classification: str | None = None
+        self, validation_version: str, classification: str | None = None
     ) -> list[DataItem]:
         """検証版の画像を分類条件付きで返す。"""
 
-    def list_released_models(self) -> list[ReleasedModel]:
-        """リリース済みモデルを返す。"""
+    def list_released_models(
+        self, *, include_archived: bool = False, include_deleted: bool = False
+    ) -> list[ReleasedModel]:
+        """公開済みモデルを返す。既定は保管・削除済みを除く。"""
+
+    def set_release_archived(self, model_id: str, archived: bool) -> ReleasedModel:
+        """モデルを保管または通常一覧へ戻す。"""
+
+    def estimate_release_delete_bytes(self, model_id: str) -> int:
+        """削除で空く容量を実ファイルから見積もる。"""
+
+    def delete_released_model(self, model_id: str) -> int:
+        """リリース重みのみを削除し、公開記録は履歴として残す。"""
+
+    # ---- 振り分け（14 章） ----
+
+    def get_routing_state(self) -> RoutingState:
+        """振り分けの現在値と revision を返す。"""
 
     def get_routing(self) -> dict[str, str | None]:
-        """現在の分類振り分けを返す。"""
+        """現在の分類振り分けを返す（本番推論画面のため残す）。"""
 
-    def apply_routing(self, changes: dict[str, str | None]) -> list[RoutingHistory]:
-        """分類振り分けを適用して変更履歴を返す。"""
+    def apply_routing(
+        self, changes: dict[str, str | None], *, expected_revision: int
+    ) -> RoutingState:
+        """全変更を検証してから一括で適用する。revision が違えば ValueError。"""
 
     def list_routing_history(self) -> list[RoutingHistory]:
         """振り分け変更履歴を返す。"""
 
+    def list_routing_classifications(self) -> list[str]:
+        """振り分けの対象となる分類を返す。"""
+
     def resolve_model(self, classification: str | None) -> ReleasedModel | None:
         """分類に有効なリリースモデルを返す。"""
+
+    # ---- 成果物の整理（19 章） ----
+
+    def artifact_cleanup_plan(self, experiment_ids: list[str]) -> list[ArtifactGroup]:
+        """試行・種類ごとに、消せるファイルの数・容量と可否を返す。"""
+
+    def estimate_freed_bytes(self, experiment_ids: list[str], categories: list[str]) -> int:
+        """選んだ種類を整理したときに空く容量を見積もる。"""
+
+    def prune_artifacts(self, experiment_ids: list[str], categories: list[str]) -> PruneResult:
+        """選んだ種類の成果物を消す。条件を満たさないものは skipped に入れる。"""
+
+    def pruned_paths(self, experiment_id: str, attempt: int) -> set[str]:
+        """成果物の整理で削除済みの run_dir 相対パスを返す。"""
 
     def validate_excel_import(self, filename: str) -> dict[str, Any]:
         """Excel 取込ファイルを検証する。"""

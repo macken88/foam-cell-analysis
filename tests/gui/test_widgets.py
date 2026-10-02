@@ -67,7 +67,16 @@ def test_image_view_uses_mouse_anchor_and_scene_center_sync(qtbot):
 def test_chart_accepts_sparse_epoch_x_values_and_highlight(qtbot):
     chart = LineChart()
     qtbot.addWidget(chart)
-    chart.set_series([("mAP", QColor("#2255aa"), [5, 10, 20], [0.7, 0.8, 0.85])])
-    chart.set_highlight("mAP", 20, 0.85)
+    chart.set_series([("AP", QColor("#2255aa"), [5, 10, 20], [0.7, 0.8, 0.85])])
+    chart.set_highlight("AP", 20, 0.85)
     assert chart.series[0][2] == [5, 10, 20]
-    assert chart.highlight == ("mAP", 20, 0.85)
+    assert chart.highlight == ("AP", 20, 0.85)
+
+
+def test_render_stretches_uint16_for_display_and_keeps_uint8():
+    image = np.linspace(1000, 3000, 200 * 10).reshape(200, 10).astype(np.uint16)
+    shown = render(image, None, DisplayMode.IMAGE)
+    assert shown.dtype == np.uint8
+    assert shown.min() == 0 and shown.max() == 255
+    small = np.array([[0, 80], [200, 255]], dtype=np.uint8)
+    assert render(small, None, DisplayMode.IMAGE)[:, :, 0].tolist() == small.tolist()

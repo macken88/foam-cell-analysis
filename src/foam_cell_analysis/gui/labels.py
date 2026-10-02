@@ -139,8 +139,8 @@ _CONFIG_LABELS = {
     "bsize": "学習パッチサイズ",
     "model.nimg_per_epoch": "1エポック当たり画像数",
     "nimg_per_epoch": "1エポック当たり画像数",
-    "model.min_train_masks": "最小マスク数",
-    "min_train_masks": "最小マスク数",
+    "model.min_train_masks": "1画像あたりの最小気泡数",
+    "min_train_masks": "1画像あたりの最小気泡数",
     "model.class_weights": "クラス重み",
     "class_weights": "クラス重み",
     "box_score_thresh": "検出スコア閾値",
@@ -214,6 +214,18 @@ def experiment_status_label(value: str) -> str:
 def candidate_status_label(value: str) -> str:
     """候補状態を画面表示名へ変換する。"""
     return _CANDIDATE_STATUSES.get(value, value)
+
+
+_CONTAMINATION_LABELS = {
+    "none": "なし",
+    "found": "あり（リリース不可）",
+    "unknown": "確認できません",
+}
+
+
+def contamination_label(status: str | None) -> str:
+    """学習混入の検査結果（比較・推論設計 3.4）を「同一画像の混入」の表示へ変換する。"""
+    return _CONTAMINATION_LABELS.get(str(status or "unknown"), "確認できません")
 
 
 def format_score(value: float | None, digits: int = 3) -> str:
@@ -303,3 +315,6 @@ def training_elapsed_text(experiment, now: datetime | None = None) -> str:
     if minutes < 60:
         return f"経過 {minutes} 分"
     return f"経過 {minutes // 60} 時間 {minutes % 60} 分"
+
+
+OOF_NOTE = "OOF AP は交差検証の各 fold モデルによる評価で、final.pt 自身の評価ではありません。"

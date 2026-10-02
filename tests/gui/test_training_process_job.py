@@ -105,3 +105,48 @@ def test_process_job_reports_nonzero_exit_after_go(qtbot, tmp_path):
 
     assert backend.recorded is not None
     assert signal.args[0].returncode == 7
+
+
+def test_process_job_ignores_non_json_after_hello_and_fails_on_missing_envelope(qtbot, tmp_path):
+    code = (
+        "import json, os, sys, time\n"
+        "print(json.dumps({'v':1,'run_id':'exp_test/attempt_001','time':time.time(),"
+        "'type':'hello','pid':os.getpid()}), flush=True)\n"
+        "sys.stdin.readline()\n"
+        "print('Downloading weights...', flush=True)\n"
+        "print(json.dumps({'v':1,'run_id':'exp_test/attempt_001','time':time.time(),"
+        "'seq':1,'type':'started'}), flush=True)\n"
+        "print(json.dumps({'v':1,'run_id':'exp_test/attempt_001','type':'epoch'}), flush=True)\n"
+        "time.sleep(5)\n"
+    )
+    prepared = _prepared(tmp_path, code)
+    job = ProcessTrainingJob(prepared, ProcessRecorder())
+    received = []
+    job.event_received.connect(received.append)
+
+    with qtbot.waitSignal(job.finished, timeout=4000) as signal:
+        job.start()
+
+    outcome = signal.args[0]
+    assert [event["type"] for event in received] == ["started"]
+    assert outcome.protocol_error and not outcome.start_failed
+    assert "プロトコルエラー" in outcome.message
+    assert b"Downloading weights..." in (Path(prepared.run_dir) / "stdout.log").read_bytes()
+
+
+def test_process_job_rejects_hello_from_another_process(qtbot, tmp_path):
+    code = (
+        "import json, os, sys, time\n"
+        "print(json.dumps({'v':1,'run_id':'exp_test/attempt_001','time':time.time(),"
+        "'type':'hello','pid':os.getpid() + 1000003}), flush=True)\n"
+        "sys.stdin.readline()\n"
+    )
+    backend = ProcessRecorder()
+    job = ProcessTrainingJob(_prepared(tmp_path, code), backend)
+
+    with qtbot.waitSignal(job.finished, timeout=4000) as signal:
+        job.start()
+
+    assert signal.args[0].start_failed
+    assert "PID" in signal.args[0].message
+    assert backend.recorded is None

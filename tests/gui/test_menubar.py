@@ -105,7 +105,7 @@ def test_menu_action_uses_same_operation_and_shortcut_display_tracks_changes(she
     assert page.items[0].quality == previous
 
     data_menu = _menu(window, "データセット")
-    auto = _find_action(data_menu, "自動振り分け…")
+    auto = _find_action(data_menu, "自動振り分け")
     assert auto.text().endswith("Ctrl+D")
     assert auto.shortcut().isEmpty()
     shell.ctx.shortcuts.assign("auto_triage", "Ctrl+Alt+D")
@@ -133,10 +133,10 @@ def test_tab_tools_inactive_action_reason_and_candidate_release_reason(shell):
 
     shell.navigate(PageId.CANDIDATES)
     comparison_window = shell.manager.window(ModeId.COMPARISON)
-    release = _find_action(_menu(comparison_window, "候補"), "選択候補をリリース…")
+    release = _find_action(_menu(comparison_window, "候補"), "選択候補を採用")
     candidates = shell.page(PageId.CANDIDATES)
     assert not release.isEnabled()
-    assert candidates.release_reason.text() == "評価済みの候補を 1 つ選ぶとリリースできます"
+    assert candidates.release_reason.text() == "採用する候補を 1 件選択してください"
     assert release.toolTip() == candidates.release_reason.text()
 
 
@@ -163,11 +163,11 @@ def test_toolbar_menus_follow_current_data_and_share_home_tool_names(shell, monk
 
     data_tools = _menu(data_window, "ツール")
     assert [action.text().split("\t", 1)[0] for action in data_tools.actions()] == [
-        "キー割り当て…",
+        "キー割り当て",
         "原画像と切り替える表示",
     ]
     assert not any(
-        action.text() == "キー割り当て…" for action in data_tools.actions()[1].menu().actions()
+        action.text() == "キー割り当て" for action in data_tools.actions()[1].menu().actions()
     )
 
     home_tools = shell.home.menuBar().actions()[1].menu()
@@ -187,7 +187,7 @@ def test_training_menu_groups_column_names_and_dynamic_experiment_filter(shell):
         action.text().split("\t", 1)[0] for action in learning.actions() if not action.isSeparator()
     ]
     assert "複製" in edit_labels and "削除" in edit_labels
-    assert "設定を開いて編集…" in edit_labels
+    assert "設定を開いて編集" in edit_labels
     assert "複製" not in learning_labels
     assert "▶ キューをすべて実行" in learning_labels
     assert "設定を検証" in learning_labels
@@ -315,7 +315,7 @@ def test_archive_menu_action_records_archive_for_latest_versions(shell, monkeypa
         for action in window.menuBar().actions()
         if action.text().startswith("ファイル")
     )
-    action = next(action for action in file_menu.actions() if action.text() == "アーカイブを作成…")
+    action = next(action for action in file_menu.actions() if action.text() == "アーカイブを作成")
     assert action.isEnabled()
     action.trigger()
     latest = {}
@@ -334,9 +334,7 @@ def test_mask_import_menu_action_adds_revision_to_selected_item(shell):
         for action in window.menuBar().actions()
         if action.text().startswith("ファイル")
     )
-    action = next(
-        action for action in file_menu.actions() if action.text() == "新しいマスク版を取り込む…"
-    )
+    action = next(action for action in file_menu.actions() if action.text() == "正解ラベル版を追加")
     assert action.isEnabled()
     action.trigger()
     assert len(item.mask_revisions) == previous_revisions + 1
@@ -414,7 +412,7 @@ def test_returning_to_data_page_restores_menu_tooltip(shell, qapp):
     shell.navigate(PageId.DATA_PREPARATION)
     data = shell.page(PageId.DATA_PREPARATION)
     window = shell.manager.window(ModeId.DATA_PREPARATION)
-    import_action = _menu_action(window, "ファイル", "画像を取り込む…")
+    import_action = _menu_action(window, "ファイル", "画像を取り込む")
     original_tooltip = import_action.toolTip()
     assert original_tooltip != ""
 

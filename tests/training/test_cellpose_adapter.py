@@ -414,3 +414,71 @@ def test_cellpose_model_train_save_reload_and_infer_without_pretrained_cache(
     assert list(local_model_cache.iterdir()) == []
     del restored
     gc.collect()
+
+
+def _recording_model():
+    class Net:
+        def eval(self):
+            pass
+
+        def train(self):
+            pass
+
+    class Model:
+        def __init__(self):
+            self.net = Net()
+            self.kwargs = None
+
+        def eval(self, images, **kwargs):
+            self.kwargs = kwargs
+            return [np.zeros(image.shape[:2], dtype=np.uint16) for image in images], None, None
+
+    return Model()
+
+
+def test_default_eval_params_equal_previous_hardcoded_values():
+    assert cellpose_module.DEFAULT_EVAL_PARAMS == {
+        "flow_threshold": 0.4,
+        "cellprob_threshold": 0.0,
+        "min_size": 15,
+        "max_size_fraction": 0.4,
+    }
+    assert CellposeAdapter().eval_params == cellpose_module.DEFAULT_EVAL_PARAMS
+
+
+def test_predict_passes_configured_eval_params():
+    adapter = CellposeAdapter()
+    adapter.model = _recording_model()
+    adapter.eval_params = cellpose_module.DEFAULT_EVAL_PARAMS | {
+        "flow_threshold": 0.7,
+        "cellprob_threshold": -1.5,
+    }
+    adapter.predict([np.zeros((8, 8, 3), dtype=np.float32)])
+
+    kwargs = adapter.model.kwargs
+    assert kwargs["flow_threshold"] == 0.7
+    assert kwargs["cellprob_threshold"] == -1.5
+    assert kwargs["min_size"] == 15
+    assert kwargs["max_size_fraction"] == 0.4
+    assert kwargs["bsize"] == 256
+
+
+def test_build_for_inference_accepts_eval_params_and_keeps_old_signature(tmp_path, monkeypatch):
+    models = pytest.importorskip("cellpose.models")
+    checkpoint = tmp_path / "final.pt"
+    checkpoint.write_bytes(b"weights")
+
+    class FakeCellposeModel:
+        def __init__(self, *, pretrained_model, device, use_bfloat16):
+            self.net = SimpleNamespace(backbone="sam_vitl")
+
+    monkeypatch.setattr(models, "CellposeModel", FakeCellposeModel)
+
+    plain = cellpose_module.build_for_inference(checkpoint, "cpu")
+    tuned = cellpose_module.build_for_inference(
+        checkpoint, "cpu", eval_params={"flow_threshold": 0.9}
+    )
+
+    assert plain.eval_params == cellpose_module.DEFAULT_EVAL_PARAMS
+    assert tuned.eval_params["flow_threshold"] == 0.9
+    assert tuned.eval_params["min_size"] == 15

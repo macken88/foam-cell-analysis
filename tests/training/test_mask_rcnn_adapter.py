@@ -333,3 +333,32 @@ def test_resnet101_coco_combination_is_rejected(monkeypatch):
     _stub_torchvision(monkeypatch)
     with pytest.raises(ValueError, match="ResNet101 と COCO"):
         MaskRCNNAdapter().build(_config(backbone="resnet101_fpn", pretrained="coco"), "cpu")
+
+
+def test_eval_params_reach_model_kwargs_and_labelization(monkeypatch, tmp_path):
+    _parts, calls = _stub_torchvision(monkeypatch)
+    config = _config(pretrained="coco")
+    config["eval_params"] = {
+        "box_score_thresh": 0.31,
+        "box_nms_thresh": 0.42,
+        "box_detections_per_img": 77,
+        "mask_thresh": 0.8,
+    }
+    checkpoint = tmp_path / "final.pt"
+    torch.save({"layer.weight": torch.zeros(2, 2)}, checkpoint)
+
+    restored = build_for_inference(config, checkpoint, "cpu")
+
+    kwargs = calls["v2"]
+    assert kwargs["box_score_thresh"] == pytest.approx(0.31)
+    assert kwargs["box_nms_thresh"] == pytest.approx(0.42)
+    assert kwargs["box_detections_per_img"] == 77
+    # 事前学習済み重みは取得しない
+    assert kwargs["weights"] is None
+    assert kwargs["weights_backbone"] is None
+    assert restored.eval_params["mask_thresh"] == 0.8
+
+    masks = torch.tensor([[[[0.6, 0.9]]]], dtype=torch.float32)
+    prediction = {"masks": masks, "scores": torch.tensor([0.9]), "labels": torch.tensor([1])}
+    labels = _predictions_to_labels(prediction, restored.eval_params)
+    assert labels.tolist() == [[0, 1]]

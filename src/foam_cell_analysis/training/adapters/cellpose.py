@@ -11,11 +11,18 @@ from typing import Any
 import numpy as np
 
 from foam_cell_analysis.training.adapters.base import Sample
+from foam_cell_analysis.training.preprocessing import to_model_channels
 from foam_cell_analysis.training.schedule import learning_rate
 
 FLOW_CACHE_BYTES = 2 * 1024**3
 LIMIT_PIXELS = 16_777_216
 PATCH_SIZE = 256
+DEFAULT_EVAL_PARAMS: dict[str, Any] = {
+    "flow_threshold": 0.4,
+    "cellprob_threshold": 0.0,
+    "min_size": 15,
+    "max_size_fraction": 0.4,
+}
 PRETRAINED_MODELS = {"cpsam", "cpsam_v2"}
 GEOMETRIC_TRANSFORMS = {
     "horizontal_flip",
@@ -123,6 +130,7 @@ class CellposeAdapter:
         self.optimizer = None
         self.device = None
         self.model_config: dict[str, Any] = {}
+        self.eval_params: dict[str, Any] = dict(DEFAULT_EVAL_PARAMS)
         self._batch_size = 1
         self._flow_cache_limit = max(0, int(flow_cache_bytes))
         self._flow_cache_ceiling = self._flow_cache_limit
@@ -166,6 +174,7 @@ class CellposeAdapter:
         self.model = model
         self.device = device
         self.model_config = dict(model_config)
+        self.eval_params = DEFAULT_EVAL_PARAMS | dict(model_config.get("eval_params") or {})
         self._shared_array_cache = self.model_config.get("_shared_array_cache")
         dataset_cache_bytes = max(0, int(self.model_config.get("_dataset_cache_bytes", 0)))
         self._flow_cache_limit = min(
@@ -256,8 +265,7 @@ class CellposeAdapter:
         if image.ndim != 2 or labels.ndim != 2 or image.shape != labels.shape:
             raise ValueError("Cellpose の画像とラベルは同じ 2 次元サイズが必要です")
         if not training:
-            channels = np.stack((image, np.zeros_like(image), np.zeros_like(image)), axis=-1)
-            return Sample(sample.item_id, channels.astype(np.float32, copy=False), labels.copy())
+            return Sample(sample.item_id, to_model_channels(image, "cellpose"), labels.copy())
 
         scale_range = float(self.model_config.get("scale_range", 0.5))
         height, width = scaled_shape(*image.shape, scale_range, rng)
@@ -342,10 +350,10 @@ class CellposeAdapter:
                 images,
                 channel_axis=2,
                 normalize=False,
-                flow_threshold=0.4,
-                cellprob_threshold=0.0,
-                min_size=15,
-                max_size_fraction=0.4,
+                flow_threshold=float(self.eval_params["flow_threshold"]),
+                cellprob_threshold=float(self.eval_params["cellprob_threshold"]),
+                min_size=int(self.eval_params["min_size"]),
+                max_size_fraction=float(self.eval_params["max_size_fraction"]),
                 bsize=PATCH_SIZE,
             )
             masks = result[0]
@@ -365,8 +373,15 @@ class CellposeAdapter:
         return sum(value.numel() * value.element_size() for value in self.state_dict().values())
 
 
-def build_for_inference(weights_path: str | Path, device: Any = "cpu") -> CellposeAdapter:
-    """事前学習済みファイルに触れず、保存済み Cellpose state_dict を開く。"""
+def build_for_inference(
+    weights_path: str | Path,
+    device: Any = "cpu",
+    eval_params: dict[str, Any] | None = None,
+) -> CellposeAdapter:
+    """事前学習済みファイルに触れず、保存済み Cellpose state_dict を開く。
+
+    eval_params は既定値へ上書きする評価パラメータ（省略時は学習時と同じ既定値）。
+    """
     import torch
     from cellpose.models import CellposeModel
 
@@ -377,4 +392,5 @@ def build_for_inference(weights_path: str | Path, device: Any = "cpu") -> Cellpo
     adapter = CellposeAdapter()
     adapter.model = model
     adapter.device = device
+    adapter.eval_params = DEFAULT_EVAL_PARAMS | dict(eval_params or {})
     return adapter

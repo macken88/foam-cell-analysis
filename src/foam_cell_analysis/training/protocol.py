@@ -1,11 +1,21 @@
-"""学習プロセスとの JSON / JSONL プロトコル。torch を読み込まない。"""
+"""学習プロセスとの JSON / JSONL プロトコル。torch を読み込まない。
+
+イベント外形・JSON Lines・原子的な書き込みは ``jobs/protocol.py`` と共有する。
+既存の import を保つため、共通の名前をここから再公開する。
+"""
 
 from __future__ import annotations
 
-import json
-import os
 from pathlib import Path
 from typing import Any
+
+from foam_cell_analysis.jobs.protocol import (
+    ENVELOPE_FIELDS,
+    append_jsonl,
+    atomic_write_json,
+    read_json,
+    read_jsonl_events,
+)
 
 EVENT_FIELDS: dict[str, set[str]] = {
     "started": {"device", "versions", "version_mismatches"},
@@ -43,7 +53,7 @@ def validate_event(event: dict[str, Any], *, allow_hello: bool = True) -> None:
         return
     if kind not in EVENT_FIELDS:
         raise ValueError(f"未対応イベントです: {kind}")
-    required = {"v", "run_id", "seq", "time", "type"} | EVENT_FIELDS[kind]
+    required = set(ENVELOPE_FIELDS) | EVENT_FIELDS[kind]
     missing = required - event.keys()
     if missing:
         raise ValueError(f"イベント必須項目がありません: {', '.join(sorted(missing))}")
@@ -55,61 +65,17 @@ def validate_event(event: dict[str, Any], *, allow_hello: bool = True) -> None:
 
 def read_events(path: str | Path, *, expected_run_id: str | None = None) -> list[dict[str, Any]]:
     """JSONL を読み、切れた最終行を無視し seq の重複・欠落を検出する。"""
-    raw = Path(path).read_bytes()
-    lines = raw.splitlines(keepends=True)
-    events = []
-    for index, line in enumerate(lines):
-        if not line.endswith((b"\n", b"\r")):
-            if index == len(lines) - 1:
-                break
-            raise ValueError(f"events.jsonl の途中に未完了行があります: {index + 1}")
-        try:
-            event = json.loads(line)
-        except (UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise ValueError(f"events.jsonl の JSON が壊れています: {index + 1}") from error
-        if not isinstance(event, dict):
-            raise ValueError(f"イベントは JSON object である必要があります: {index + 1}")
-        validate_event(event, allow_hello=False)
-        if expected_run_id is not None and event["run_id"] != expected_run_id:
-            raise ValueError("events.jsonl の run_id が一致しません")
-        expected_seq = len(events) + 1
-        if event["seq"] != expected_seq:
-            kind = "重複" if event["seq"] < expected_seq else "欠落"
-            raise ValueError(f"events.jsonl の seq に{kind}があります: {event['seq']}")
-        events.append(event)
-    return events
+    return read_jsonl_events(
+        path,
+        validate=lambda event: validate_event(event, allow_hello=False),
+        expected_run_id=expected_run_id,
+    )
 
 
 def append_event(path: str | Path, event: dict[str, Any]) -> None:
     """検証済みイベントを追記し、ディスクへ flush する。"""
     validate_event(event, allow_hello=False)
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with target.open("a", encoding="utf-8", newline="\n") as stream:
-        stream.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
-        stream.flush()
-        os.fsync(stream.fileno())
-
-
-def atomic_write_json(path: str | Path, value: dict[str, Any]) -> None:
-    """同じフォルダの一時ファイルから原子的に JSON を置き換える。"""
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(target.name + ".tmp")
-    with temporary.open("w", encoding="utf-8", newline="\n") as stream:
-        json.dump(value, stream, ensure_ascii=False, indent=2)
-        stream.write("\n")
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temporary, target)
-
-
-def read_json(path: str | Path) -> dict[str, Any]:
-    """JSON object を読む。"""
-    value = json.loads(Path(path).read_text(encoding="utf-8"))
-    if not isinstance(value, dict):
-        raise ValueError(f"JSON のトップレベルは object である必要があります: {path}")
-    return value
+    append_jsonl(path, event)
 
 
 def _read_run_file(run_dir: str | Path, name: str) -> dict[str, Any]:

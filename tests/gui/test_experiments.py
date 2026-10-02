@@ -31,6 +31,8 @@ def test_send_completed_experiment_transitions_with_candidate_parameters(shell, 
     assert received[-1][1]["action"] == "add_candidate"
     assert received[-1][1]["experiment_id"] == "exp_0042"
     assert received[-1][1]["checkpoint"] == "final.pt"
+    experiment = shell.ctx.backend.get_experiment("exp_0042")
+    assert received[-1][1]["attempt"] == len(experiment.runs)
 
 
 def test_compare_dialog_has_one_value_column_per_experiment(mock_backend):
@@ -151,13 +153,13 @@ def test_stopped_experiment_menu_offers_retry_first_and_deletes_after_confirmati
     items = [action for action in menu.actions() if not action.isSeparator()]
     assert items[0].text() == "同じ設定でやり直す"
     assert items[0].isEnabled()
-    delete = _action(menu, "実験を削除…")
+    delete = _action(menu, "実験を削除")
     assert not delete.isEnabled()
     assert "比較候補 RC-009 がこの実験を参照しています" in delete.toolTip()
 
     backend.reject_candidate("RC-009")
     menu = _open_row_menu(page, row, monkeypatch)
-    delete = _action(menu, "実験を削除…")
+    delete = _action(menu, "実験を削除")
     assert delete.isEnabled()
     prompts = []
     monkeypatch.setattr(
@@ -243,3 +245,21 @@ def test_experiment_queue_copy_refreshes_open_training_identifier(shell, monkeyp
     assert queued.experiment_id == stale
     assert training.experiment_id.text() != queued.experiment_id
     assert training.experiment_id.text() == shell.ctx.backend.next_experiment_id()
+
+
+def test_send_is_disabled_when_final_model_was_pruned(shell):
+    backend = shell.ctx.backend
+    experiment = backend.get_experiment("exp_0042")
+    for run in experiment.runs:
+        backend._pruned.setdefault(("exp_0042", run.attempt), set()).add("final")
+    shell.navigate(PageId.EXPERIMENTS)
+    page = shell.page(PageId.EXPERIMENTS)
+    target_row = next(
+        row for row in range(page.table.rowCount()) if page.table.item(row, 1).text() == "exp_0042"
+    )
+    rect = page.table.visualItemRect(page.table.item(target_row, 1))
+    QTest.mouseClick(page.table.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
+
+    assert not page.button_map["send"].isEnabled()
+    assert page.action_map["send"].toolTip() == "最終学習モデルは成果物の整理で削除されています"
+    assert page.send_selected() is None

@@ -195,6 +195,30 @@ class KeyHintBar(QWidget):
             group.setVisible(index in visible)
 
 
+DISPLAY_MODE_LABELS = {
+    "neutral": {
+        "オーバーレイ": "重ねて表示",
+        "インスタンスラベル": "色分け表示",
+        "二値マスク": "白黒表示",
+    },
+    "ground_truth": {
+        "オーバーレイ": "正解ラベルを重ねて表示",
+        "インスタンスラベル": "正解ラベル画像",
+        "二値マスク": "白黒の正解ラベル画像",
+    },
+    "prediction": {
+        "オーバーレイ": "抽出結果を重ねて表示",
+        "インスタンスラベル": "気泡ごとの抽出結果",
+        "二値マスク": "白黒の抽出結果",
+    },
+}
+
+
+def display_mode_label(name: str, scope: str = "neutral") -> str:
+    """内部表示モード値を、画面の文脈に合わせた名称にする。"""
+    return DISPLAY_MODE_LABELS.get(scope, DISPLAY_MODE_LABELS["neutral"]).get(name, name)
+
+
 class DisplayToggle(QWidget):
     """原画像と設定済み表示を切り替える二択ボタン。
 
@@ -204,16 +228,17 @@ class DisplayToggle(QWidget):
 
     alternate_selected = Signal(bool)
 
-    def __init__(self, preference, parent=None) -> None:
+    def __init__(self, preference, parent=None, *, label_scope: str = "prediction") -> None:
         super().__init__(parent)
         self.preference = preference
+        self.label_scope = label_scope
         self.group = QButtonGroup(self)
         self.group.setExclusive(True)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         self.raw_button = QPushButton("原画像")
-        self.alternate_button = QPushButton(preference.value)
+        self.alternate_button = QPushButton(display_mode_label(preference.value, self.label_scope))
         for button in (self.raw_button, self.alternate_button):
             button.setCheckable(True)
             set_style(button, role="segment")
@@ -246,4 +271,4 @@ class DisplayToggle(QWidget):
 
     def _preference_changed(self, name: str) -> None:
         """共有設定の変更をボタン名へ反映する。"""
-        self.alternate_button.setText(name)
+        self.alternate_button.setText(display_mode_label(name, self.label_scope))

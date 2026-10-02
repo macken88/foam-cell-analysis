@@ -21,12 +21,17 @@ class PreparedRun:
 
 @dataclass
 class JobExit:
-    """学習プロセス終了時の補助情報。"""
+    """学習・評価プロセス終了時の補助情報。
+
+    protocol_error は hello 以降に外形の欠けたイベントを受け取ったことを表す
+    （比較・推論設計 7.4。終端判定ではエラーとして扱う）。
+    """
 
     returncode: int | None = None
     start_failed: bool = False
     process_alive: bool = False
     message: str = ""
+    protocol_error: bool = False
 
 
 @dataclass
@@ -63,6 +68,35 @@ class CandidateSnapshot:
     checkpoint_path: str
     oof_evaluation: dict[str, Any] = field(default_factory=dict)
     experiment_config: dict[str, Any] = field(default_factory=dict)
+    weights_size: int | None = None
+    weights_sha256: str | None = None
+    training_eval_params: dict[str, Any] = field(default_factory=dict)
+    preprocessing: dict[str, Any] = field(default_factory=dict)
+    training_dataset: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ArtifactGroup:
+    """成果物の整理で扱う、試行ごと・種類ごとのファイルのまとまり。"""
+
+    experiment_id: str
+    attempt: int
+    category: str
+    n_files: int
+    size_bytes: int
+    deletable: bool
+    reason: str = ""
+    # 他の種類（または試行の外）とハードリンクで実体を共有し、このまとまりだけ消しても空かない容量
+    shared_bytes: int = 0
+
+
+@dataclass
+class PruneResult:
+    """成果物の整理の結果。条件を満たさず消さなかったまとまりは skipped に入る。"""
+
+    freed_bytes: int
+    n_files: int
+    skipped: list[ArtifactGroup] = field(default_factory=list)
 
 
 @dataclass
@@ -316,6 +350,8 @@ class Evaluation:
 
     overall_map: float
     per_class: dict[str, tuple[float, int]]
+    # 全体の対象画像数（比較・評価設計 9.2。旧データでは 0）
+    n_images: int = 0
 
 
 @dataclass
@@ -347,6 +383,20 @@ class Candidate:
     source_attempt_number: int = 1
     checkpoint_reference: str = ""
     snapshot: CandidateSnapshot | None = None
+    # 学習時 OOF AP をこの候補と比べられるか（matching / different / unknown。比較・評価設計 6 章）
+    oof_applicability: str = ""
+    oof_reason: str = ""
+    released_model_id: str | None = None
+    # 候補に固定した検証用データセットの版（学習用の版の組。None は組を確認できていない旧候補）
+    validation_version: str | None = None
+    # validation_version が None のときの理由（評価・リリースできない理由として表示する）
+    pairing_issue: str = ""
+    # 元の試行の学習用データセットの版
+    training_version: str = ""
+    # 推論で実際に使う値の全体（比較・評価設計 5.2）
+    effective_params: dict[str, Any] = field(default_factory=dict)
+    # 採用している評価に対する最新の外部解析の集計（9.4。なければ None）
+    external_summary: dict[str, Any] | None = None
 
 
 @dataclass
@@ -365,6 +415,78 @@ class ReleasedModel:
     oof_evaluation: Evaluation | None = None
     comment: str = ""
     source_attempt_number: int = 1
+    model_type: str = ""
+    inference_config_id: str = ""
+    # 学習時 OOF AP の適用可否（matching / different / unknown。空は記録なし）
+    oof_applicability: str = ""
+    oof_reason: str = ""
+    # リリースに使った評価と、その評価に対する最新の外部解析の集計（なければ None）
+    evaluation_id: str = ""
+    external_summary: dict[str, Any] | None = None
+    lifecycle_status: str = "active"
+    releasable: bool = True
+
+
+@dataclass
+class EvaluationRecord:
+    """比較候補の 1 回分の評価（eval_NNN）の読み取り結果。
+
+    contamination は旧形式（schema 1）の評価にだけある学習混入の検査結果。
+    現行形式（schema 2）の評価では空。
+    """
+
+    evaluation_id: str
+    candidate_id: str
+    validation_version: str
+    status: str
+    evaluation: Evaluation | None = None
+    contamination: dict[str, Any] = field(default_factory=dict)
+    completed_at: str | None = None
+    broken: bool = False
+    input_fingerprint: str | None = None
+    schema: int | None = None
+
+    @property
+    def contamination_found(self) -> bool:
+        """旧形式の評価で、学習データと同じ画像が見つかっていたか（リリースに使えない）。"""
+        return self.contamination.get("status") == "found"
+
+
+@dataclass
+class EvaluationOutcome:
+    """確定した評価 1 件の結果（EvaluationRunner.ended で通知する）。
+
+    evaluation_id は準備に失敗した・開始前に取り消したときは None。
+    reason は stopped / failed の理由（user_stop、app_exit、interrupted、error、
+    start_failed、prepare_failed、cancelled、conclusion_failed など）。
+    """
+
+    candidate_id: str
+    evaluation_id: str | None
+    status: str
+    message: str = ""
+    reason: str | None = None
+    validation_version: str = ""
+
+
+@dataclass
+class EvaluationProgress:
+    """実行中の評価の進み具合（画面表示用。保存しない）。"""
+
+    candidate_id: str
+    evaluation_id: str
+    validation_version: str
+    completed: int = 0
+    total: int = 0
+    phase: str = "starting"
+
+
+@dataclass
+class RoutingState:
+    """振り分けの現在値と、楽観的排他に使う revision。"""
+
+    revision: int
+    assignments: dict[str, str | None] = field(default_factory=dict)
 
 
 @dataclass

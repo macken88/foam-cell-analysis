@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import ctypes
 import hashlib
 import importlib.util
 import json
@@ -23,7 +22,16 @@ from typing import Any
 import yaml
 
 from foam_cell_analysis.data.dataset_store import DatasetStore
+from foam_cell_analysis.jobs.lifecycle import (
+    decide_terminal_state,
+    process_alive,
+    process_created_at,
+    terminate_process,
+    windows_process_handle,
+)
+from foam_cell_analysis.jobs.protocol import classify_seq
 from foam_cell_analysis.services.models import (
+    ArtifactGroup,
     AugmentationProfile,
     CandidateSnapshot,
     Experiment,
@@ -31,6 +39,7 @@ from foam_cell_analysis.services.models import (
     ExperimentDeletionInfo,
     JobExit,
     PreparedRun,
+    PruneResult,
     RunAttempt,
     TrainingOutcome,
 )
@@ -50,101 +59,11 @@ from foam_cell_analysis.training.seeds import derive
 logger = logging.getLogger(__name__)
 
 
-def _process_created_at(process: dict[str, Any]) -> float | None:
-    """process.json の作成時刻を Unix 秒へ変換する。"""
-    for key in ("creation_time", "create_time", "created_at", "process_created_at"):
-        value = process.get(key)
-        if isinstance(value, (int, float)):
-            return float(value)
-        if isinstance(value, str):
-            try:
-                return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
-            except ValueError:
-                continue
-    return None
-
-
-def _windows_process_handle(pid: int) -> tuple[Any, float] | None:
-    """PID と作成時刻を照合し、生存中の Windows プロセスハンドルを返す。"""
-    if os.name != "nt":
-        return None
-
-    class FileTime(ctypes.Structure):
-        _fields_ = [("low", ctypes.c_uint32), ("high", ctypes.c_uint32)]
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.OpenProcess.restype = ctypes.c_void_p
-    kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
-    kernel32.GetProcessTimes.argtypes = [
-        ctypes.c_void_p,
-        ctypes.POINTER(FileTime),
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-    ]
-    kernel32.GetProcessTimes.restype = ctypes.c_int
-    kernel32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
-    kernel32.GetExitCodeProcess.restype = ctypes.c_int
-    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
-    kernel32.CloseHandle.restype = ctypes.c_int
-    handle = kernel32.OpenProcess(0x1000, False, pid)
-    if not handle:
-        return None
-    created = FileTime()
-    exit_code = ctypes.c_uint32()
-    if not kernel32.GetProcessTimes(handle, ctypes.byref(created), None, None, None):
-        kernel32.CloseHandle(handle)
-        return None
-    if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)) or exit_code.value != 259:
-        kernel32.CloseHandle(handle)
-        return None
-    windows_ticks = (created.high << 32) | created.low
-    created_at = windows_ticks / 10_000_000 - 11_644_473_600
-    return handle, created_at
-
-
-def _default_process_alive(process: dict[str, Any]) -> bool:
-    """保存 PID と作成時刻が一致する Windows プロセスだけを生存扱いする。"""
-    try:
-        pid = int(process["pid"])
-    except (KeyError, TypeError, ValueError):
-        return False
-    expected_created = _process_created_at(process)
-    if expected_created is None:
-        return False
-    identity = _windows_process_handle(pid)
-    if identity is None:
-        return False
-    handle, actual_created = identity
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
-    kernel32.CloseHandle.restype = ctypes.c_int
-    kernel32.CloseHandle(handle)
-    return abs(expected_created - actual_created) <= 2.0
-
-
-def _default_terminate_process(process: dict[str, Any]) -> None:
-    """PID と作成時刻が一致するプロセスを終了して待機する。"""
-    try:
-        pid = int(process["pid"])
-    except (KeyError, TypeError, ValueError):
-        return
-    expected_created = _process_created_at(process)
-    identity = _windows_process_handle(pid) if expected_created is not None else None
-    if identity is None:
-        return
-    handle, actual_created = identity
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.TerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
-    kernel32.TerminateProcess.restype = ctypes.c_int
-    kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
-    kernel32.WaitForSingleObject.restype = ctypes.c_uint32
-    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
-    kernel32.CloseHandle.restype = ctypes.c_int
-    if abs(expected_created - actual_created) <= 2.0:
-        kernel32.TerminateProcess(handle, 1)
-        kernel32.WaitForSingleObject(handle, 5000)
-    kernel32.CloseHandle(handle)
+# 旧名の互換（プロセス照合は jobs/lifecycle.py へ移した）
+_process_created_at = process_created_at
+_windows_process_handle = windows_process_handle
+_default_process_alive = process_alive
+_default_terminate_process = terminate_process
 
 
 class TrainingService:
@@ -1028,9 +947,10 @@ class TrainingService:
             return self.experiments[experiment_id]
         key = (experiment_id, attempt)
         last_seq = self._last_event_seq.get(key, 0)
-        if event["seq"] <= last_seq:
+        seq_state = classify_seq(last_seq, event["seq"])
+        if seq_state == "duplicate":
             return self.experiments[experiment_id]
-        if event["seq"] > last_seq + 1:
+        if seq_state == "gap":
             self._replay_attempt(experiment_id, attempt)
             last_seq = self._last_event_seq.get(key, 0)
             if event["seq"] <= last_seq:
@@ -1261,43 +1181,35 @@ class TrainingService:
         directory = self.root / experiment_id / "runs" / f"attempt_{attempt:03d}"
         spec = read_run_spec(directory)
         status_path = directory / "status.json"
-        had_status = status_path.exists()
-        if had_status:
-            state = read_json(status_path)
-            outcome = TrainingOutcome(
-                experiment_id,
-                attempt,
-                spec.get("queue_id"),
-                state["status"],
-                state.get("reason"),
-                state.get("message", ""),
-            )
-        elif (directory / "stop_request.json").exists():
-            request = read_json(directory / "stop_request.json")
-            outcome = TrainingOutcome(
-                experiment_id, attempt, spec.get("queue_id"), "stopped", request["reason"]
-            )
-        elif self._valid_result(directory):
-            outcome = TrainingOutcome(experiment_id, attempt, spec.get("queue_id"), "completed")
-        elif (directory / "error.json").exists() or (job_exit and job_exit.start_failed):
-            reason = "start_failed" if job_exit and job_exit.start_failed else "error"
-            message = (
-                job_exit.message
-                if reason == "start_failed"
-                else read_json(directory / "error.json").get("message", "")
-            )
-            outcome = TrainingOutcome(
-                experiment_id, attempt, spec.get("queue_id"), "failed", reason, message
-            )
-        elif not (job_exit and job_exit.process_alive) and not self.process_alive(
-            read_json(directory / "process.json") if (directory / "process.json").exists() else {}
+        stop_path = directory / "stop_request.json"
+        error_path = directory / "error.json"
+        process_path = directory / "process.json"
+        protocol_error = bool(job_exit and job_exit.protocol_error)
+        decision = decide_terminal_state(
+            existing_status=read_json(status_path) if status_path.exists() else None,
+            stop_request=read_json(stop_path) if stop_path.exists() else None,
+            result_valid=lambda: self._valid_result(directory),
+            error_present=lambda: error_path.exists() or protocol_error,
+            start_failed=bool(job_exit and job_exit.start_failed),
+            process_alive=lambda: (
+                bool(job_exit and job_exit.process_alive)
+                or self.process_alive(read_json(process_path) if process_path.exists() else {})
+            ),
+        )
+        queue_id = spec.get("queue_id")
+        if decision is None:
+            return TrainingOutcome(experiment_id, attempt, queue_id, "running")
+        had_status = decision.source == "existing"
+        message = decision.message
+        if decision.source == "start_failed" or (
+            decision.source == "error" and not error_path.exists()
         ):
-            outcome = TrainingOutcome(
-                experiment_id, attempt, spec.get("queue_id"), "stopped", "interrupted"
-            )
-        else:
-            outcome = TrainingOutcome(experiment_id, attempt, spec.get("queue_id"), "running")
-            return outcome
+            message = job_exit.message
+        elif decision.source == "error":
+            message = read_json(error_path).get("message", "")
+        outcome = TrainingOutcome(
+            experiment_id, attempt, queue_id, decision.status, decision.reason, message
+        )
         if not had_status:
             write_status(
                 directory,
@@ -1369,6 +1281,20 @@ class TrainingService:
                 row["attempt"], row["state"] = found
             elif row["state"] == "running":
                 row.update(state="queued", attempt=None)
+        for experiment_dir in sorted(self.root.glob("exp_*")):
+            # リンク（ジャンクション含む）の試行フォルダは _attempt_dirs が除外する
+            try:
+                attempt_dirs = self._attempt_dirs(experiment_dir.name)
+            except ValueError:
+                continue
+            for _attempt, attempt_dir in attempt_dirs:
+                pruned_path = attempt_dir / "pruned.json"
+                if not pruned_path.is_file():
+                    continue
+                try:
+                    self._finish_pruning(attempt_dir)
+                except (OSError, ValueError):
+                    logger.exception("成果物の整理を再開できませんでした: %s", pruned_path)
         for path in self.root.glob("exp_*/runs/.preparing_*"):
             shutil.rmtree(path, ignore_errors=True)
         for storage_root in (self.root, self.workspace_root / "augmentation"):
@@ -1452,33 +1378,457 @@ class TrainingService:
             if experiment_id in self.experiments:
                 self._replay_attempt(experiment_id, int(run_dir.name[-3:]))
 
-    def create_candidate_snapshot(self, experiment_id: str) -> CandidateSnapshot:
-        """完了した試行の final.pt・実測 OOF・設定を固定して束ねる。"""
+    def create_candidate_snapshot(
+        self, experiment_id: str, *, attempt: int | None = None
+    ) -> CandidateSnapshot:
+        """完了した試行の final.pt・実測 OOF・設定を固定して束ねる。
+
+        attempt を省くと最新の完了試行を使う（従来の呼び出し元との互換のため）。
+        """
         experiment = self.experiments[experiment_id]
-        completed_runs = [run for run in experiment.runs if run.result == "completed"]
-        attempt = max((run.attempt for run in completed_runs), default=0)
-        if attempt < 1:
-            raise ValueError("完了した試行がありません")
-        if experiment.status != "completed":
-            raise ValueError("完了した実験のみ比較候補へ送れます")
+        if attempt is None:
+            completed_runs = [run for run in experiment.runs if run.result == "completed"]
+            attempt = max((run.attempt for run in completed_runs), default=0)
+            if attempt < 1:
+                raise ValueError("完了した試行がありません")
+            if experiment.status != "completed":
+                raise ValueError("完了した実験のみ比較候補へ送れます")
+        else:
+            run = next((item for item in experiment.runs if item.attempt == attempt), None)
+            if run is None:
+                raise ValueError(f"試行 {attempt} がありません")
+            if run.result != "completed":
+                raise ValueError(f"試行 {attempt} は完了していません")
         run_id = f"{experiment_id}/attempt_{attempt:03d}"
-        run_dir = self.root / experiment_id / "runs" / f"attempt_{attempt:03d}"
-        result = read_json(run_dir / "result.json")
+        run_dir = self._experiment_dir(experiment_id) / "runs" / f"attempt_{attempt:03d}"
+        status_path = run_dir / "status.json"
+        if not status_path.is_file() or read_json(status_path).get("status") != "completed":
+            raise ValueError(f"試行 {attempt} は完了していません")
         checkpoint = "checkpoints/final.pt"
-        if not (run_dir / checkpoint).is_file():
-            raise ValueError("完了試行に final.pt がありません")
+        if checkpoint in self.pruned_paths(experiment_id, attempt):
+            raise ValueError("最終学習モデルは成果物の整理で削除されています")
+        try:
+            result = read_json(run_dir / "result.json")
+        except (OSError, ValueError) as error:
+            raise ValueError("完了試行の result.json を読めません") from error
+        selected_epoch = result.get("selected_epoch")
+        if type(selected_epoch) is not int or selected_epoch < 1:
+            raise ValueError("完了試行の result.json に選択エポックがありません")
         oof = result.get("oof")
         if not isinstance(oof, dict) or oof.get("ap") is None:
             raise ValueError("完了試行に実測 OOF 評価がありません")
+        artifact = next(
+            (
+                item
+                for item in result.get("artifacts") or []
+                if isinstance(item, dict) and item.get("path") == checkpoint
+            ),
+            None,
+        )
+        if (
+            artifact is None
+            or type(artifact.get("size")) is not int
+            or not isinstance(artifact.get("sha256"), str)
+            or re.fullmatch(r"[0-9a-fA-F]{64}", artifact["sha256"]) is None
+        ):
+            raise ValueError("完了試行の result.json に final.pt の記録がありません")
+        weights = run_dir / checkpoint
+        if not self._inside_run_dir(run_dir, weights):
+            raise ValueError("完了試行に final.pt がありません")
+        if weights.stat().st_size != artifact["size"]:
+            raise ValueError("final.pt の大きさが result.json の記録と一致しません")
+        spec = read_run_spec(run_dir)
+        preprocessing = spec.get("preprocessing")
+        dataset = spec.get("dataset")
         return CandidateSnapshot(
             experiment_id=experiment_id,
             attempt=attempt,
-            selected_epoch=int(result["selected_epoch"]),
+            selected_epoch=selected_epoch,
             run_id=run_id,
             checkpoint_path=checkpoint,
             oof_evaluation=copy.deepcopy(oof),
-            experiment_config=copy.deepcopy(experiment.config.values),
+            experiment_config=copy.deepcopy(spec.get("config") or experiment.config.values),
+            weights_size=artifact["size"],
+            weights_sha256=artifact["sha256"].lower(),
+            # 学習時の評価パラメータがない古い試行は空のまま返し、補完は比較側が記録付きで行う
+            training_eval_params=copy.deepcopy(spec.get("eval_params") or {}),
+            preprocessing=copy.deepcopy(preprocessing) if isinstance(preprocessing, dict) else {},
+            training_dataset=copy.deepcopy(dataset) if isinstance(dataset, dict) else {},
         )
+
+    # ---- 成果物の整理（比較・評価設計 19 章） ----
+
+    ARTIFACT_CATEGORIES = ("fold_periodic", "fold_selected", "final", "temporary")
+
+    @staticmethod
+    def _inside_run_dir(run_dir: Path, path: Path) -> bool:
+        """リンクをたどらずに run_dir の中の実在するファイルかを確かめる。"""
+        try:
+            relative = path.relative_to(run_dir)
+        except ValueError:
+            return False
+        if ".." in relative.parts:
+            return False
+        # run_dir 自身と、実験フォルダまでの祖先がリンクなら外部を指している可能性がある
+        for ancestor in (run_dir, run_dir.parent, run_dir.parent.parent):
+            if ancestor.is_symlink() or ancestor.is_junction():
+                return False
+        probe = run_dir
+        for part in relative.parts:
+            probe = probe / part
+            if probe.is_symlink() or probe.is_junction():
+                return False
+        if not path.is_file():
+            return False
+        try:
+            path.resolve().relative_to(run_dir.resolve())
+        except (OSError, ValueError):
+            return False
+        return True
+
+    @staticmethod
+    def _safe_relative(run_dir: Path, relative: Any) -> Path | None:
+        """記録された相対パスを検査し、run_dir の中のパスへ変換する。"""
+        if not isinstance(relative, str) or not relative:
+            return None
+        posix_path = PurePosixPath(relative)
+        windows_path = PureWindowsPath(relative)
+        if (
+            posix_path.is_absolute()
+            or windows_path.is_absolute()
+            or windows_path.drive
+            or ".." in posix_path.parts
+            or ".." in windows_path.parts
+        ):
+            return None
+        return run_dir / Path(*windows_path.parts)
+
+    def _artifact_files(self, run_dir: Path, category: str) -> list[Path]:
+        """種類に当たる run_dir 内の実在ファイルを返す（*.pt.json は含めない）。"""
+        if category == "fold_periodic":
+            candidates = sorted(run_dir.glob("checkpoints/fold_*/epoch_*.pt"))
+        elif category == "fold_selected":
+            candidates = sorted(run_dir.glob("checkpoints/fold_*/selected.pt"))
+        elif category == "final":
+            candidates = [run_dir / "checkpoints" / "final.pt"]
+        elif category == "temporary":
+            candidates = []
+            for name in ("tmp_pred", "tmp_ckpt"):
+                top = run_dir / name
+                if top.is_symlink() or top.is_junction() or not top.is_dir():
+                    continue
+                for directory, _dirnames, filenames in os.walk(top, followlinks=False):
+                    candidates.extend(Path(directory) / filename for filename in filenames)
+            candidates.sort()
+        else:
+            raise ValueError(f"成果物の種類が不正です: {category}")
+        return [path for path in candidates if self._inside_run_dir(run_dir, path)]
+
+    def _attempt_dirs(self, experiment_id: str) -> list[tuple[int, Path]]:
+        """run_spec.json のある試行フォルダを試行番号順に返す。"""
+        experiment_dir = self._experiment_dir(experiment_id)
+        # 解決前のパスでリンクを判定する（解決後は別実験への junction が通ってしまう）
+        unresolved = self.root / experiment_id
+        runs_root = experiment_dir / "runs"
+        result = []
+        if any(
+            item.is_symlink() or item.is_junction()
+            for item in (unresolved, unresolved / "runs", experiment_dir, runs_root)
+        ):
+            return result
+        for path in sorted(runs_root.glob("attempt_*")):
+            match = re.fullmatch(r"attempt_(\d+)", path.name)
+            if (
+                match is None
+                or path.is_symlink()
+                or path.is_junction()
+                or not (path / "run_spec.json").is_file()
+            ):
+                continue
+            result.append((int(match.group(1)), path))
+        return result
+
+    def _experiment_busy_reason(self, experiment_id: str) -> str:
+        """学習中・待機中の実験なら整理できない理由を返す。"""
+        experiment = self.experiments.get(experiment_id)
+        states = {
+            row["state"] for row in self.queue["rows"] if row["experiment_id"] == experiment_id
+        }
+        if (experiment is not None and experiment.status == "running") or "running" in states:
+            return "学習中の実験の成果物は整理できません"
+        if (experiment is not None and experiment.status == "queued") or "queued" in states:
+            return "学習キューで待機中の実験の成果物は整理できません"
+        return ""
+
+    def _attempt_inventory(
+        self, run_dir: Path
+    ) -> tuple[
+        dict[str, dict[tuple[int, int], int]], dict[tuple[int, int], tuple[int, int, set[str]]]
+    ]:
+        """種類ごとの実体（st_dev, st_ino）と、実体ごとの大きさ・リンク数・種類を返す。
+
+        ハードリンクで同じ実体を指すファイルは 1 つの実体として扱う。
+        戻り値の 1 つ目は 種類 → {実体: その種類内のリンク数}、
+        2 つ目は 実体 → (大きさ, st_nlink, 実体を含む種類の集合)。
+        """
+        by_category: dict[str, dict[tuple[int, int], int]] = {}
+        identities: dict[tuple[int, int], tuple[int, int, set[str]]] = {}
+        for category in self.ARTIFACT_CATEGORIES:
+            for path in self._artifact_files(run_dir, category):
+                stat = path.stat()
+                key = (stat.st_dev, stat.st_ino)
+                links = by_category.setdefault(category, {})
+                links[key] = links.get(key, 0) + 1
+                entry = identities.setdefault(key, (stat.st_size, stat.st_nlink, set()))
+                entry[2].add(category)
+        return by_category, identities
+
+    @staticmethod
+    def _freed_by(
+        categories: set[str],
+        by_category: dict[str, dict[tuple[int, int], int]],
+        identities: dict[tuple[int, int], tuple[int, int, set[str]]],
+    ) -> int:
+        """選んだ種類をすべて消したときに実際に空く容量を返す。"""
+        freed = 0
+        for key, (size, nlink, owners) in identities.items():
+            links = sum(by_category.get(category, {}).get(key, 0) for category in owners)
+            # 実体の全リンクが選んだ種類に含まれるときだけ容量が空く
+            if owners <= categories and links >= nlink:
+                freed += size
+        return freed
+
+    def artifact_cleanup_plan(
+        self,
+        experiment_ids: list[str],
+        *,
+        protected_final: Callable[[str, int], str] | None = None,
+    ) -> list[ArtifactGroup]:
+        """試行・種類ごとに、消せるファイルの数・容量と可否を返す。
+
+        size_bytes は同じ実体（ハードリンク）を 1 回だけ数えた合計。
+        shared_bytes はそのうち他の種類や試行の外と実体を共有していて、単独では空かない分。
+        """
+        groups = []
+        for experiment_id in experiment_ids:
+            if experiment_id not in self.experiments:
+                raise ValueError(f"実験がありません: {experiment_id}")
+            busy = self._experiment_busy_reason(experiment_id)
+            for attempt, run_dir in self._attempt_dirs(experiment_id):
+                status_path = run_dir / "status.json"
+                status = read_json(status_path).get("status") if status_path.is_file() else None
+                by_category, identities = self._attempt_inventory(run_dir)
+                for category in self.ARTIFACT_CATEGORIES:
+                    links = by_category.get(category)
+                    if not links:
+                        continue
+                    reason = busy
+                    if not reason and status is None:
+                        reason = "試行が確定していないため整理できません"
+                    if (
+                        not reason
+                        and category == "temporary"
+                        and status not in {"stopped", "failed"}
+                    ):
+                        reason = "一時ファイルは中断・失敗した試行だけ整理できます"
+                    if not reason and category == "final" and protected_final is not None:
+                        reason = protected_final(experiment_id, attempt) or ""
+                    size = sum(identities[key][0] for key in links)
+                    freed = self._freed_by({category}, by_category, identities)
+                    groups.append(
+                        ArtifactGroup(
+                            experiment_id,
+                            attempt,
+                            category,
+                            sum(links.values()),
+                            size,
+                            not reason,
+                            reason,
+                            size - freed,
+                        )
+                    )
+        return groups
+
+    def estimate_freed_bytes(
+        self,
+        experiment_ids: list[str],
+        categories: list[str],
+        *,
+        protected_final: Callable[[str, int], str] | None = None,
+    ) -> int:
+        """選んだ種類の組み合わせを整理したときに実際に空く容量を見積もる。
+
+        消せないまとまりは除き、同じ実体の全リンクが選択に含まれるときだけ数える。
+        """
+        unknown = [item for item in categories if item not in self.ARTIFACT_CATEGORIES]
+        if unknown:
+            raise ValueError(f"成果物の種類が不正です: {', '.join(unknown)}")
+        plan = self.artifact_cleanup_plan(experiment_ids, protected_final=protected_final)
+        selected: dict[tuple[str, int], set[str]] = {}
+        for group in plan:
+            if group.deletable and group.category in categories:
+                selected.setdefault((group.experiment_id, group.attempt), set()).add(group.category)
+        total = 0
+        for (experiment_id, attempt), chosen in selected.items():
+            run_dir = self._experiment_dir(experiment_id) / "runs" / f"attempt_{attempt:03d}"
+            by_category, identities = self._attempt_inventory(run_dir)
+            total += self._freed_by(chosen, by_category, identities)
+        return total
+
+    @staticmethod
+    def _read_pruned(run_dir: Path) -> dict[str, Any]:
+        path = run_dir / "pruned.json"
+        if not path.is_file():
+            return {"schema": 1, "entries": []}
+        record = read_json(path)
+        if not isinstance(record.get("entries"), list):
+            record["entries"] = []
+        return record
+
+    def pruned_paths(self, experiment_id: str, attempt: int) -> set[str]:
+        """成果物の整理で削除済み（または削除中）の run_dir 相対パスを返す。"""
+        run_dir = self._experiment_dir(experiment_id) / "runs" / f"attempt_{attempt:03d}"
+        try:
+            record = self._read_pruned(run_dir)
+        except (OSError, ValueError):
+            logger.warning("pruned.json を読めません: %s", run_dir)
+            return set()
+        return {
+            entry["path"]
+            for entry in record["entries"]
+            if isinstance(entry, dict) and isinstance(entry.get("path"), str)
+        }
+
+    @staticmethod
+    def _recorded_sha256(run_dir: Path, relative: str, path: Path) -> str | None:
+        """result.json の成果物一覧か、横のメタ情報から sha256 を探す。"""
+        try:
+            result = read_json(run_dir / "result.json")
+            for artifact in result.get("artifacts") or []:
+                if isinstance(artifact, dict) and artifact.get("path") == relative:
+                    value = artifact.get("sha256")
+                    if isinstance(value, str):
+                        return value.lower()
+        except (OSError, ValueError):
+            pass
+        sidecar = path.with_name(path.name + ".json")
+        try:
+            value = read_json(sidecar).get("sha256") if sidecar.is_file() else None
+        except (OSError, ValueError):
+            value = None
+        return value.lower() if isinstance(value, str) else None
+
+    @staticmethod
+    def _unlink(path: Path) -> int | None:
+        """ファイルを消し、空いた大きさを返す。すでにないときは None。
+
+        他のハードリンクが残る（削除前の st_nlink が 2 以上）ときは容量が空かないので 0。
+        """
+        for trial in range(5):
+            try:
+                stat = path.stat()
+                path.unlink()
+                return stat.st_size if stat.st_nlink <= 1 else 0
+            except FileNotFoundError:
+                return None
+            except PermissionError:
+                if trial == 4:
+                    raise
+                try:
+                    os.chmod(path, 0o600)
+                except OSError:
+                    pass
+                time.sleep(0.1)
+        return None
+
+    def _finish_pruning(self, run_dir: Path) -> tuple[int, int]:
+        """pruned.json の deleting 項目のファイルを消し、deleted にする。"""
+        record = self._read_pruned(run_dir)
+        pending = [
+            entry
+            for entry in record["entries"]
+            if isinstance(entry, dict) and entry.get("state") == "deleting"
+        ]
+        freed = count = 0
+        for entry in pending:
+            path = self._safe_relative(run_dir, entry.get("path"))
+            if path is None:
+                logger.warning("pruned.json の不正なパスを無視します: %s", entry.get("path"))
+                continue
+            if self._inside_run_dir(run_dir, path):
+                size = self._unlink(path)
+                if size is not None:
+                    freed += size
+                    count += 1
+            elif path.exists() or path.is_symlink():
+                # リンクや run_dir の外を指すものは消さず、削除中のまま残す
+                logger.warning("run_dir の外を指すため削除しません: %s", path)
+                continue
+            entry["state"] = "deleted"
+            entry["deleted_at"] = self._now()
+        if pending:
+            atomic_write_json(run_dir / "pruned.json", record)
+        if not any(entry.get("category") == "temporary" for entry in pending):
+            return freed, count
+        # 空になった一時フォルダを片付ける（中身が残るフォルダは消さない）
+        for name in ("tmp_pred", "tmp_ckpt"):
+            top = run_dir / name
+            if top.is_dir() and not (top.is_symlink() or top.is_junction()):
+                for directory, _dirnames, _filenames in os.walk(top, topdown=False):
+                    try:
+                        Path(directory).rmdir()
+                    except OSError:
+                        pass
+        return freed, count
+
+    def prune_artifacts(
+        self,
+        experiment_ids: list[str],
+        categories: list[str],
+        *,
+        protected_final: Callable[[str, int], str] | None = None,
+    ) -> PruneResult:
+        """選んだ種類の成果物を消す。条件を満たさないまとまりは消さずに skipped へ入れる。"""
+        unknown = [item for item in categories if item not in self.ARTIFACT_CATEGORIES]
+        if unknown:
+            raise ValueError(f"成果物の種類が不正です: {', '.join(unknown)}")
+        plan = self.artifact_cleanup_plan(experiment_ids, protected_final=protected_final)
+        selected = [group for group in plan if group.category in categories]
+        skipped = [group for group in selected if not group.deletable]
+        targets: dict[tuple[str, int], list[str]] = {}
+        for group in selected:
+            if group.deletable:
+                targets.setdefault((group.experiment_id, group.attempt), []).append(group.category)
+        freed = count = 0
+        for (experiment_id, attempt), attempt_categories in targets.items():
+            run_dir = self._experiment_dir(experiment_id) / "runs" / f"attempt_{attempt:03d}"
+            record = self._read_pruned(run_dir)
+            by_path = {
+                entry.get("path"): entry for entry in record["entries"] if isinstance(entry, dict)
+            }
+            requested_at = self._now()
+            for category in attempt_categories:
+                for path in self._artifact_files(run_dir, category):
+                    relative = path.relative_to(run_dir).as_posix()
+                    entry = {
+                        "path": relative,
+                        "category": category,
+                        "size": path.stat().st_size,
+                        "sha256": self._recorded_sha256(run_dir, relative, path),
+                        "state": "deleting",
+                        "requested_at": requested_at,
+                        "deleted_at": None,
+                    }
+                    if relative in by_path:
+                        by_path[relative].update(entry)
+                    else:
+                        record["entries"].append(entry)
+                        by_path[relative] = entry
+            atomic_write_json(run_dir / "pruned.json", record)
+            attempt_freed, attempt_count = self._finish_pruning(run_dir)
+            freed += attempt_freed
+            count += attempt_count
+        return PruneResult(freed, count, skipped)
 
     def _experiment_dir(self, experiment_id: str) -> Path:
         """実験フォルダを返す。experiments 配下の直下以外は扱わない。"""

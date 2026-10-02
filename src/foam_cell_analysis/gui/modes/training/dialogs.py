@@ -146,7 +146,7 @@ class ExperimentCompareDialog(QDialog):
         if key == "data.quality_filter":
             return quality_filter_label(str(value))
         if key == "checkpoint.best_metric" and value == "oof_instance_map":
-            return "OOF 平均適合率（AP）・最大"
+            return "OOF AP（Cellpose 方式）・最大"
         if key == "model.pretrained_weights":
             return {"coco": "COCO", "imagenet": "ImageNet"}.get(str(value), str(value))
         if key == "model.backbone":
@@ -163,9 +163,16 @@ class ExperimentCompareDialog(QDialog):
 class SendToCandidatesDialog(QDialog):
     """最終学習モデルを比較候補へ渡す。"""
 
-    def __init__(self, experiment: Experiment, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        experiment: Experiment,
+        parent: QWidget | None = None,
+        attempts: list[int] | None = None,
+    ) -> None:
         super().__init__(parent)
         self.experiment = experiment
+        # 候補にできる試行。None のときは完了した試行すべて
+        self.attempts = attempts
         self.setWindowTitle("モデル比較へ送る")
         self.resize(520, 260)
         self.setMinimumSize(480, 250)
@@ -193,9 +200,18 @@ class SendToCandidatesDialog(QDialog):
 
     def transition_params(self) -> dict[str, Any]:
         """設計書の候補追加遷移パラメータを返す。"""
-        return {
+        from ..comparison.dialogs import completed_attempts
+
+        params: dict[str, Any] = {
             "action": "add_candidate",
             "experiment_id": self.experiment.experiment_id,
             "checkpoint": self.checkpoint.currentText(),
             "comment": self.comment.text().strip(),
         }
+        attempts = (
+            self.attempts if self.attempts is not None else completed_attempts(self.experiment)
+        )
+        if attempts:
+            # 最終学習モデルは最新の完了試行のもの
+            params["attempt"] = max(attempts)
+        return params

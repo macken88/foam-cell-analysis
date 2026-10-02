@@ -25,6 +25,7 @@ class ImageView(QGraphicsView):
         self.setBackgroundBrush(QBrush(QColor(Color.IMAGE_BG)))
         self.setDragMode(QGraphicsView.DragMode.NoDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
         self.set_scrollbars_visible(True)
         self.placeholder = QLabel("画像なし", self.viewport())
         self.placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -40,8 +41,31 @@ class ImageView(QGraphicsView):
     def zoom(self) -> float:
         return self._scale
 
-    def set_image(self, pixmap: QPixmap | None) -> None:
-        """Pixmap を設定し、無い場合はプレースホルダを表示する。"""
+    def set_image(
+        self, pixmap: QPixmap | None, *, fit: bool = True, reference: "ImageView | None" = None
+    ) -> None:
+        """Pixmap を設定する。fit=False は倍率と画素座標の表示中心を保つ。"""
+        synchronizer = getattr(self, "_synchronizer", None)
+        old_center = self.mapToScene(self.viewport().rect().center()) if self._pixmap_item else None
+        old_zoom = self._scale
+        if not fit and synchronizer is not None and synchronizer.last_center is not None:
+            old_center = QPointF(synchronizer.last_center)
+            old_zoom = synchronizer.last_zoom or old_zoom
+        if reference is not None and reference._pixmap_item is not None:
+            reference_sync = getattr(reference, "_synchronizer", None)
+            old_center = (
+                QPointF(reference_sync.last_center)
+                if reference_sync is not None and reference_sync.last_center is not None
+                else reference.mapToScene(reference.viewport().rect().center())
+            )
+            old_zoom = (
+                reference_sync.last_zoom
+                if reference_sync is not None and reference_sync.last_zoom
+                else reference.zoom
+            )
+            self.resetTransform()
+            self.scale(old_zoom, old_zoom)
+            self._scale = old_zoom
         self.scene().clear()
         self._pixmap_item = None
         has_image = pixmap is not None and not pixmap.isNull()
@@ -49,12 +73,18 @@ class ImageView(QGraphicsView):
         if has_image:
             self._pixmap_item = self.scene().addPixmap(pixmap)
             self.scene().setSceneRect(self._pixmap_item.boundingRect())
-            self._fit_on_resize = True
-            self.fit_image()
-            QTimer.singleShot(0, self._fit_if_pending)
+            if fit:
+                self._fit_on_resize = True
+                self.fit_image()
+                QTimer.singleShot(0, self._fit_if_pending)
+            else:
+                self._fit_on_resize = False
+                rect = self.scene().sceneRect()
+                center = old_center if old_center is not None else rect.center()
+                self._center_on_point(center)
         else:
             self._fit_on_resize = False
-            self._notify_sync()
+            self._notify_sync(remember=False)
         self._schedule_sync()
 
     def set_overlay_labels(self, top_left: str = "", bottom_right: str = "") -> None:
@@ -103,7 +133,7 @@ class ImageView(QGraphicsView):
     def _fit_if_pending(self) -> None:
         """表示後のレイアウトが確定してから全体表示を適用する。"""
         if self._fit_on_resize and self._pixmap_item:
-            QTimer.singleShot(0, self._fit_if_pending)
+            self.fit_image()
 
     def zoom_by(self, factor: float) -> None:
         """表示倍率を指定比率で変更する。"""
@@ -147,29 +177,63 @@ class ImageView(QGraphicsView):
         super().mouseDoubleClickEvent(event)
 
     def resizeEvent(self, event) -> None:
+        preserve_center = bool(self._pixmap_item and not self._fit_on_resize)
+        center = self.mapToScene(self.viewport().rect().center()) if preserve_center else None
+        zoom = self._scale
         super().resizeEvent(event)
         self.placeholder.setGeometry(self.viewport().rect())
         self._position_overlay_labels()
-        self._notify_sync()
         if self._fit_on_resize and self._pixmap_item:
             self.fit_image()
+        elif center is not None:
+            self._scale = zoom
+            self._center_on_point(center)
         self._schedule_sync()
 
-    def _notify_sync(self) -> None:
+    def _center_on_point(self, point: QPointF) -> None:
+        """指定した画素中心を表示枠中央に保つ。"""
+        point = ViewSynchronizer.clamp_center(self, point)
+        self.centerOn(point)
+        actual = self.mapToScene(self.viewport().rect().center())
+        scale = self.transform().m11()
+        self.horizontalScrollBar().setValue(
+            self.horizontalScrollBar().value() + round((point.x() - actual.x()) * scale)
+        )
+        self.verticalScrollBar().setValue(
+            self.verticalScrollBar().value() + round((point.y() - actual.y()) * scale)
+        )
+
+    def _notify_sync(self, expected_synchronizer=None, *, remember: bool = True) -> None:
+        if (
+            expected_synchronizer is not None
+            and getattr(self, "_synchronizer", None) is not expected_synchronizer
+        ):
+            return
         if not getattr(self, "_syncing", False) and hasattr(self, "_synchronizer"):
-            self._synchronizer.sync_from(self)
+            self._synchronizer.sync_from(self, remember=remember)
 
     def _schedule_sync(self) -> None:
         """Qt のビューポート再配置後にビューを同期する。"""
-        if hasattr(self, "_synchronizer"):
-            QTimer.singleShot(0, self._notify_sync)
+        synchronizer = getattr(self, "_synchronizer", None)
+        if synchronizer is not None:
+            QTimer.singleShot(
+                0,
+                lambda expected=synchronizer: self._notify_sync(expected, remember=False),
+            )
 
 
 class ViewSynchronizer:
     """複数 ImageView の倍率と表示位置を同期する。"""
 
-    def __init__(self, views: list[ImageView]) -> None:
+    def __init__(self, views: list[ImageView], *, last_state=None) -> None:
         self.views = views
+        if last_state is not None:
+            self.last_center, self.last_zoom = QPointF(last_state[0]), last_state[1]
+        elif views and views[0]._pixmap_item is not None:
+            self.last_center = views[0].mapToScene(views[0].viewport().rect().center())
+            self.last_zoom = views[0].zoom
+        else:
+            self.last_center, self.last_zoom = None, None
         for view in views:
             view._synchronizer = self
 
@@ -184,9 +248,37 @@ class ViewSynchronizer:
         horizontal.setValue(horizontal.value() + round((point.x() - center.x()) * scale))
         vertical.setValue(vertical.value() + round((point.y() - center.y()) * scale))
 
-    def sync_from(self, source: ImageView) -> None:
+    @staticmethod
+    def clamp_center(view: ImageView, point: QPointF) -> QPointF:
+        """画像外へ出る中心だけを、表示枠の半分を考慮して画像内へ戻す。"""
+        rect = view.scene().sceneRect()
+        scale = max(view.transform().m11(), 1e-6)
+        half_width = view.viewport().width() / (2 * scale)
+        half_height = view.viewport().height() / (2 * scale)
+        minimum_x = rect.left() + half_width
+        maximum_x = rect.right() - half_width
+        minimum_y = rect.top() + half_height
+        maximum_y = rect.bottom() - half_height
+        x = (
+            rect.center().x()
+            if minimum_x > maximum_x
+            else min(max(point.x(), minimum_x), maximum_x)
+        )
+        y = (
+            rect.center().y()
+            if minimum_y > maximum_y
+            else min(max(point.y(), minimum_y), maximum_y)
+        )
+        return QPointF(x, y)
+
+    def sync_from(self, source: ImageView, *, remember: bool = True) -> None:
         """基準ビューの表示中心シーン座標と倍率を他ビューへ反映する。"""
+        if source not in self.views:
+            return
         scene_center = source.mapToScene(source.viewport().rect().center())
+        if remember and source._pixmap_item is not None:
+            self.last_center = QPointF(scene_center)
+            self.last_zoom = source.zoom
         for view in self.views:
             if view is source:
                 continue
@@ -195,7 +287,7 @@ class ViewSynchronizer:
             if current and source.zoom:
                 view.scale(source.zoom / current, source.zoom / current)
             view._scale = source.zoom
-            self._center_on_scene_point(view, scene_center)
+            self._center_on_scene_point(view, self.clamp_center(view, scene_center))
             view._syncing = False
 
     def fit_all(self) -> None:

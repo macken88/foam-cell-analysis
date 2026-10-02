@@ -39,7 +39,7 @@ PAGE_LABELS = {
     ),
     PageId.EXPERIMENTS: ("実験一覧", "実験の状態、設定、学習結果を確認します。"),
     PageId.CANDIDATES: ("リリース候補", "検証用データセットを切り替えて候補を比較します。"),
-    PageId.MASK_COMPARISON: ("マスク比較", "候補モデルの予測結果を比較します。"),
+    PageId.MASK_COMPARISON: ("抽出結果比較", "候補モデルの予測結果を比較します。"),
     PageId.RELEASED_MODELS: (
         "リリース済みモデル・振り分け",
         "リリース済みモデルと分類の振り分けを管理します。",

@@ -56,7 +56,13 @@ from ...settings import app_settings
 from ...theme import Color, body_font, numeric_font, set_style
 from ...widgets.image_convert import DisplayMode, array_to_pixmap, render
 from ...widgets.image_view import ImageView
-from ...widgets.marks import USAGE_MARKS, CountChip, DisplayToggle, TagDelegate
+from ...widgets.marks import (
+    USAGE_MARKS,
+    CountChip,
+    DisplayToggle,
+    TagDelegate,
+    display_mode_label,
+)
 from ...widgets.page_base import BasePage
 from ...widgets.table import (
     add_row_context_menu,
@@ -324,11 +330,11 @@ class DataPreparationPage(BasePage):
         root.setSpacing(6)
         self.base_label = QLabel()
         self.base_label.setFont(numeric_font(9))
-        self.import_button = QPushButton("取り込み…")
-        self.auto_button = QPushButton("自動振り分け…")
+        self.import_button = QPushButton("取り込み")
+        self.auto_button = QPushButton("自動振り分け")
         self.excel_button = QPushButton("Excel ▾")
         self.other_button = QPushButton("その他 ▾")
-        self.finalize_button = QPushButton("確定…")
+        self.finalize_button = QPushButton("確定")
         self.finalize_button.setProperty("primary", True)
         self.import_button.hide()
         self.auto_button.hide()
@@ -456,7 +462,7 @@ class DataPreparationPage(BasePage):
         preview.addWidget(self.preview_details)
         self.image_view = ImageView()
         self.image_view.setMinimumWidth(155)
-        self.display_toggle = DisplayToggle(ctx.display)
+        self.display_toggle = DisplayToggle(ctx.display, label_scope="ground_truth")
         self.display_toggle.alternate_selected.connect(self._show_preview)
         preview.addWidget(self.display_toggle)
         preview.addWidget(self.image_view, 1)
@@ -500,7 +506,7 @@ class DataPreparationPage(BasePage):
                 ("用途", self.usage_combo),
                 ("分類", self.class_combo),
                 ("品質", self.quality_combo),
-                ("マスク", self.mask_combo),
+                ("正解ラベル版", self.mask_combo),
             )
         ):
             pair = QHBoxLayout()
@@ -599,16 +605,16 @@ class DataPreparationPage(BasePage):
 
     def _make_menus(self) -> None:
         excel = QMenu(self)
-        excel.addAction("Excel 出力…", self.export_excel)
-        excel.addAction("Excel 取込…", self.import_excel)
+        excel.addAction("Excel 出力", self.export_excel)
+        excel.addAction("Excel 取込", self.import_excel)
         self.excel_button.setMenu(excel)
         other = QMenu(self)
-        other.addAction("連続振り分け…", self.open_triage)
-        other.addAction("キー割り当て一覧…", self.open_keymap)
+        other.addAction("連続振り分け", self.open_triage)
+        other.addAction("キー割り当て一覧", self.open_keymap)
         display_menu = other.addMenu("原画像と切り替える表示")
         self.display_actions = {}
         for name in sorted(self.ctx.display.MODES):
-            action = display_menu.addAction(name)
+            action = display_menu.addAction(display_mode_label(name, "ground_truth"))
             action.setCheckable(True)
             action.setChecked(name == self.ctx.display.value)
             action.triggered.connect(
@@ -617,10 +623,10 @@ class DataPreparationPage(BasePage):
             self.display_actions[name] = action
         other.addAction("元に戻す", self.undo_stack.undo)
         other.addAction("やり直す", self.undo_stack.redo)
-        self.mask_revision_action = QAction("新しいマスク版を取り込む…", self)
+        self.mask_revision_action = QAction("正解ラベル版を追加", self)
         other.addAction(self.mask_revision_action)
         self.mask_revision_action.triggered.connect(self.import_mask_revision)
-        self.archive_action = QAction("アーカイブを作成…", self)
+        self.archive_action = QAction("アーカイブを作成", self)
         other.addAction(self.archive_action)
         self.archive_action.triggered.connect(self.create_archive)
         self.other_button.setMenu(other)
@@ -666,11 +672,11 @@ class DataPreparationPage(BasePage):
                 shortcut.activated.connect(callback)
                 self._scoped_shortcuts.append(shortcut)
         labels = {
-            "import": "画像を取り込む…",
-            "auto_triage": "自動振り分け…",
-            "export_excel": "Excel に出力…",
-            "import_excel": "Excel から取り込む…",
-            "finalize": "データセットを確定…",
+            "import": "画像を取り込む",
+            "auto_triage": "自動振り分け",
+            "export_excel": "Excel に出力",
+            "import_excel": "Excel から取り込む",
+            "finalize": "データセットを確定",
             "undo": "元に戻す",
             "redo": "やり直す",
             "search": "検索",
@@ -694,11 +700,11 @@ class DataPreparationPage(BasePage):
             self.menu_action_map[key] = action
         self.menu_action_map["mask_revision"] = self.mask_revision_action
         self.menu_action_map["archive"] = self.archive_action
-        self.menu_action_map["triage"] = QAction("連続振り分け…\tEnter", self)
+        self.menu_action_map["triage"] = QAction("連続振り分け\tEnter", self)
         self.menu_action_map["triage"].triggered.connect(self.open_triage)
         self.menu_action_map["error_filter"] = QAction("エラーのある画像を表示", self)
         self.menu_action_map["error_filter"].triggered.connect(lambda: self._set_error_filter(True))
-        self.menu_action_map["keymap"] = QAction("キー割り当て…", self)
+        self.menu_action_map["keymap"] = QAction("キー割り当て", self)
         self.menu_action_map["keymap"].triggered.connect(self.open_keymap)
         self.usage_menu = QMenu("用途を変更", self)
         self.usage_action_map = {}
@@ -720,7 +726,7 @@ class DataPreparationPage(BasePage):
         self._static_class_actions = {}
         for key, label, value in (
             ("class_clear", "未設定", None),
-            ("class_dialog", "一覧から選ぶ…", "dialog"),
+            ("class_dialog", "一覧から選ぶ", "dialog"),
         ):
             action = QAction(self._menu_text(label, key), self)
             action.triggered.connect(
@@ -1031,8 +1037,7 @@ class DataPreparationPage(BasePage):
             (self.finalize_button, "finalize"),
         ):
             button.setToolTip(
-                f"{button.text().replace('…', '').strip()}（"
-                f"{self.shortcuts.display_key(self.shortcuts[name])}）"
+                f"{button.text().strip()}（{self.shortcuts.display_key(self.shortcuts[name])}）"
             )
         self.search.setToolTip(f"検索（{self.shortcuts.display_key(self.shortcuts['search'])}）")
         self.excel_button.setToolTip(
@@ -1149,7 +1154,7 @@ class DataPreparationPage(BasePage):
             return
         self.preview_meta.setText(item.source_filename)
         self.preview_details.setText(
-            f"{item.item_id}　取り込み元 {item.source_folder}　マスク版 "
+            f"{item.item_id}　取り込み元 {item.source_folder}　正解ラベル版 "
             f"{item.selected_mask_revision or 'なし'}"
         )
         self.usage_combo.blockSignals(True)
@@ -1192,7 +1197,9 @@ class DataPreparationPage(BasePage):
             self.image_view.set_image(array_to_pixmap(render(image, labels, mode)))
             self._preview_signature = signature
         self.image_caption.setText(
-            "原画像" if mode == DisplayMode.IMAGE else self.ctx.display.value
+            "原画像"
+            if mode == DisplayMode.IMAGE
+            else display_mode_label(self.ctx.display.value, "ground_truth")
         )
 
     def _filter_usage(self, name: str) -> None:
@@ -1604,7 +1611,7 @@ class DataPreparationPage(BasePage):
                     "用途",
                     "画像分類",
                     "品質",
-                    "マスク版",
+                    "正解ラベル版",
                 ]
             )
             for item in self.model.visible_items():
@@ -1705,14 +1712,14 @@ class DataPreparationPage(BasePage):
             self._set_classifications(set())
 
     def import_mask_revision(self) -> None:
-        """選択中の項目へ新しいマスク版を追加する。"""
+        """選択中の項目へ新しい正解ラベル版を追加する。"""
         if not self._selected_ids:
             return
         created = []
         for item_id in self._selected_ids:
             created.append(self.ctx.backend.add_mask_revision("all", item_id))
         self.refresh(self._selected_ids)
-        self.ctx.status.show_message(f"{len(created)} 件に新しいマスク版を取り込みました")
+        self.ctx.status.show_message(f"{len(created)} 件に正解ラベル版を追加しました")
 
     def create_archive(self) -> None:
         """最新の学習用・検証用版のアーカイブを作成する。"""
@@ -1734,7 +1741,11 @@ class DataPreparationPage(BasePage):
         self.display_toggle.set_alternate(not self.display_toggle.is_alternate)
         self.ctx.status.show_message(
             "表示形式: "
-            + (self.ctx.display.value if self.display_toggle.is_alternate else "原画像")
+            + (
+                display_mode_label(self.ctx.display.value, "ground_truth")
+                if self.display_toggle.is_alternate
+                else "原画像"
+            )
         )
 
     def _preview_mode(self) -> DisplayMode:
@@ -1949,8 +1960,8 @@ class DatasetHistoryPage(BasePage):
         self.model = DatasetHistoryModel(self)
         self.thumbnail_windows = {}
         controls = QHBoxLayout()
-        self.thumbnail_button = QPushButton("サムネイルで確認…")
-        self.thumbnail_action = QAction("選択した版をサムネイルで確認…", self)
+        self.thumbnail_button = QPushButton("サムネイルで確認")
+        self.thumbnail_action = QAction("選択した版をサムネイルで確認", self)
         self.thumbnail_action.triggered.connect(self.open_thumbnails)
         bind_button_action(self.thumbnail_button, self.thumbnail_action)
         controls.addStretch(1)

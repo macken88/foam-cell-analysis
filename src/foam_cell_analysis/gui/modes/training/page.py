@@ -99,7 +99,7 @@ LABELS = {
     "rescale": "リスケール",
     "bsize": "学習パッチサイズ",
     "nimg_per_epoch": "1 エポック当たり画像数",
-    "min_train_masks": "最小マスク数",
+    "min_train_masks": "1画像あたりの最小気泡数",
     "class_weights": "クラス重み",
 }
 
@@ -231,7 +231,7 @@ class TrainingPage(BasePage):
         self.preview_button.setChecked(self.preview_action.isChecked())
         self.preview_button.clicked.connect(self.preview_action.toggle)
         self.preview_panel.setVisible(self.preview_action.isChecked())
-        self.augmentation_action = QAction("データ拡張を設定…", self)
+        self.augmentation_action = QAction("データ拡張を設定", self)
         self.augmentation_action.triggered.connect(self.open_augmentation_dialog)
         self.reset_defaults_action = QAction("既定値に戻す", self)
         self.reset_defaults_action.setToolTip(
@@ -389,7 +389,7 @@ class TrainingPage(BasePage):
             self.fields.update(widgets)
             self._add_form_widget(section, 0 if key == "training" else 1)
             if key == "augmentation":
-                self.profile_edit_button = QPushButton("データ拡張を設定…")
+                self.profile_edit_button = QPushButton("データ拡張を設定")
                 self.profile_edit_button.setSizePolicy(
                     QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
                 )
@@ -660,19 +660,19 @@ class TrainingPage(BasePage):
             if path == "checkpoint.best_metric":
                 section.add_row(
                     "",
-                    QLabel("エポック選択の指標：OOF 平均適合率（AP）・最大"),
+                    QLabel("エポック選択の指標：OOF AP（Cellpose 方式）・最大"),
                     path,
                 )
                 continue
             if path == "data.input_channels":
                 control = QLabel("A（単一チャンネル）")
-                control.setToolTip(path)
+                control.setToolTip(self._parameter_tooltip(path))
             elif path == "model.input.normalization.method":
                 control = QLabel("画像ごとのパーセンタイル（下位〜上位を 0〜1 に）")
-                control.setToolTip(path)
+                control.setToolTip(self._parameter_tooltip(path))
             elif path == "model.bsize":
                 control = QLabel("256（cpsam 系は固定）")
-                control.setToolTip(path)
+                control.setToolTip(self._parameter_tooltip(path))
             else:
                 control = self._control(path, value)
             if path == "model.nimg_per_epoch" and isinstance(control, QLineEdit):
@@ -707,7 +707,7 @@ class TrainingPage(BasePage):
             index = combo.findData(wanted)
             if index >= 0:
                 combo.setCurrentIndex(index)
-            combo.setToolTip(path)
+            combo.setToolTip(self._parameter_tooltip(path))
             return combo
         if isinstance(value, bool):
             control = QCheckBox()
@@ -730,10 +730,16 @@ class TrainingPage(BasePage):
             control.setPlaceholderText("カンマ区切り")
         else:
             control = QLineEdit("" if value is None else str(value))
-        control.setToolTip(path)
+        control.setToolTip(self._parameter_tooltip(path))
         if isinstance(control, QSpinBox | QDoubleSpinBox):
             control.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         return control
+
+    @staticmethod
+    def _parameter_tooltip(path: str) -> str:
+        if path == "model.min_train_masks":
+            return "この数より気泡が少ない画像は、Cellpose の学習対象から除外します。"
+        return path
 
     def _bind_signals(self) -> None:
         """変更時にプレビューと件数を更新する。"""

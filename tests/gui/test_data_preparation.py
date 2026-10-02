@@ -326,6 +326,13 @@ def test_working_table_uses_no_thumbnail_toggle_and_updates_only_edited_items(qa
 def test_preview_shortcuts_work_from_table_but_not_search_input(qapp):
     backend = MockBackend()
     page = _page(qapp, backend)
+    assert {action.text() for action in page.display_actions.values()} == {
+        "正解ラベル画像",
+        "正解ラベルを重ねて表示",
+        "白黒の正解ラベル画像",
+    }
+    page.ctx.display.set_value("二値マスク")
+    assert page.display_toggle.alternate_button.text() == "白黒の正解ラベル画像"
     messages = []
     page.ctx.status.message.connect(messages.append)
     page.table.setFocus()
@@ -533,7 +540,7 @@ def test_mask_revision_choices_are_common_and_backend_rejects_foreign_revision(s
     _click_table_row(qapp, page, rev2.item_id)
     _click_table_row(qapp, page, rev1_only.item_id, Qt.KeyboardModifier.ControlModifier)
     assert [page.mask_combo.itemText(i) for i in range(page.mask_combo.count())] == ["rev_001"]
-    with pytest.raises(ValueError, match="マスク版"):
+    with pytest.raises(ValueError, match="正解ラベル版"):
         shell.ctx.backend.update_item("all", rev1_only.item_id, selected_mask_revision="rev_002")
 
 
@@ -732,9 +739,9 @@ def test_excel_import_releases_source_file(shell, qapp, tmp_path, monkeypatch):
 def test_data_preparation_other_menu_has_required_actions(shell):
     page = shell.page(PageId.DATA_PREPARATION)
     labels = [action.text() for action in page.other_button.menu().actions()]
-    assert "新しいマスク版を取り込む…" in labels
-    assert "アーカイブを作成…" in labels
-    assert "キー割り当て一覧…" in labels
+    assert "正解ラベル版を追加" in labels
+    assert "アーカイブを作成" in labels
+    assert "キー割り当て一覧" in labels
 
 
 def test_multi_selection_survives_activation_and_reaches_auto_triage(shell, qapp):

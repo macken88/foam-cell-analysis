@@ -83,7 +83,7 @@ class TrainingQueuePage(BasePage):
         self.delete_button = QPushButton("削除")
         self.up_button = QPushButton("上へ")
         self.down_button = QPushButton("下へ")
-        self.edit_button = QPushButton("設定を開いて編集…")
+        self.edit_button = QPushButton("設定を開いて編集")
         self.clear_button = QPushButton("終了・中断した行を削除")
         mark_primary(self.run_button)
         self.run_action = QAction("▶ キューをすべて実行", self)
@@ -107,7 +107,7 @@ class TrainingQueuePage(BasePage):
             "delete": QAction("削除", self),
             "up": QAction("上へ移動\tCtrl+↑", self),
             "down": QAction("下へ移動\tCtrl+↓", self),
-            "edit": QAction("設定を開いて編集…", self),
+            "edit": QAction("設定を開いて編集", self),
             "clear": QAction("終了・中断した行を削除", self),
         }
         for key, callback in (
@@ -251,7 +251,9 @@ class TrainingQueuePage(BasePage):
             running += f"（{training_progress_text(active)}）"
         elif not controller.active_id:
             running = (
-                f"{controller.waiting_for_id or '実行中の学習'}の学習終了後にキューを開始"
+                controller.compute_wait_text
+                if controller.waiting_for_compute
+                else f"{controller.waiting_for_id or '実行中の学習'}の学習終了後にキューを開始"
                 if controller.waiting_for_training
                 else "実行中・単発待ち"
                 if controller.executing

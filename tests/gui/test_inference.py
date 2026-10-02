@@ -53,7 +53,9 @@ def test_classification_change_updates_model_immediately(qapp, mock_backend):
 def test_unassigned_classification_disables_run(qapp, mock_backend):
     page = make_page(qapp, mock_backend)
     page.add_images(["sample.png"])
-    mock_backend.apply_routing({"分類A": None})
+    mock_backend.apply_routing(
+        {"分類A": None}, expected_revision=mock_backend.get_routing_state().revision
+    )
 
     page.refresh_routing()
 
