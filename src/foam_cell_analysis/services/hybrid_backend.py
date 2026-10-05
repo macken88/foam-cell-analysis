@@ -88,10 +88,10 @@ class HybridBackend:
     # ---- 起動時の復旧（学習 5.4・比較 7.6・13.3） ----
 
     def recover(self):
-        """学習、比較（一時ファイル・リリース）、評価の順に起動時の復旧を行う。"""
+        """学習と評価の照合を先に行い、保護対象を除いて比較を復旧する。"""
         outcomes = self.training.recover()
-        self.comparison.recover()
         self.comparison.recover_evaluations()
+        self.comparison.recover()
         return outcomes
 
     @property
@@ -101,6 +101,29 @@ class HybridBackend:
             *getattr(self.training, "recovery_blockers", []),
             *getattr(self.comparison, "recovery_blockers", []),
         ]
+
+    def recovery_report(self) -> dict[str, Any]:
+        return {
+            "training": dict(self.training.recovery_issues),
+            "comparison": dict(self.comparison.recovery_issues),
+            "blockers": self.recovery_blockers,
+        }
+
+    def _guard_new_compute(self) -> None:
+        if self.recovery_blockers:
+            raise ValueError("前回の処理を確認できないため、新しい学習・評価を開始できません")
+
+    def start_training(self, config, experiment_id=None):
+        self._guard_new_compute()
+        return self.training.start_training(config, experiment_id)
+
+    def take_next_training_queue_item(self):
+        self._guard_new_compute()
+        return self.training.take_next_training_queue_item()
+
+    def prepare_training_run(self, experiment_id, queue_id=None, retry=False):
+        self._guard_new_compute()
+        return self.training.prepare_training_run(experiment_id, queue_id, retry)
 
     # ---- 評価中かどうか（EvaluationRunner から受け取る） ----
 
@@ -249,6 +272,9 @@ class HybridBackend:
         """試行を明示して比較候補を作る（5.3）。"""
         return self.comparison.add_candidate(experiment_id, attempt, inference_config_id, comment)
 
+    def copy_candidate_settings(self, candidate_id):
+        return self.comparison.copy_candidate_settings(candidate_id)
+
     def reject_candidate(self, candidate_id):
         return self.comparison.reject_candidate(candidate_id)
 
@@ -258,6 +284,7 @@ class HybridBackend:
     # ---- 評価（7 章） ----
 
     def prepare_evaluation_run(self, candidate_id):
+        self._guard_new_compute()
         return self.comparison.prepare_evaluation_run(candidate_id)
 
     def record_evaluation_process(self, candidate_id, evaluation_id, pid, creation_time):
@@ -295,6 +322,9 @@ class HybridBackend:
     def save_external_analysis(self, candidate_id, evaluation_id, values, **kwargs):
         """外部解析（画像ごとの円相当径の中央値）を評価 ID 付きで保存する。"""
         return self.comparison.save_external_analysis(candidate_id, evaluation_id, values, **kwargs)
+
+    def external_analysis_editable(self, candidate_id, evaluation_id):
+        return self.comparison.external_analysis_editable(candidate_id, evaluation_id)
 
     # ---- 抽出結果出力（12 章） ----
 

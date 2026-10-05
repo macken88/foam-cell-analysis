@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
 )
 
+from ....services.comparison_service import DuplicateCandidateError
 from ....services.models import Candidate, EvaluationRecord
 from ...evaluation_runner import PREPARE_FAILED_TEXT
 from ...labels import config_key_label, format_score, model_type_label
@@ -55,6 +56,9 @@ STATE_FILTERS = (
     "中止",
     "失敗",
     "結果破損",
+    "中断",
+    "復旧不可",
+    "終了未確認",
 )
 ADOPTION_FILTERS = ("候補・採用", "すべて", "未決定", "採用", "非採用")
 COLUMN_AP, COLUMN_OOF, COLUMN_STATUS, COLUMN_ADOPTION = 7, 8, 9, 10
@@ -189,6 +193,8 @@ class CandidatesPage(BasePage):
         self.candidate_actions["stop"] = QAction("評価中止", self)
         self.candidate_actions["reject"] = QAction("非採用にする", self)
         self.candidate_actions["restore"] = QAction("候補に戻す", self)
+        self.candidate_actions["copy"] = QAction("設定を引き継いで新規作成", self)
+        self.candidate_actions["copy"].triggered.connect(self._copy_candidate_settings)
         self.buttons["restore"] = QPushButton("候補に戻す")
         self.buttons["restore"].setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         bind_button_action(self.buttons["restore"], self.candidate_actions["restore"])
@@ -244,6 +250,7 @@ class CandidatesPage(BasePage):
             "reject",
             "restore",
             "release",
+            "copy",
         ):
             self.context_menu.addAction(self.candidate_actions[key])
 
@@ -289,6 +296,7 @@ class CandidatesPage(BasePage):
                     "compare",
                     "export",
                     "restore",
+                    "copy",
                 )
             ]
             + [
@@ -364,6 +372,10 @@ class CandidatesPage(BasePage):
 
     def _status_text(self, candidate) -> str:
         """評価状態。失敗後に成功結果が残っている場合も明示する。"""
+        if candidate.recovery_state == "unconfirmed":
+            return "終了未確認"
+        if candidate.recovery_state == "unrecoverable" and candidate.snapshot is None:
+            return "復旧不可"
         runner = self.runner
         candidate_id = candidate.candidate_id
         if runner is not None and runner.is_running(candidate_id):
@@ -375,7 +387,9 @@ class CandidatesPage(BasePage):
             return "評価待ち"
         return self._evaluation_states.get(candidate_id, "未評価")
 
-    def _status_tooltip(self, text: str) -> str:
+    def _status_tooltip(self, text: str, candidate=None) -> str:
+        if candidate is not None and candidate.recovery_reason:
+            return candidate.recovery_reason
         if text.startswith("評価待ち"):
             return self.ctx.compute.wait_message("evaluation") or "前の候補の評価を待っています"
         return ""
@@ -411,7 +425,7 @@ class CandidatesPage(BasePage):
                     continue
                 text = self._status_text(candidate)
                 # 待機の理由（ツールチップ）は文字が同じでも変わりうる
-                status_item.setToolTip(self._status_tooltip(text))
+                status_item.setToolTip(self._status_tooltip(text, candidate))
                 if status_item.text() != text:
                     status_item.setText(text)
                     changed = True
@@ -480,7 +494,20 @@ class CandidatesPage(BasePage):
         finally:
             self.table.blockSignals(False)
             self._selection_syncing = False
+        self._update_recovery_detail()
         self._update_buttons()
+
+    def _update_recovery_detail(self) -> None:
+        selected = self._selected()
+        issue = selected[0] if len(selected) == 1 and selected[0].recovery_state else None
+        if issue is not None:
+            self.failure_note.setText(issue.recovery_reason or "記録を復旧できません")
+            self.failure_note.setProperty("recovery_issue", True)
+            self.failure_note.show()
+        elif self.failure_note.property("recovery_issue"):
+            self.failure_note.clear()
+            self.failure_note.setProperty("recovery_issue", False)
+            self.failure_note.hide()
 
     def _sync_selection_from_checks(self) -> None:
         self._selection_syncing = True
@@ -498,6 +525,7 @@ class CandidatesPage(BasePage):
                     )
         finally:
             self._selection_syncing = False
+        self._update_recovery_detail()
         self._update_buttons()
 
     def eventFilter(self, watched, event):
@@ -581,7 +609,9 @@ class CandidatesPage(BasePage):
         }
         if version:
             candidates = [
-                candidate for candidate in candidates if candidate.validation_version == version
+                candidate
+                for candidate in candidates
+                if candidate.recovery_state or candidate.validation_version == version
             ]
         self._row_candidates = {candidate.candidate_id: candidate for candidate in candidates}
         self._records = {
@@ -589,11 +619,18 @@ class CandidatesPage(BasePage):
                 candidate.candidate_id, version or (candidate.validation_version or "")
             )
             for candidate in candidates
+            if not candidate.recovery_state
         }
         self._history_available = {}
         self._evaluation_states = {}
         for candidate in candidates:
             try:
+                if candidate.recovery_state:
+                    self._history_available[candidate.candidate_id] = False
+                    self._evaluation_states[candidate.candidate_id] = (
+                        "終了未確認" if candidate.recovery_state == "unconfirmed" else "復旧不可"
+                    )
+                    continue
                 evaluations = self.ctx.backend.list_candidate_evaluations(candidate.candidate_id)
                 self._history_available[candidate.candidate_id] = any(
                     record.validation_version != candidate.validation_version
@@ -635,11 +672,15 @@ class CandidatesPage(BasePage):
             status_text = self._status_text(candidate)
             if state != "すべて" and not status_text.startswith(state):
                 continue
-            adoption_base = {
-                "candidate": "未決定",
-                "released": "採用",
-                "rejected": "非採用",
-            }.get(candidate.status, "未決定")
+            adoption_base = (
+                "—"
+                if candidate.recovery_state and candidate.snapshot is None
+                else {
+                    "candidate": "未決定",
+                    "released": "採用",
+                    "rejected": "非採用",
+                }.get(candidate.status, "—")
+            )
             lifecycle = self._release_lifecycle.get(candidate.released_model_id, "active")
             adoption_text = (
                 f"採用（{ {'archived': '保管', 'deleted': '削除済み'}.get(lifecycle) }）"
@@ -653,9 +694,13 @@ class CandidatesPage(BasePage):
             if adoption_state not in {"候補・採用", "すべて"} and adoption_state != adoption_base:
                 continue
             model_type = (
-                candidate.snapshot.experiment_config.get("model", {}).get("type")
-                if candidate.snapshot is not None
-                else self.ctx.backend.get_experiment(candidate.experiment_id).model_type
+                "—"
+                if candidate.snapshot is None
+                else (
+                    candidate.snapshot.experiment_config.get("model", {}).get("type")
+                    if candidate.snapshot is not None
+                    else self.ctx.backend.get_experiment(candidate.experiment_id).model_type
+                )
             )
             record = self._records.get(candidate.candidate_id)
             if record is not None and record.broken:
@@ -750,7 +795,7 @@ class CandidatesPage(BasePage):
                         )
                     )
                 if col == COLUMN_STATUS:
-                    item.setToolTip(self._status_tooltip(value))
+                    item.setToolTip(self._status_tooltip(value, candidate))
                 comparable_filter = bool(version)
                 bold = (
                     comparable_filter
@@ -790,7 +835,9 @@ class CandidatesPage(BasePage):
                 and candidate_item is not None
                 and check_item.checkState() == Qt.CheckState.Checked
             ):
-                selected.append(self.ctx.backend.get_candidate(candidate_item.text()))
+                candidate = self._row_candidates.get(candidate_item.text())
+                if candidate is not None:
+                    selected.append(candidate)
         return selected
 
     def _usable_record(self, candidate_id: str) -> EvaluationRecord | None:
@@ -819,6 +866,7 @@ class CandidatesPage(BasePage):
         one = len(selected) == 1
         version = self.validation.currentText()
         active = [c for c in selected if self._is_active(c.candidate_id)]
+        protected = [c for c in selected if c.recovery_state]
         broken = [
             c
             for c in selected
@@ -828,7 +876,11 @@ class CandidatesPage(BasePage):
         unevaluated = [c for c in selected if self._usable_record(c.candidate_id) is None]
 
         evaluate_reason = ""
-        if not version:
+        if protected:
+            evaluate_reason = (
+                protected[0].recovery_reason or "復旧状態を確認できないため操作できません"
+            )
+        elif not version:
             evaluate_reason = "検証用データセットがありません"
         elif self.ctx.compute.external_block:
             evaluate_reason = self.ctx.compute.external_block
@@ -860,7 +912,15 @@ class CandidatesPage(BasePage):
 
         self._set_action(
             "add_config",
-            "設定変更の元にする候補を 1 件選んでください" if not one else "",
+            (
+                "設定変更の元にする候補を 1 件選んでください"
+                if not one
+                else (
+                    selected[0].recovery_reason or "元の設定を確認できないため操作できません"
+                    if protected
+                    else ""
+                )
+            ),
         )
 
         detail_reason = ""
@@ -889,7 +949,11 @@ class CandidatesPage(BasePage):
         self._set_action("compare", compare_reason)
 
         release_reason = ""
-        if not one:
+        if protected:
+            release_reason = (
+                protected[0].recovery_reason or "復旧状態を確認できないため操作できません"
+            )
+        elif not one:
             release_reason = "採用する候補を 1 件選択してください"
         elif selected[0].status == "released":
             release_reason = "この候補はすでに採用済みです"
@@ -918,11 +982,27 @@ class CandidatesPage(BasePage):
             c for c in selected if c.status == "candidate" and not self._is_active(c.candidate_id)
         ]
         self._set_action(
-            "reject", "非採用にする候補を 1 件以上選択してください" if not rejectable else ""
+            "reject",
+            protected[0].recovery_reason
+            if protected
+            else ("非採用にする候補を 1 件以上選択してください" if not rejectable else ""),
         )
         restorable = [c for c in selected if c.status == "rejected"]
         self._set_action(
-            "restore", "候補に戻す行を 1 件以上選択してください" if not restorable else ""
+            "restore",
+            protected[0].recovery_reason
+            if protected
+            else ("候補に戻す行を 1 件以上選択してください" if not restorable else ""),
+        )
+        self._set_action(
+            "copy",
+            "候補を 1 件選択してください"
+            if not one
+            else (
+                selected[0].recovery_reason or "元の設定を確認できないため操作できません"
+                if selected[0].recovery_state == "unconfirmed" or selected[0].snapshot is None
+                else ""
+            ),
         )
 
     # ---- 操作 ----
@@ -968,6 +1048,29 @@ class CandidatesPage(BasePage):
         }
         self._show_add_dialog(preset)
 
+    def _copy_candidate_settings(self) -> None:
+        selected = self._selected()
+        if len(selected) != 1:
+            return
+        candidate = selected[0]
+        if candidate.recovery_state == "unconfirmed" or candidate.snapshot is None:
+            QMessageBox.information(
+                self,
+                "設定を引き継げません",
+                (candidate.recovery_reason or "元の重みと設定を確認できません")
+                + "。学習から設定を引き継いで新規作成してください。",
+            )
+            return
+        try:
+            self.ctx.backend.copy_candidate_settings(candidate.candidate_id)
+        except DuplicateCandidateError:
+            self._add_config_candidate()
+            return
+        except (ValueError, KeyError) as error:
+            QMessageBox.warning(self, "候補を新規作成できません", str(error))
+            return
+        self.refresh()
+
     def _evaluate(self) -> None:
         runner = self.runner
         if runner is not None and runner.is_busy:
@@ -976,7 +1079,9 @@ class CandidatesPage(BasePage):
         ids = [
             item.candidate_id
             for item in self._selected()
-            if item.status in {"candidate", "released"} and not self._is_active(item.candidate_id)
+            if item.status in {"candidate", "released"}
+            and not item.recovery_state
+            and not self._is_active(item.candidate_id)
         ]
         if runner is None or not ids:
             return

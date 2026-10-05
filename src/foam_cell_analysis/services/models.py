@@ -333,6 +333,8 @@ class Experiment:
     queue_id: str | None = field(default=None, repr=False, compare=False)
     queue_retry_attempt: int | None = field(default=None, repr=False, compare=False)
     queue_is_retry: bool = field(default=False, repr=False, compare=False)
+    recovery_state: str = ""
+    recovery_reason: str = ""
 
 
 @dataclass
@@ -397,6 +399,8 @@ class Candidate:
     effective_params: dict[str, Any] = field(default_factory=dict)
     # 採用している評価に対する最新の外部解析の集計（9.4。なければ None）
     external_summary: dict[str, Any] | None = None
+    recovery_state: str = ""
+    recovery_reason: str = ""
 
 
 @dataclass
@@ -445,6 +449,7 @@ class EvaluationRecord:
     broken: bool = False
     input_fingerprint: str | None = None
     schema: int | None = None
+    created_at: str | None = None
 
     @property
     def contamination_found(self) -> bool:

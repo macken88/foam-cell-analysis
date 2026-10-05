@@ -2,7 +2,7 @@ import copy
 import time
 
 import pytest
-from PySide6.QtCore import QItemSelection, QItemSelectionModel, Qt
+from PySide6.QtCore import QItemSelection, QItemSelectionModel, QPoint, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QDoubleSpinBox, QMessageBox, QSpinBox
 
@@ -251,6 +251,78 @@ def test_experiment_list_copies_checked_experiments_into_queue(shell):
     assert len(queued) == 1
     assert queued[0].experiment_id != experiment.experiment_id
     assert experiment.config.values["experiment"]["id"] == original_id
+
+
+def test_experiment_list_copies_legacy_checked_experiment_into_queue(shell):
+    backend = shell.ctx.backend
+    config = backend.default_experiment_config("mask_rcnn")
+    config["data"].pop("cv")
+    config["data"]["split_id"] = "split_001"
+    config["checkpoint"].pop("save_fold_models")
+    config["checkpoint"]["save_best"] = True
+    config["checkpoint"]["save_last"] = True
+    experiment = backend.save_experiment_draft(config)
+    experiment.config.values["data"].pop("cv")
+    experiment.config.values["data"]["split_id"] = "split_001"
+    experiment.config.values["checkpoint"].pop("save_fold_models")
+    experiment.config.values["checkpoint"]["save_best"] = True
+    experiment.config.values["checkpoint"]["save_last"] = True
+    original = copy.deepcopy(experiment.config.values)
+
+    shell.navigate(PageId.EXPERIMENTS)
+    page = shell.page(PageId.EXPERIMENTS)
+    page.refresh()
+    row = next(
+        row
+        for row in range(page.table.rowCount())
+        if page.table.item(row, 1).text() == experiment.experiment_id
+    )
+    rect = page.table.visualItemRect(page.table.item(row, 0))
+    checkbox_pos = rect.topLeft() + QPoint(12, rect.height() // 2)
+    QTest.mouseClick(page.table.viewport(), Qt.MouseButton.LeftButton, pos=checkbox_pos)
+    menu_bar = page.window().menuBar()
+    top = next(action for action in menu_bar.actions() if action.text().startswith("学習"))
+    QTest.mouseClick(menu_bar, Qt.MouseButton.LeftButton, pos=menu_bar.actionGeometry(top).center())
+    menu = top.menu()
+    action = page.action_map["queue_copy"]
+    assert action.isEnabled()
+    QTest.mouseClick(menu, Qt.MouseButton.LeftButton, pos=menu.actionGeometry(action).center())
+
+    queued = shell.ctx.backend.list_training_queue()
+    assert len(queued) == 1
+    assert queued[0].experiment_id != experiment.experiment_id
+    assert queued[0].config.values["data"]["cv"]["n_folds"] == 5
+    assert queued[0].config.values["checkpoint"]["save_fold_models"] is True
+    assert experiment.config.values == original
+
+
+def test_experiment_list_refuses_protected_experiment_queue_copy(shell):
+    backend = shell.ctx.backend
+    experiment = backend.list_experiments()[0]
+    original = copy.deepcopy(experiment.config.values)
+    experiment.recovery_state = "termination_unknown"
+    experiment.recovery_reason = "終了状態を確認できません"
+
+    shell.navigate(PageId.EXPERIMENTS)
+    page = shell.page(PageId.EXPERIMENTS)
+    row = next(
+        row
+        for row in range(page.table.rowCount())
+        if page.table.item(row, 1).text() == experiment.experiment_id
+    )
+    rect = page.table.visualItemRect(page.table.item(row, 0))
+    checkbox_pos = rect.topLeft() + QPoint(12, rect.height() // 2)
+    QTest.mouseClick(page.table.viewport(), Qt.MouseButton.LeftButton, pos=checkbox_pos)
+    menu_bar = page.window().menuBar()
+    top = next(action for action in menu_bar.actions() if action.text().startswith("学習"))
+    QTest.mouseClick(menu_bar, Qt.MouseButton.LeftButton, pos=menu_bar.actionGeometry(top).center())
+    menu = top.menu()
+    action = page.action_map["queue_copy"]
+
+    assert menu.isVisible()
+    assert not action.isEnabled()
+    assert backend.list_training_queue() == []
+    assert experiment.config.values == original
 
 
 def test_training_queue_order_and_page_navigation(shell):

@@ -26,6 +26,8 @@ from foam_cell_analysis.jobs.lifecycle import (
     decide_terminal_state,
     process_alive,
     process_created_at,
+    settle_process,
+    settle_unrecorded_worker,
     terminate_process,
     windows_process_handle,
 )
@@ -88,6 +90,15 @@ class TrainingService:
         self.app_version = app_version
         self.git_commit = git_commit
         self.experiments: dict[str, Experiment] = {}
+        self.recovery_issues: dict[str, tuple[str, str]] = {}
+        self.recovery_blockers: list[str] = []
+        self._queue_broken = False
+        self.recovery_issues.update(
+            {
+                f"profile:{profile_id}": ("unrecoverable", reason)
+                for profile_id, reason in self.profile_store.recovery_issues.items()
+            }
+        )
         self.queue: dict[str, Any] = {"schema": 1, "retry_seq": 0, "rows": []}
         self._last_event_seq: dict[tuple[str, int], int] = {}
         self._load()
@@ -99,45 +110,210 @@ class TrainingService:
     def _queue_path(self) -> Path:
         return self.root / "queue.json"
 
+    def _guard_experiment(self, experiment_id: str) -> None:
+        issue = self.recovery_issues.get(experiment_id)
+        if issue is not None:
+            raise ValueError(issue[1])
+
+    def _guard_queue(self) -> None:
+        if self._queue_broken:
+            raise ValueError("学習キューの記録が破損しているため変更できません")
+
     def _save_queue(self) -> None:
+        self._guard_queue()
         atomic_write_json(self._queue_path(), self.queue)
 
     def _load(self) -> None:
         if self._queue_path().exists():
-            self.queue = read_json(self._queue_path())
-        for path in sorted(self.root.glob("exp_*/experiment.json")):
-            record = read_json(path)
-            expid = record["experiment_id"]
-            config_path = path.parent / "config.yaml"
-            config = (
-                yaml.safe_load(config_path.read_text(encoding="utf-8"))
-                if config_path.exists()
-                else {}
-            )
-            experiment = Experiment(
-                expid,
-                record.get("study_id", "foam_study"),
-                record.get("description", ""),
-                record["model_type"],
-                ExperimentConfig(config),
-                "draft" if record.get("is_draft") else "queued",
-                created_at=datetime.fromisoformat(record["created_at"]),
-            )
-            for run_dir in sorted((path.parent / "runs").glob("attempt_*")):
-                spec_file = run_dir / "run_spec.json"
-                if not spec_file.exists():
-                    continue
-                spec = read_json(spec_file)
-                status_path = run_dir / "status.json"
-                status = read_json(status_path).get("status") if status_path.exists() else "running"
-                experiment.runs.append(
-                    RunAttempt(
-                        spec["attempt"], datetime.fromisoformat(spec["created_at"]), result=status
+            try:
+                loaded_queue = read_json(self._queue_path())
+                if (
+                    not isinstance(loaded_queue, dict)
+                    or not isinstance(loaded_queue.get("rows"), list)
+                    or any(
+                        not isinstance(row, dict)
+                        or not isinstance(row.get("queue_id"), str)
+                        or not row.get("queue_id")
+                        or not isinstance(row.get("experiment_id"), str)
+                        or not row.get("experiment_id")
+                        or re.fullmatch(r"exp_\d{4,}", row.get("experiment_id", "")) is None
+                        or not isinstance(row.get("state"), str)
+                        or row.get("state")
+                        not in {"queued", "running", "completed", "failed", "stopped"}
+                        or row.get("kind") not in {"new", "retry"}
+                        or not (
+                            row.get("attempt") is None
+                            or (type(row.get("attempt")) is int and row["attempt"] > 0)
+                        )
+                        for row in loaded_queue["rows"]
                     )
+                ):
+                    raise ValueError("キュー形式が不正です")
+                self.queue = loaded_queue
+            except (OSError, ValueError, TypeError) as error:
+                self._queue_broken = True
+                self.recovery_issues["queue"] = ("unrecoverable", "学習キューを読めません")
+                logger.warning("学習キューを読めません: %s", error)
+        for path in sorted(self.root.glob("exp_*/experiment.json")):
+            expid = path.parent.name
+            experiment = None
+            try:
+                record = read_json(path)
+                if not isinstance(record, dict):
+                    raise ValueError("実験記録の形式が不正です")
+                if record.get("experiment_id") != expid:
+                    raise ValueError("実験 ID がフォルダ名と一致しません")
+                if not isinstance(record.get("model_type"), str):
+                    raise ValueError("モデル種類の形式が不正です")
+                if not isinstance(record.get("study_id", "foam_study"), str) or not isinstance(
+                    record.get("description", ""), str
+                ):
+                    raise ValueError("実験の表示項目の形式が不正です")
+                config_path = path.parent / "config.yaml"
+                config = (
+                    yaml.safe_load(config_path.read_text(encoding="utf-8"))
+                    if config_path.exists()
+                    else None
                 )
-            if experiment.runs:
-                experiment.status = experiment.runs[-1].result
-            self.experiments[expid] = experiment
+                if config is not None and not isinstance(config, dict):
+                    raise ValueError("config.yaml の形式が不正です")
+                experiment = Experiment(
+                    expid,
+                    record.get("study_id", "foam_study"),
+                    record.get("description", ""),
+                    record["model_type"],
+                    ExperimentConfig(config or {}),
+                    "draft" if record.get("is_draft") else "queued",
+                    created_at=datetime.fromisoformat(record["created_at"]),
+                )
+                for run_dir in sorted((path.parent / "runs").glob("attempt_*")):
+                    spec_file = run_dir / "run_spec.json"
+                    if not spec_file.exists():
+                        continue
+                    spec = read_json(spec_file)
+                    if not experiment.config.values and isinstance(spec.get("config"), dict):
+                        experiment.config = ExperimentConfig(spec["config"])
+                    status_path = run_dir / "status.json"
+                    status_record = read_json(status_path) if status_path.exists() else None
+                    status = status_record.get("status") if status_record is not None else "running"
+                    if not isinstance(status, str):
+                        raise ValueError("試行状態の形式が不正です")
+                    experiment.runs.append(
+                        RunAttempt(
+                            spec["attempt"],
+                            datetime.fromisoformat(spec["created_at"]),
+                            result=status,
+                        )
+                    )
+                if experiment.runs:
+                    experiment.status = experiment.runs[-1].result
+                self.experiments[expid] = experiment
+            except (OSError, ValueError, TypeError, KeyError, yaml.YAMLError) as error:
+                self.recovery_issues[expid] = ("unrecoverable", "実験の記録を読めません")
+                if experiment is None:
+                    config = {}
+                    config_path = path.parent / "config.yaml"
+                    try:
+                        value = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+                        if isinstance(value, dict):
+                            config = value
+                    except (OSError, yaml.YAMLError):
+                        pass
+                    if not config:
+                        for spec_path in sorted(
+                            (path.parent / "runs").glob("attempt_*/run_spec.json"),
+                            reverse=True,
+                        ):
+                            try:
+                                spec_config = read_json(spec_path).get("config")
+                            except (OSError, ValueError, TypeError, KeyError):
+                                continue
+                            if isinstance(spec_config, dict) and spec_config:
+                                config = spec_config
+                                break
+                    model_config = config.get("model")
+                    experiment_config = config.get("experiment")
+                    model_type = (
+                        model_config.get("type", "") if isinstance(model_config, dict) else ""
+                    )
+                    experiment = Experiment(
+                        expid,
+                        experiment_config.get("study_id", "")
+                        if isinstance(experiment_config, dict)
+                        else "",
+                        experiment_config.get("description", "")
+                        if isinstance(experiment_config, dict)
+                        else "",
+                        model_type,
+                        ExperimentConfig(config),
+                        "unrecoverable",
+                    )
+                experiment.recovery_state = "unrecoverable"
+                experiment.recovery_reason = "実験の記録を読めません"
+                self.experiments[expid] = experiment
+                logger.warning("実験を読めません (%s): %s", path.parent, error)
+        for directory in sorted(self.root.glob("exp_*")):
+            if not directory.is_dir() or (directory / "experiment.json").exists():
+                continue
+            experiment_id = directory.name
+            reason = "実験の記録を読めません"
+            self.recovery_issues[experiment_id] = ("unrecoverable", reason)
+            config: dict[str, Any] = {}
+            config_path = directory / "config.yaml"
+            try:
+                loaded = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    config = loaded
+            except (OSError, yaml.YAMLError):
+                pass
+            if not config:
+                for spec_path in sorted(
+                    (directory / "runs").glob("attempt_*/run_spec.json"), reverse=True
+                ):
+                    try:
+                        loaded = read_json(spec_path).get("config")
+                    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+                        continue
+                    if isinstance(loaded, dict) and loaded:
+                        config = loaded
+                        break
+            experiment_config = config.get("experiment")
+            model_config = config.get("model")
+            study_id = (
+                experiment_config.get("study_id", "") if isinstance(experiment_config, dict) else ""
+            )
+            description = (
+                experiment_config.get("description", "")
+                if isinstance(experiment_config, dict)
+                else ""
+            )
+            model_type = model_config.get("type", "") if isinstance(model_config, dict) else ""
+            self.experiments[experiment_id] = Experiment(
+                experiment_id,
+                study_id if isinstance(study_id, str) else "",
+                description if isinstance(description, str) else "",
+                model_type if isinstance(model_type, str) else "",
+                ExperimentConfig(config),
+                "unrecoverable",
+                recovery_state="unrecoverable",
+                recovery_reason=reason,
+            )
+        for row in self.queue["rows"]:
+            experiment_id = row["experiment_id"]
+            if experiment_id in self.experiments:
+                continue
+            reason = "実験フォルダが見つかりません"
+            self.recovery_issues[experiment_id] = ("unrecoverable", reason)
+            self.experiments[experiment_id] = Experiment(
+                experiment_id,
+                "",
+                "",
+                "",
+                ExperimentConfig({}),
+                "unrecoverable",
+                recovery_state="unrecoverable",
+                recovery_reason=reason,
+            )
 
     def _write_experiment(self, experiment: Experiment, is_draft: bool) -> None:
         directory = self.root / experiment.experiment_id
@@ -166,9 +342,24 @@ class TrainingService:
         return bool(read_json(path).get("is_draft", False)) if path.exists() else True
 
     def next_experiment_id(self) -> str:
-        numbers = [int(key[-4:]) for key in self.experiments if key.startswith("exp_")]
+        numbers = [
+            int(match.group(1))
+            for key in self.experiments
+            if (match := re.fullmatch(r"exp_(\d+)", key))
+        ]
+        # 破損記録を含むディレクトリ名も予約済みとして扱う。
+        for folder in self.root.glob("exp_*"):
+            match = re.fullmatch(r"exp_(\d+)", folder.name)
+            if match:
+                numbers.append(int(match.group(1)))
+        for row in self.queue["rows"]:
+            match = re.fullmatch(r"exp_(\d+)", row["experiment_id"])
+            if match:
+                numbers.append(int(match.group(1)))
         # 削除した実験の番号は再利用しない（古い比較候補などが別の実験を指さないように）
-        numbers.append(int(self.queue.get("max_deleted_experiment_number", 0)))
+        deleted_number = self.queue.get("max_deleted_experiment_number", 0)
+        if type(deleted_number) is int and deleted_number >= 0:
+            numbers.append(deleted_number)
         return f"exp_{max(numbers) + 1:04d}"
 
     def default_experiment_config(self, model_type: str) -> dict[str, Any]:
@@ -450,6 +641,11 @@ class TrainingService:
         expid = (
             experiment_id or migrated.get("experiment", {}).get("id") or self.next_experiment_id()
         )
+        if not isinstance(expid, str) or not re.fullmatch(r"exp_\d{4,}", expid):
+            raise ValueError("実験 ID が不正です")
+        self._guard_experiment(expid)
+        if (self.root / expid).exists() and expid not in self.experiments:
+            raise ValueError("既存の実験記録を上書きできません")
         if self._has_attempts(expid):
             raise ValueError("試行がある実験の設定は上書きできません")
         migrated.setdefault("experiment", {})["id"] = expid
@@ -464,6 +660,9 @@ class TrainingService:
         self, config: dict[str, Any], experiment_id: str | None = None
     ) -> Experiment:
         """設定を実験へ保存して実行待ちにする。試行は prepare_training_run が作る。"""
+        self._guard_queue()
+        if self.recovery_blockers:
+            raise ValueError("前回のプロセスを確認できないため、新しい学習を開始できません")
         experiment = self.save_experiment_draft(config, experiment_id)
         experiment.status = "running"
         self._write_experiment(experiment, False)
@@ -471,6 +670,7 @@ class TrainingService:
 
     def retry_experiment(self, experiment_id: str) -> Experiment:
         """既存実験を再実行待ちに戻す。試行の作成は行わない。"""
+        self._guard_experiment(experiment_id)
         experiment = self.experiments[experiment_id]
         config, _migrated = self.migrate_experiment_config(experiment.config.values)
         if self._is_legacy_config(config):
@@ -487,7 +687,13 @@ class TrainingService:
         self, experiment_id: str, attempt: int, pid: int, creation_time: float
     ) -> None:
         """子プロセスの PID と作成時刻を復旧用ファイルへ保存する。"""
+        self._guard_experiment(experiment_id)
         directory = self.root / experiment_id / "runs" / f"attempt_{attempt:03d}"
+        # hello 受信のプロセス同一性を先に残し、process.json 作成前の異常終了も照合可能にする。
+        atomic_write_json(
+            directory / "hello.json",
+            {"pid": int(pid), "creation_time": float(creation_time)},
+        )
         atomic_write_json(
             directory / "process.json",
             {"pid": int(pid), "creation_time": float(creation_time)},
@@ -495,6 +701,7 @@ class TrainingService:
 
     def fail_training_preparation(self, experiment_id: str) -> None:
         """試行ディレクトリを作る前の準備失敗を実験へ記録する。"""
+        self._guard_experiment(experiment_id)
         experiment = self.experiments.get(experiment_id)
         if experiment is None or experiment.runs:
             return
@@ -510,8 +717,12 @@ class TrainingService:
         return self.dataset_store.get_mask(version, item_id, revision)
 
     def add_training_queue_item(self, config: dict[str, Any]) -> Experiment:
+        self._guard_queue()
         migrated, _ = self.migrate_experiment_config(config)
         expid = migrated.get("experiment", {}).get("id") or self.next_experiment_id()
+        if not isinstance(expid, str) or re.fullmatch(r"exp_\d{4,}", expid) is None:
+            raise ValueError("実験 ID の形式が不正です")
+        self._guard_experiment(expid)
         existing = self.experiments.get(expid)
         # 試行のない下書きは同じ識別子のままキューへ移す
         reuse_draft = (
@@ -536,6 +747,8 @@ class TrainingService:
         return self.list_training_queue()[-1]
 
     def add_training_retry_reservation(self, experiment_id: str) -> Experiment:
+        self._guard_queue()
+        self._guard_experiment(experiment_id)
         experiment = self.experiments[experiment_id]
         if self._is_legacy_config(experiment.config.values):
             raise ValueError("旧形式設定は再試行できません。設定を複製して新規実験にしてください")
@@ -560,7 +773,12 @@ class TrainingService:
             if experiment is None:
                 continue
             view = copy.copy(experiment)
-            view.status = row["state"]
+            issue = self.recovery_issues.get(row["experiment_id"])
+            if issue is not None:
+                view.status, view.recovery_reason = issue
+                view.recovery_state = issue[0]
+            else:
+                view.status = row["state"]
             view.queue_id = row["queue_id"]
             view.queue_is_retry = row["kind"] == "retry"
             view.queue_retry_attempt = row["attempt"]
@@ -568,6 +786,8 @@ class TrainingService:
         return result
 
     def update_training_queue_item(self, experiment_id: str, config: dict[str, Any]) -> Experiment:
+        self._guard_queue()
+        self._guard_experiment(experiment_id)
         row = next((item for item in self.queue["rows"] if item["queue_id"] == experiment_id), None)
         if row is None or row["state"] != "queued" or row["kind"] != "new":
             raise ValueError("待機中の新規キュー項目のみ編集できます")
@@ -592,6 +812,10 @@ class TrainingService:
         )
 
     def reorder_training_queue(self, experiment_ids: list[str]) -> list[Experiment]:
+        self._guard_queue()
+        for row in self.queue["rows"]:
+            if row["queue_id"] in experiment_ids:
+                self._guard_experiment(row["experiment_id"])
         selected = [
             row
             for queue_id in experiment_ids
@@ -606,6 +830,10 @@ class TrainingService:
         return self.list_training_queue()
 
     def duplicate_training_queue_items(self, experiment_ids: list[str]) -> list[Experiment]:
+        self._guard_queue()
+        for row in self.queue["rows"]:
+            if row["queue_id"] in experiment_ids:
+                self._guard_experiment(row["experiment_id"])
         result = []
         for queue_id in experiment_ids:
             row = next(item for item in self.queue["rows"] if item["queue_id"] == queue_id)
@@ -631,6 +859,10 @@ class TrainingService:
         return result
 
     def delete_training_queue_items(self, experiment_ids: list[str]) -> None:
+        self._guard_queue()
+        for row in self.queue["rows"]:
+            if row["queue_id"] in experiment_ids:
+                self._guard_experiment(row["experiment_id"])
         removed = [
             row
             for row in self.queue["rows"]
@@ -644,19 +876,26 @@ class TrainingService:
         self._save_queue()
 
     def clear_finished_training_queue_items(self) -> None:
+        self._guard_queue()
         self.queue["rows"] = [
             row
             for row in self.queue["rows"]
-            if row["state"] not in {"completed", "failed", "stopped"}
+            if row["experiment_id"] in self.recovery_issues
+            or row["state"] not in {"completed", "failed", "stopped"}
         ]
         self._save_queue()
 
     def take_next_training_queue_item(self) -> Experiment | None:
+        self._guard_queue()
+        if self.recovery_blockers:
+            raise ValueError("前回のプロセスを確認できないため、新しい学習を開始できません")
         row = next(
             (
                 item
                 for item in self.queue["rows"]
                 if item["state"] == "queued"
+                and item["experiment_id"] not in self.recovery_issues
+                and item["experiment_id"] in self.experiments
                 and not any(
                     x["level"] == "error"
                     for x in self.validate_experiment_config(
@@ -679,8 +918,10 @@ class TrainingService:
         return view
 
     def finish_training_queue_item(self, queue_id: str | None, status: str) -> None:
+        self._guard_queue()
         row = next((item for item in self.queue["rows"] if item["queue_id"] == queue_id), None)
         if row:
+            self._guard_experiment(row["experiment_id"])
             row["state"] = status
             if row["experiment_id"] in self.experiments:
                 self.experiments[row["experiment_id"]].status = status
@@ -728,6 +969,10 @@ class TrainingService:
         self, experiment_id: str, queue_id: str | None = None, retry: bool = False
     ) -> PreparedRun:
         """run_spec を完成してから attempt 名へ移し、同じ queue 要求を冪等に返す。"""
+        self._guard_experiment(experiment_id)
+        self._guard_queue()
+        if self.recovery_blockers:
+            raise ValueError("前回のプロセスを確認できないため、新しい学習を開始できません")
         experiment = self.experiments[experiment_id]
         config, _migrated = self.migrate_experiment_config(experiment.config.values)
         if self._is_legacy_config(config):
@@ -922,6 +1167,7 @@ class TrainingService:
         experiment.phase = "cross_validation"
 
     def apply_training_event(self, experiment_id: str, event: dict[str, Any]) -> Experiment:
+        self._guard_experiment(experiment_id)
         """seq を照合してイベントを反映し、飛びがあればイベントログから再生する。"""
         validate_event(event, allow_hello=True)
         if event["type"] == "hello":
@@ -1068,6 +1314,7 @@ class TrainingService:
 
     def request_training_stop(self, experiment_id: str, attempt: int, reason: str) -> None:
         """stop_request.json を原子的に保存する。"""
+        self._guard_experiment(experiment_id)
         if reason not in {"user_stop", "app_exit"}:
             raise ValueError("中断理由は user_stop または app_exit です")
         directory = self.root / experiment_id / "runs" / f"attempt_{attempt:03d}"
@@ -1179,6 +1426,7 @@ class TrainingService:
         self, experiment_id: str, attempt: int, job_exit: JobExit | None = None
     ) -> TrainingOutcome:
         directory = self.root / experiment_id / "runs" / f"attempt_{attempt:03d}"
+        self._guard_experiment(experiment_id)
         spec = read_run_spec(directory)
         status_path = directory / "status.json"
         stop_path = directory / "stop_request.json"
@@ -1241,30 +1489,176 @@ class TrainingService:
     def conclude_training_run(
         self, experiment_id: str, attempt: int, job_exit: JobExit | None = None
     ) -> TrainingOutcome:
+        self._guard_experiment(experiment_id)
         return self._conclude(experiment_id, attempt, job_exit)
 
     def recover(self) -> list[TrainingOutcome]:
         """起動復旧を行い、キュー行・一時領域・試行状態を照合する。"""
+        self.recovery_blockers = []
+        for experiment_id, (state, _reason) in list(self.recovery_issues.items()):
+            if state == "unconfirmed":
+                self.recovery_issues.pop(experiment_id, None)
+                experiment = self.experiments.get(experiment_id)
+                if experiment is not None and experiment.recovery_state == "unconfirmed":
+                    experiment.recovery_state = ""
+                    experiment.recovery_reason = ""
+        # 先に復旧が触れる全入力を読む。履歴の破損を見つける前に status や
+        # queue を書き換えないよう、対象実験単位で保護する。
+        protected: set[str] = set(self.recovery_issues)
+        preflight_history: dict[str, Experiment] = {}
+        for spec_path in sorted(self.root.glob("exp_*/runs/attempt_*/run_spec.json")):
+            run_dir = spec_path.parent
+            experiment_id = run_dir.parents[1].name
+            try:
+                spec = read_json(spec_path)
+                if (
+                    not isinstance(spec.get("run_id"), str)
+                    or type(spec.get("attempt")) is not int
+                    or spec["attempt"] < 1
+                ):
+                    raise ValueError("run_spec の必須項目が不正です")
+                for name in (
+                    "process.json",
+                    "hello.json",
+                    "status.json",
+                    "stop_request.json",
+                    "error.json",
+                    "result.json",
+                    "result.partial.json",
+                ):
+                    candidate = run_dir / name
+                    if candidate.is_file():
+                        value = read_json(candidate)
+                        if name == "status.json" and (
+                            not isinstance(value.get("status"), str)
+                            or not value.get("status")
+                            or (
+                                value.get("reason") is not None
+                                and not isinstance(value.get("reason"), str)
+                            )
+                        ):
+                            raise ValueError("status.json の形式が不正です")
+                        if name == "stop_request.json" and (
+                            value.get("reason") is not None
+                            and not isinstance(value.get("reason"), str)
+                        ):
+                            raise ValueError("stop_request.json の形式が不正です")
+                events = run_dir / "events.jsonl"
+                if events.is_file():
+                    read_events(events, expected_run_id=spec.get("run_id"))
+                original = copy.deepcopy(self.experiments.get(experiment_id))
+                seq_key = (experiment_id, int(spec["attempt"]))
+                prior_seq = self._last_event_seq.get(seq_key)
+                try:
+                    if original is not None:
+                        self._replay_attempt(experiment_id, int(spec["attempt"]))
+                        preflight_history[experiment_id] = copy.deepcopy(
+                            self.experiments[experiment_id]
+                        )
+                finally:
+                    if original is not None:
+                        self.experiments[experiment_id] = original
+                    if prior_seq is None:
+                        self._last_event_seq.pop(seq_key, None)
+                    else:
+                        self._last_event_seq[seq_key] = prior_seq
+            except (OSError, ValueError, TypeError, KeyError, AttributeError) as error:
+                protected.add(experiment_id)
+                process_file = run_dir / "process.json"
+                process_broken = False
+                try:
+                    if process_file.exists():
+                        read_json(process_file)
+                except (OSError, ValueError, TypeError, KeyError):
+                    process_broken = True
+                # ここでは記録の保護だけ決め、計算全体の blocker は後続の
+                # PID/作成時刻照合結果が unconfirmed の場合にだけ設定する。
+                reason = (
+                    "前回の学習プロセスを確認できません。終了後に再起動してください。"
+                    if process_broken
+                    else "学習履歴を読めません"
+                )
+                self.recovery_issues[experiment_id] = ("unrecoverable", reason)
+                experiment = self.experiments.get(experiment_id)
+                if experiment is not None:
+                    experiment.recovery_state = "unrecoverable"
+                    experiment.recovery_reason = reason
+                logger.warning("学習履歴を読めません (%s): %s", run_dir, error)
         outcomes = []
         specs_by_queue: dict[str, tuple[int, str]] = {}
         for spec_path in sorted(self.root.glob("exp_*/runs/attempt_*/run_spec.json")):
             run_dir = spec_path.parent
             experiment_id = run_dir.parents[1].name
+            if experiment_id in protected:
+                # 状態ファイルの有無を問わず、保護対象の spec は再読込せず、
+                # 各試行のプロセス照合だけを行う。
+                settled = self._settle_run_identity(run_dir)
+                if settled == "missing":
+                    settled = settle_unrecorded_worker(
+                        run_dir,
+                        "foam_cell_analysis.training.run",
+                        self.process_alive,
+                        self.process_terminator,
+                    )
+                if settled == "unconfirmed":
+                    reason = "前回の学習プロセスを確認できません。終了後に再起動してください。"
+                    if reason not in self.recovery_blockers:
+                        self.recovery_blockers.append(reason)
+                    self.recovery_issues[experiment_id] = ("unconfirmed", reason)
+                    experiment = self.experiments.get(experiment_id)
+                    if experiment is not None:
+                        experiment.recovery_state = "unconfirmed"
+                        experiment.recovery_reason = reason
+                continue
             spec = read_json(spec_path)
             attempt = int(spec["attempt"])
             if not (run_dir / "status.json").exists():
-                process_file = run_dir / "process.json"
-                if process_file.exists():
-                    process = read_json(process_file)
-                    if self.process_alive(process):
-                        self.process_terminator(process)
-                        deadline = time.monotonic() + 5.0
-                        while self.process_alive(process) and time.monotonic() < deadline:
-                            time.sleep(0.1)
-                        if self.process_alive(process):
-                            raise RuntimeError(
-                                f"学習プロセスを終了できませんでした: {spec['run_id']}"
-                            )
+                settled = self._settle_run_identity(run_dir)
+                if settled == "missing":
+                    settled = settle_unrecorded_worker(
+                        run_dir,
+                        "foam_cell_analysis.training.run",
+                        self.process_alive,
+                        self.process_terminator,
+                    )
+                if settled == "unconfirmed":
+                    reason = "前回の学習プロセスを確認できません。終了後に再起動してください。"
+                    self.recovery_blockers.append(reason)
+                    self.recovery_issues[experiment_id] = ("unconfirmed", reason)
+                    experiment = self.experiments.get(experiment_id)
+                    if experiment is not None:
+                        experiment.recovery_state = "unconfirmed"
+                        experiment.recovery_reason = reason
+                    protected.add(experiment_id)
+                    continue
+                # hello 前に process.json がまだない場合は停止済みと断定しない。
+                if settled == "missing":
+                    has_terminal_evidence = any(
+                        (run_dir / name).is_file()
+                        for name in (
+                            "status.json",
+                            "stop_request.json",
+                            "error.json",
+                            "result.json",
+                        )
+                    )
+                    queued_before_launch = any(
+                        row.get("experiment_id") == experiment_id
+                        and row.get("state") == "queued"
+                        and row.get("attempt") is None
+                        for row in self.queue.get("rows", [])
+                    )
+                    hello_seen = (run_dir / "hello.json").is_file()
+                    if hello_seen or (not has_terminal_evidence and not queued_before_launch):
+                        reason = "前回の学習プロセスを確認できません。終了後に再起動してください。"
+                        self.recovery_blockers.append(reason)
+                        self.recovery_issues[experiment_id] = ("unconfirmed", reason)
+                        experiment = self.experiments.get(experiment_id)
+                        if experiment is not None:
+                            experiment.recovery_state = "unconfirmed"
+                            experiment.recovery_reason = reason
+                        protected.add(experiment_id)
+                        continue
                 outcome = self._conclude(experiment_id, attempt)
                 outcomes.append(outcome)
             if spec.get("queue_id"):
@@ -1275,13 +1669,17 @@ class TrainingService:
                     if status_file.exists()
                     else "running",
                 )
-        for row in self.queue.get("rows", []):
+        for row in self.queue.get("rows", []) if not self._queue_broken else []:
+            if row.get("experiment_id") in protected:
+                continue
             found = specs_by_queue.get(row["queue_id"])
             if found:
                 row["attempt"], row["state"] = found
             elif row["state"] == "running":
                 row.update(state="queued", attempt=None)
         for experiment_dir in sorted(self.root.glob("exp_*")):
+            if experiment_dir.name in protected:
+                continue
             # リンク（ジャンクション含む）の試行フォルダは _attempt_dirs が除外する
             try:
                 attempt_dirs = self._attempt_dirs(experiment_dir.name)
@@ -1296,14 +1694,52 @@ class TrainingService:
                 except (OSError, ValueError):
                     logger.exception("成果物の整理を再開できませんでした: %s", pruned_path)
         for path in self.root.glob("exp_*/runs/.preparing_*"):
-            shutil.rmtree(path, ignore_errors=True)
+            if path.parents[1].name not in protected:
+                shutil.rmtree(path, ignore_errors=True)
         for storage_root in (self.root, self.workspace_root / "augmentation"):
             if storage_root.exists():
                 for path in storage_root.rglob("*.tmp"):
+                    if (
+                        storage_root == self.root
+                        and self._queue_broken
+                        and path.name == "queue.json.tmp"
+                    ):
+                        continue
+                    if storage_root == self.root and any(part in protected for part in path.parts):
+                        continue
+                    if storage_root.name == "augmentation" and any(
+                        key.startswith("profile:") for key in self.recovery_issues
+                    ):
+                        continue
                     path.unlink(missing_ok=True)
-        self._save_queue()
-        self._replay_history()
+        if not self._queue_broken and not protected:
+            self._save_queue()
+        try:
+            self._replay_history(protected)
+            # 保護対象の閲覧用履歴は事前読取中に得たメモリ上の値を使い、
+            # プロセス照合後に run_spec/events を再読込しない。
+            for experiment_id, experiment in preflight_history.items():
+                if experiment_id not in protected:
+                    continue
+                issue = self.recovery_issues.get(experiment_id)
+                if issue is not None:
+                    experiment.recovery_state, experiment.recovery_reason = issue
+                self.experiments[experiment_id] = experiment
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            logger.warning("履歴の再構築を完了できません: %s", error)
         return outcomes
+
+    def _settle_run_identity(self, run_dir: Path) -> str:
+        """process.json が壊れていても独立した hello.json で照合を試す。"""
+        process_file = run_dir / "process.json"
+        hello_file = run_dir / "hello.json"
+        primary = process_file if process_file.exists() else hello_file
+        settled = settle_process(primary, self.process_alive, self.process_terminator)
+        if settled == "unconfirmed" and primary == process_file and hello_file.exists():
+            fallback = settle_process(hello_file, self.process_alive, self.process_terminator)
+            if fallback in {"dead", "terminated"}:
+                return fallback
+        return settled
 
     def _replay_attempt(self, experiment_id: str, attempt: int) -> None:
         """指定試行のイベントと結果ファイルから表示用履歴を再構築する。"""
@@ -1369,14 +1805,21 @@ class TrainingService:
             for name, value in previous.items():
                 setattr(experiment, name, value)
 
-    def _replay_history(self) -> None:
+    def _replay_history(self, protected: set[str] | None = None) -> None:
         """イベントと結果ファイルから全試行の表示用履歴を再構築する。"""
         self._last_event_seq.clear()
         for spec_path in sorted(self.root.glob("exp_*/runs/attempt_*/run_spec.json")):
             run_dir = spec_path.parent
             experiment_id = run_dir.parents[1].name
-            if experiment_id in self.experiments:
-                self._replay_attempt(experiment_id, int(run_dir.name[-3:]))
+            if experiment_id in self.experiments and experiment_id not in (protected or set()):
+                try:
+                    self._replay_attempt(experiment_id, int(run_dir.name[-3:]))
+                except (OSError, ValueError, KeyError, TypeError) as error:
+                    self.recovery_issues[experiment_id] = ("unrecoverable", "学習履歴を読めません")
+                    experiment = self.experiments[experiment_id]
+                    experiment.recovery_state = "unrecoverable"
+                    experiment.recovery_reason = "学習履歴を読めません"
+                    logger.warning("学習履歴を再構築できません (%s): %s", run_dir, error)
 
     def create_candidate_snapshot(
         self, experiment_id: str, *, attempt: int | None = None
@@ -1385,6 +1828,7 @@ class TrainingService:
 
         attempt を省くと最新の完了試行を使う（従来の呼び出し元との互換のため）。
         """
+        self._guard_experiment(experiment_id)
         experiment = self.experiments[experiment_id]
         if attempt is None:
             completed_runs = [run for run in experiment.runs if run.result == "completed"]
@@ -1789,6 +2233,8 @@ class TrainingService:
         protected_final: Callable[[str, int], str] | None = None,
     ) -> PruneResult:
         """選んだ種類の成果物を消す。条件を満たさないまとまりは消さずに skipped へ入れる。"""
+        for experiment_id in experiment_ids:
+            self._guard_experiment(experiment_id)
         unknown = [item for item in categories if item not in self.ARTIFACT_CATEGORIES]
         if unknown:
             raise ValueError(f"成果物の種類が不正です: {', '.join(unknown)}")
@@ -1843,6 +2289,7 @@ class TrainingService:
         self, experiment_id: str, *, measure_size: bool = True
     ) -> ExperimentDeletionInfo:
         """削除の可否と、削除で消える試行数・容量を返す。"""
+        self._guard_experiment(experiment_id)
         experiment = self.experiments[experiment_id]
         attempts = len(experiment.runs)
         reason = ""
@@ -1868,6 +2315,8 @@ class TrainingService:
 
     def delete_experiment(self, experiment_id: str) -> None:
         """実験フォルダ全体と、その実験のキュー行を削除する。"""
+        self._guard_experiment(experiment_id)
+        self._guard_queue()
         info = self.experiment_deletion_info(experiment_id, measure_size=False)
         if not info.allowed:
             raise ValueError(info.reason)

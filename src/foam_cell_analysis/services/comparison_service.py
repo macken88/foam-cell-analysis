@@ -36,6 +36,8 @@ from foam_cell_analysis.inference.protocol import SCHEMAS as EVALUATION_SCHEMAS
 from foam_cell_analysis.jobs.lifecycle import (
     decide_terminal_state,
     process_alive,
+    settle_process,
+    settle_unrecorded_worker,
     terminate_process,
     write_process_record,
 )
@@ -283,7 +285,7 @@ def _evaluation_from_summary(overall: Any, per_class: Any) -> Evaluation | None:
     """
     if not isinstance(overall, dict) or not (per_class is None or isinstance(per_class, dict)):
         return None
-    classes: dict[str, tuple[float, int]] = {}
+    classes: dict[str, tuple[float | None, int]] = {}
     for name, value in (per_class or {}).items():
         if isinstance(value, dict):
             ap, count = value.get("ap"), value.get("n_images", 0)
@@ -291,12 +293,28 @@ def _evaluation_from_summary(overall: Any, per_class: Any) -> Evaluation | None:
             ap, count = value
         else:
             continue
-        classes[str(name)] = (None if ap is None else float(ap), int(count or 0))
+        try:
+            parsed_ap = None if ap is None else float(ap)
+            parsed_count = int(count or 0)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if parsed_ap is not None and not math.isfinite(parsed_ap):
+            continue
+        if parsed_count < 0:
+            continue
+        classes[str(name)] = (parsed_ap, parsed_count)
     ap = overall.get("ap")
+    try:
+        parsed_ap = None if ap is None else float(ap)
+        n_images = int(overall.get("n_images") or 0)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if (parsed_ap is not None and not math.isfinite(parsed_ap)) or n_images < 0:
+        return None
     return Evaluation(
-        None if ap is None else float(ap),
+        parsed_ap,
         classes,
-        int(overall.get("n_images") or 0),
+        n_images,
     )
 
 
@@ -490,6 +508,8 @@ class ComparisonService:
         self.process_terminator = process_terminator or _default_terminate_process
         # 復旧で終了できなかった評価プロセスの説明。GUI が新しい計算を止めるために使う
         self.recovery_blockers: list[str] = []
+        self.recovery_issues: dict[str, tuple[str, str]] = {}
+        self._external_broken: set[str] = set()
         # 実行中の評価の進捗（保存しない）と、評価ごとの最後の seq・記録の形式
         self._progress: dict[str, EvaluationProgress] = {}
         self._last_event_seq: dict[tuple[str, str], int] = {}
@@ -506,14 +526,29 @@ class ComparisonService:
         評価フォルダ（evaluations/ 以下）はプロセスの照合が要るので、評価の復旧（7.6）に任せる。
         修復した候補 ID を返す。
         """
+        # 元記録を先に走査し、壊れた候補配下では移行や一時ファイル削除をしない。
+        records = self._candidate_records()
+        for record in records:
+            candidate_id = record["candidate_id"]
+            if record.get("_recovery_issue"):
+                continue
+            self._read_external(candidate_id)
+            if candidate_id in self._external_broken:
+                self.recovery_issues[candidate_id] = (
+                    "unrecoverable",
+                    "外部解析の記録を読めません",
+                )
         for path in self.configs_root.glob("*.tmp"):
             self._remove(path)
-        for path in self.candidates_root.glob(".preparing_*"):
-            self._remove(path)
+        if not self.recovery_issues:
+            for path in self.candidates_root.glob(".preparing_*"):
+                self._remove(path)
         for path in self.candidates_root.glob("*/*.tmp"):
-            self._remove(path)
-        for path in self.releases_root.glob("*.tmp"):
-            self._remove(path)
+            if path.parent.name not in self.recovery_issues:
+                self._remove(path)
+        if not self.recovery_issues:
+            for path in self.releases_root.glob("*.tmp"):
+                self._remove(path)
         self.migrate_candidate_pairs()
         self.recover_release_deletions()
         return self.recover_releases()
@@ -531,6 +566,18 @@ class ComparisonService:
         migrated: list[str] = []
         self.pairing_issues = {}
         for record in self._candidate_records():
+            if record.get("_recovery_issue") or record["candidate_id"] in self.recovery_issues:
+                continue
+            if not isinstance(record.get("source"), dict) or not isinstance(
+                record.get("dataset_pair", {}), dict
+            ):
+                candidate_id = record.get("candidate_id")
+                if isinstance(candidate_id, str):
+                    self.recovery_issues[candidate_id] = (
+                        "unrecoverable",
+                        "候補の元設定を読めません",
+                    )
+                continue
             if record.get("validation_version"):
                 continue
             candidate_id = record["candidate_id"]
@@ -559,10 +606,19 @@ class ComparisonService:
         """候補の元の試行の学習用の版。記録がなければ ValueError。"""
         pair = record.get("dataset_pair") or {}
         source = record.get("source") or {}
+        if not isinstance(pair, dict) or not isinstance(source, dict):
+            raise ValueError("候補の元設定の形式が不正です")
+        training_dataset = source.get("training_dataset") or {}
+        experiment_config = source.get("experiment_config") or {}
+        if not isinstance(training_dataset, dict) or not isinstance(experiment_config, dict):
+            raise ValueError("候補の元設定の形式が不正です")
+        data_config = experiment_config.get("data") or {}
+        if not isinstance(data_config, dict):
+            raise ValueError("候補の元設定の形式が不正です")
         version = (
             pair.get("training_version")
-            or (source.get("training_dataset") or {}).get("version")
-            or ((source.get("experiment_config") or {}).get("data") or {}).get("dataset_version")
+            or training_dataset.get("version")
+            or data_config.get("dataset_version")
         )
         if not isinstance(version, str) or not version:
             raise ValueError("元の試行の学習用データセットの記録がありません")
@@ -652,14 +708,17 @@ class ComparisonService:
 
     def recover_releases(self) -> list[str]:
         """13.3: releases/.preparing_* を消し、公開済みリリースの候補状態を修復する。"""
-        for path in self.releases_root.glob(".preparing_*"):
-            self._remove(path)
+        if not self.recovery_issues:
+            for path in self.releases_root.glob(".preparing_*"):
+                self._remove(path)
         repaired = []
         releases = self._release_records()
         candidate_ids = dict.fromkeys(
             (release.get("candidate") or {}).get("candidate_id") for _model_id, release in releases
         )
         for candidate_id in candidate_ids:
+            if candidate_id in self.recovery_issues:
+                continue
             try:
                 record = self._read_candidate(candidate_id)
                 published = self._published_release(record, releases)
@@ -736,7 +795,7 @@ class ComparisonService:
                 )
                 if config.config_id != path.stem:
                     raise ValueError("ファイル名と config_id が一致しません")
-            except (OSError, ValueError, KeyError, TypeError) as error:
+            except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
                 logger.warning("推論設定を読めません (%s): %s", path, error)
                 continue
             if model_type is None or config.model_type == model_type:
@@ -783,13 +842,82 @@ class ComparisonService:
     def _candidate_dir(self, candidate_id: str) -> Path:
         return self.candidates_root / _check_id(_CANDIDATE_ID, candidate_id, "候補 ID")
 
+    def _guard_candidate(self, candidate_id: str) -> None:
+        issue = self.recovery_issues.get(candidate_id)
+        if issue is not None:
+            raise ValueError(issue[1])
+        external_path = self._candidate_dir(candidate_id) / "external.json"
+        if external_path.is_file():
+            try:
+                external = read_json(external_path)
+                values = external.get("records") if isinstance(external, dict) else None
+                if not isinstance(values, list) or any(
+                    not isinstance(item, dict) for item in values
+                ):
+                    raise ValueError("外部解析形式が不正です")
+            except (OSError, ValueError, TypeError) as error:
+                reason = "外部解析の記録を読めないため変更できません"
+                self._external_broken.add(candidate_id)
+                self.recovery_issues[candidate_id] = ("unrecoverable", reason)
+                raise ValueError(reason) from error
+
+    def _external_records_for_mutation(self, candidate_id: str) -> list[dict[str, Any]]:
+        path = self._candidate_dir(candidate_id) / "external.json"
+        if candidate_id in self._external_broken:
+            raise ValueError("外部解析の記録を読めないため変更できません")
+        if not path.is_file():
+            return []
+        try:
+            record = read_json(path)
+            values = record.get("records")
+            if not isinstance(values, list) or any(not isinstance(item, dict) for item in values):
+                raise ValueError("外部解析形式が不正です")
+            return values
+        except (OSError, ValueError, TypeError) as error:
+            self._external_broken.add(candidate_id)
+            raise ValueError("外部解析の記録を読めないため変更できません") from error
+
     def _read_candidate(self, candidate_id: Any) -> dict[str, Any]:
         path = self._candidate_dir(candidate_id) / "candidate.json"
         if not path.is_file():
             raise KeyError(candidate_id)
         record = read_json(path)
+        if not isinstance(record, dict):
+            raise ValueError(f"候補の記録形式が不正です: {candidate_id}")
         if record.get("candidate_id") != candidate_id:
             raise ValueError(f"candidate.json の候補 ID が一致しません: {candidate_id}")
+        if not isinstance(record.get("source"), dict):
+            raise ValueError("候補の元設定形式が不正です")
+        source = record["source"]
+        if "experiment_id" in source and not isinstance(source["experiment_id"], str):
+            raise ValueError("候補の元実験 ID 形式が不正です")
+        if "attempt" in source and (type(source["attempt"]) is not int or source["attempt"] < 1):
+            raise ValueError("候補の元試行番号形式が不正です")
+        for key in ("training_dataset", "experiment_config", "weights", "preprocessing"):
+            value = source.get(key)
+            if value is not None and not isinstance(value, dict):
+                raise ValueError("候補の元設定形式が不正です")
+        weights = source.get("weights")
+        if isinstance(weights, dict):
+            size = weights.get("size")
+            sha256 = weights.get("sha256")
+            weight_path = weights.get("path")
+            if size is not None and (type(size) is not int or size < 0):
+                raise ValueError("候補の重みサイズ形式が不正です")
+            if sha256 is not None and (
+                not isinstance(sha256, str) or re.fullmatch(r"[0-9a-fA-F]{64}", sha256) is None
+            ):
+                raise ValueError("候補の重み照合値形式が不正です")
+            if weight_path is not None and not isinstance(weight_path, str):
+                raise ValueError("候補の重みパス形式が不正です")
+        pair = record.get("dataset_pair")
+        if pair is not None and not isinstance(pair, dict):
+            raise ValueError("候補の検証データ形式が不正です")
+        if isinstance(pair, dict) and any(
+            value is not None and not isinstance(value, str)
+            for value in (pair.get("training_version"), pair.get("validation_version"))
+        ):
+            raise ValueError("候補の検証データ版形式が不正です")
         return record
 
     def _write_candidate(self, record: dict[str, Any]) -> None:
@@ -805,9 +933,12 @@ class ComparisonService:
                 continue
             try:
                 records.append(self._read_candidate(folder.name))
-            except (OSError, ValueError, KeyError) as error:
+            except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+                reason = "候補の記録を読めません。学習から新規作成してください。"
+                self.recovery_issues[folder.name] = ("unrecoverable", reason)
+                records.append({"candidate_id": folder.name, "_recovery_issue": reason})
                 logger.warning("比較候補を読めません (%s): %s", folder, error)
-        return sorted(records, key=lambda item: _number(_CANDIDATE_ID, item["candidate_id"]))
+        return sorted(records, key=lambda item: _number(_CANDIDATE_ID, item["candidate_id"]) or 0)
 
     def _run_dir(self, source: dict[str, Any]) -> Path:
         experiment_id = _check_name(source.get("experiment_id"), "実験 ID")
@@ -818,7 +949,14 @@ class ComparisonService:
         return runs / f"attempt_{attempt:03d}"
 
     def _weights_path(self, source: dict[str, Any]) -> Path:
-        relative = (source.get("weights") or {}).get("path")
+        weights = source.get("weights") or {}
+        if not isinstance(weights, dict):
+            raise ValueError("候補の重み記録が不正です")
+        release_id = weights.get("release_model_id")
+        if release_id:
+            folder = self.releases_root / _check_id(_MODEL_ID, release_id, "モデル ID")
+            return resolve_recorded_path(folder, "model.pt")
+        relative = weights.get("path")
         return resolve_recorded_path(self._run_dir(source), relative)
 
     def add_candidate(
@@ -929,6 +1067,102 @@ class ComparisonService:
         os.replace(preparing, self.candidates_root / candidate_id)
         return self._to_candidate(record)
 
+    def copy_candidate_settings(self, candidate_id: str) -> Candidate:
+        """候補の検証済み設定を新IDへ複製し、評価・外部解析・公開状態は引き継がない。"""
+        record = self._read_candidate(candidate_id)
+        issue_state = self.recovery_issues.get(candidate_id, ("", ""))[0]
+        if issue_state == "unconfirmed":
+            raise ValueError(self.recovery_issues[candidate_id][1])
+        # candidate.json が読め、評価履歴だけが破損している場合は、設定コピーを許す。
+        source = record.get("source") or {}
+        if not isinstance(source, dict):
+            raise ValueError("元の学習記録を確認できません。学習から新規作成してください")
+        weights = source.get("weights") or {}
+        if not isinstance(weights, dict):
+            raise ValueError("元の重みの記録を確認できません。学習から新規作成してください")
+        config_id = record.get("inference_config_id")
+        config = self.get_inference_config(config_id)
+        if config.model_type != source.get("model_type"):
+            raise ValueError("推論条件を確認できません。学習から新規作成してください")
+        experiment_config = source.get("experiment_config") or {}
+        model_config = (
+            experiment_config.get("model") if isinstance(experiment_config, dict) else None
+        )
+        if not isinstance(model_config, dict):
+            raise ValueError("元のモデル設定を確認できません。学習から新規作成してください")
+        expected_fingerprint = candidate_fingerprint(
+            str(weights.get("sha256") or ""),
+            str(source.get("model_type") or ""),
+            model_config,
+            source.get("preprocessing") if isinstance(source.get("preprocessing"), dict) else {},
+            record.get("effective_params")
+            if isinstance(record.get("effective_params"), dict)
+            else {},
+        )
+        if expected_fingerprint != record.get("fingerprint"):
+            raise ValueError("候補の設定照合に失敗しました。学習から新規作成してください")
+        if self._fixed_pair(record) is None:
+            raise ValueError("固定検証版を確認できません。学習から新規作成してください")
+        copied = copy.deepcopy(record)
+        weight_path = self._weights_path(source)
+        if not weight_path.is_file() and record.get("status") == "released":
+            model_id = record.get("released_model_id")
+            if model_id:
+                try:
+                    release = self.get_release_record(model_id)
+                    release_source = release.get("source") or {}
+                    release_weights = release.get("weights") or {}
+                    release_path = self.releases_root / model_id / "model.pt"
+                    if (
+                        release.get("candidate", {}).get("candidate_id") == candidate_id
+                        and release_source.get("experiment_id") == source.get("experiment_id")
+                        and release_source.get("attempt") == source.get("attempt")
+                        and release_weights.get("size") == weights.get("size")
+                        and release_weights.get("sha256") == weights.get("sha256")
+                        and file_sha256(release_path) == weights.get("sha256")
+                    ):
+                        copied["source"]["weights"]["release_model_id"] = model_id
+                        weight_path = release_path
+                except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                    pass
+        if (
+            not weight_path.is_file()
+            or weight_path.stat().st_size != weights.get("size")
+            or file_sha256(weight_path) != weights.get("sha256")
+        ):
+            raise ValueError("元の重みを確認できません。学習から新規作成してください")
+        source_has_broken_result = any(
+            self._read_record(candidate_id, version, run_dir).broken
+            for version in self._evaluated_versions(candidate_id)
+            for _evaluation_id, run_dir in self._evaluation_dirs(candidate_id, version)
+        )
+        for other in self._candidate_records():
+            if other.get("fingerprint") != record.get("fingerprint"):
+                continue
+            issue_state = self.recovery_issues.get(other.get("candidate_id"), ("", ""))[0]
+            if other.get("candidate_id") == candidate_id and (
+                issue_state == "unrecoverable" or source_has_broken_result
+            ):
+                continue
+            if other.get("status") != "rejected":
+                raise DuplicateCandidateError(other["candidate_id"])
+        folders = [
+            _number(_CANDIDATE_ID, path.name) or 0 for path in self.candidates_root.glob("RC-*")
+        ]
+        new_id = f"RC-{max(folders, default=0) + 1:03d}"
+        copied.update(candidate_id=new_id, created_at=_now(), status="candidate", comment="")
+        copied.pop("released_model_id", None)
+        copied.pop("adopted_evaluation_id", None)
+        preparing = self.candidates_root / f".preparing_{uuid.uuid4()}"
+        preparing.mkdir(parents=True)
+        try:
+            _write_json(preparing / "candidate.json", copied)
+            os.replace(preparing, self.candidates_root / new_id)
+        except BaseException:
+            self._remove(preparing)
+            raise
+        return self._to_candidate(copied)
+
     def list_candidates(self) -> list[Candidate]:
         return [self._to_candidate(record) for record in self._candidate_records()]
 
@@ -947,6 +1181,7 @@ class ComparisonService:
     ) -> Candidate:
         """候補状態の候補を非採用にする。評価中・評価待ちの候補は非採用にできない。"""
         record = self._read_candidate(candidate_id)
+        self._guard_candidate(candidate_id)
         if record.get("status") != "candidate":
             raise ValueError("候補状態のモデルだけ非採用にできます")
         active = is_evaluation_active or self.is_evaluation_active
@@ -959,6 +1194,7 @@ class ComparisonService:
     def restore_candidate(self, candidate_id: str) -> Candidate:
         """非採用候補を未決定に戻す。"""
         record = self._read_candidate(candidate_id)
+        self._guard_candidate(candidate_id)
         if record.get("status") != "rejected":
             raise ValueError("この候補は一覧へ戻せません")
         source = record.get("source") or {}
@@ -983,9 +1219,25 @@ class ComparisonService:
 
     def _to_candidate(self, record: dict[str, Any]) -> Candidate:
         """candidate.json を GUI の Candidate へ変換する。"""
+        if record.get("_recovery_issue"):
+            return Candidate(
+                candidate_id=record["candidate_id"],
+                experiment_id="",
+                checkpoint="",
+                inference_config_id="",
+                status="",
+                recovery_state="unrecoverable",
+                recovery_reason=record["_recovery_issue"],
+            )
         source = record.get("source") or {}
+        if not isinstance(source, dict):
+            source = {}
         oof = record.get("oof") or {}
+        if not isinstance(oof, dict):
+            oof = {}
         oof_eval = oof.get("evaluation") or {}
+        if not isinstance(oof_eval, dict):
+            oof_eval = {}
         evaluations = {}
         version = record.get("validation_version")
         version = version if isinstance(version, str) and version else None
@@ -995,6 +1247,9 @@ class ComparisonService:
         externals = self._read_external(record["candidate_id"])
         legacy = [item for item in externals if not is_external_analysis(item)]
         latest = legacy[-1] if legacy else {}
+        latest_results = latest.get("results", [])
+        if not isinstance(latest_results, list):
+            latest_results = []
         summary = None
         if adopted is not None and not adopted.broken:
             analysis = self._latest_external_analysis(externals, adopted.evaluation_id)
@@ -1003,21 +1258,42 @@ class ComparisonService:
             training_version = self._training_version_of(record)
         except ValueError:
             training_version = ""
-        attempt = int(source.get("attempt") or 1)
+        try:
+            attempt = int(source.get("attempt") or 1)
+            if attempt < 1:
+                raise ValueError
+        except (TypeError, ValueError):
+            attempt = 1
         weights = source.get("weights") or {}
+        if not isinstance(weights, dict):
+            weights = {}
+        exp_config = source.get("experiment_config") or {}
+        if not isinstance(exp_config, dict):
+            exp_config = {}
+        train_params = source.get("training_eval_params") or {}
+        if not isinstance(train_params, dict):
+            train_params = {}
+        preprocessing = source.get("preprocessing") or {}
+        if not isinstance(preprocessing, dict):
+            preprocessing = {}
+        training_dataset = source.get("training_dataset") or {}
+        if not isinstance(training_dataset, dict):
+            training_dataset = {}
+        selected_epoch = source.get("selected_epoch")
+        selected_epoch = int(selected_epoch) if str(selected_epoch).isdigit() else 0
         snapshot = CandidateSnapshot(
             experiment_id=str(source.get("experiment_id", "")),
             attempt=attempt,
-            selected_epoch=int(source.get("selected_epoch") or 0),
+            selected_epoch=selected_epoch,
             run_id=str(source.get("run_id", "")),
             checkpoint_path=str(weights.get("path", "")),
             oof_evaluation=copy.deepcopy(oof_eval),
-            experiment_config=copy.deepcopy(source.get("experiment_config") or {}),
+            experiment_config=copy.deepcopy(exp_config),
             weights_size=weights.get("size"),
             weights_sha256=weights.get("sha256"),
-            training_eval_params=copy.deepcopy(source.get("training_eval_params") or {}),
-            preprocessing=copy.deepcopy(source.get("preprocessing") or {}),
-            training_dataset=copy.deepcopy(source.get("training_dataset") or {}),
+            training_eval_params=copy.deepcopy(train_params),
+            preprocessing=copy.deepcopy(preprocessing),
+            training_dataset=copy.deepcopy(training_dataset),
         )
         return Candidate(
             candidate_id=record["candidate_id"],
@@ -1035,7 +1311,8 @@ class ComparisonService:
                 ExternalResult(
                     str(item.get("name", "")), item.get("value", ""), str(item.get("unit", ""))
                 )
-                for item in latest.get("results", [])
+                for item in latest_results
+                if isinstance(item, dict)
             ],
             external_software=str(latest.get("software", "")),
             external_date=str(latest.get("analyzed_on", "")),
@@ -1051,6 +1328,8 @@ class ComparisonService:
             training_version=training_version,
             effective_params=copy.deepcopy(record.get("effective_params") or {}),
             external_summary=summary,
+            recovery_state=self.recovery_issues.get(record["candidate_id"], ("", ""))[0],
+            recovery_reason=self.recovery_issues.get(record["candidate_id"], ("", ""))[1],
         )
 
     # ---- 評価の読み取り（7.5・7.7） ----
@@ -1121,6 +1400,7 @@ class ComparisonService:
         try:
             spec = read_json(run_dir / "run_spec.json")
             record.input_fingerprint = spec.get("input_fingerprint")
+            record.created_at = spec.get("created_at")
             schema = spec.get("schema")
             record.schema = schema if schema in EVALUATION_SCHEMAS else None
         except (OSError, ValueError):
@@ -1134,6 +1414,12 @@ class ComparisonService:
             except (OSError, ValueError):
                 record.status = "failed"
         if record.status != "completed":
+            result_path = run_dir / "result.json"
+            if result_path.is_file():
+                try:
+                    read_json(result_path)
+                except (OSError, ValueError, TypeError):
+                    record.broken = True
             return record
         try:
             result = read_json(run_dir / "result.json")
@@ -1292,6 +1578,9 @@ class ComparisonService:
             record = self._read_candidate(candidate_id)
         except KeyError as error:
             raise ValueError(f"比較候補がありません: {candidate_id}") from error
+        self._guard_candidate(candidate_id)
+        if self.recovery_blockers:
+            raise ValueError("前回の評価プロセスを確認できないため、新しい評価を開始できません")
         if record.get("status") not in {"candidate", "released"}:
             raise ValueError("候補状態または公開済みのモデルだけ評価できます")
         training_version, version = self._fixed_pair(record)
@@ -1400,11 +1689,17 @@ class ComparisonService:
         self, candidate_id: str, evaluation_id: str, pid: int, creation_time: float
     ) -> None:
         """評価プロセスの PID と作成時刻を process.json に保存する（復旧時の照合用）。"""
+        self._guard_candidate(candidate_id)
         _version, run_dir = self._locate_evaluation(candidate_id, evaluation_id)
+        atomic_write_json(
+            run_dir / "hello.json",
+            {"pid": int(pid), "creation_time": float(creation_time)},
+        )
         write_process_record(run_dir, pid, creation_time)
 
     def request_evaluation_stop(self, candidate_id: str, evaluation_id: str, reason: str) -> None:
         """stop_request.json を保存する。親は kill の前に呼ぶ。"""
+        self._guard_candidate(candidate_id)
         if reason not in {"user_stop", "app_exit"}:
             raise ValueError("中断理由は user_stop または app_exit です")
         _version, run_dir = self._locate_evaluation(candidate_id, evaluation_id)
@@ -1437,6 +1732,7 @@ class ComparisonService:
         """
         from foam_cell_analysis.inference.protocol import parse_run_id, read_events, validate_event
 
+        self._guard_candidate(candidate_id)
         if isinstance(event, dict) and event.get("type") == "hello":
             validate_event(event, schema=EVALUATION_SCHEMA, allow_hello=True)
             return self.get_evaluation_progress(candidate_id)
@@ -1498,6 +1794,7 @@ class ComparisonService:
         self, candidate_id: str, version: str, run_dir: Path, job_exit: JobExit | None
     ) -> EvaluationOutcome:
         """7.5: 共通の優先順位で終端状態を決め、未保存なら status.json を書く。"""
+        self._guard_candidate(candidate_id)
         status_path = run_dir / "status.json"
         stop_path = run_dir / "stop_request.json"
         error_path = run_dir / "error.json"
@@ -1568,45 +1865,147 @@ class ComparisonService:
         実行中だった評価は stopped（interrupted、停止要求があればその理由）になり、
         自動では再開しない。
         """
-        outcomes: list[EvaluationOutcome] = []
         self.recovery_blockers = []
+        for candidate_id, (state, _reason) in list(self.recovery_issues.items()):
+            if state == "unconfirmed":
+                self.recovery_issues.pop(candidate_id, None)
+        outcomes: list[EvaluationOutcome] = []
+        self.recovery_blockers = [
+            reason for state, reason in self.recovery_issues.values() if state == "unconfirmed"
+        ]
         if not self.candidates_root.is_dir():
             return outcomes
+        for record in self._candidate_records():
+            candidate_id = record["candidate_id"]
+            if record.get("_recovery_issue"):
+                continue
+            try:
+                self._external_records_for_mutation(candidate_id)
+            except ValueError:
+                self.recovery_issues[candidate_id] = (
+                    "unrecoverable",
+                    "外部解析の記録を読めません",
+                )
         for candidate_dir in sorted(self.candidates_root.iterdir()):
             if _number(_CANDIDATE_ID, candidate_dir.name) is None or not candidate_dir.is_dir():
                 continue
             candidate_id = candidate_dir.name
+            preexisting_issue = self.recovery_issues.get(candidate_id)
             root = candidate_dir / "evaluations"
             if not root.is_dir():
                 continue
+            try:
+                for version in self._evaluated_versions(candidate_id):
+                    for _evaluation_id, run_dir in self._evaluation_dirs(candidate_id, version):
+                        for name in (
+                            "run_spec.json",
+                            "process.json",
+                            "status.json",
+                            "stop_request.json",
+                        ):
+                            file = run_dir / name
+                            if file.is_file():
+                                value = read_json(file)
+                                if name == "run_spec.json" and (
+                                    not isinstance(value.get("run_id"), str)
+                                    or value.get("candidate_id") != candidate_id
+                                    or value.get("evaluation_id") != run_dir.name
+                                ):
+                                    raise ValueError("run_spec の必須項目が不正です")
+                                if name == "status.json" and (
+                                    not isinstance(value.get("status"), str)
+                                    or not value.get("status")
+                                    or (
+                                        value.get("reason") is not None
+                                        and not isinstance(value.get("reason"), str)
+                                    )
+                                ):
+                                    raise ValueError("status.json の形式が不正です")
+                                if name == "stop_request.json" and (
+                                    value.get("reason") is not None
+                                    and not isinstance(value.get("reason"), str)
+                                ):
+                                    raise ValueError("stop_request.json の形式が不正です")
+                        self._read_record(candidate_id, version, run_dir)
+            except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+                self.recovery_issues[candidate_id] = ("unrecoverable", "評価履歴を読めません")
+                logger.warning("評価履歴を読めません (%s): %s", candidate_id, error)
+                preexisting_issue = self.recovery_issues.get(candidate_id)
+            protected = preexisting_issue is not None
             blocked_dirs: list[Path] = []
+            pending_conclusions: list[tuple[str, Path]] = []
             for version in self._evaluated_versions(candidate_id):
                 for _evaluation_id, run_dir in self._evaluation_dirs(candidate_id, version):
                     if (run_dir / "status.json").exists():
                         continue
                     try:
                         process_file = run_dir / "process.json"
-                        if process_file.exists():
-                            process = read_json(process_file)
-                            if self.process_alive(process):
-                                self.process_terminator(process)
-                                deadline = time.monotonic() + 5.0
-                                while self.process_alive(process) and time.monotonic() < deadline:
-                                    time.sleep(0.1)
-                                if self.process_alive(process):
-                                    logger.error("評価プロセスを終了できませんでした: %s", run_dir)
-                                    blocked_dirs.append(run_dir)
-                                    self.recovery_blockers.append(
-                                        f"評価 {run_dir.name}（候補 {candidate_id}）のプロセスを"
-                                        "終了できませんでした。タスクマネージャーで終了してから"
-                                        "アプリを再起動してください。"
-                                    )
-                                    continue
-                        outcomes.append(
-                            self._conclude_evaluation(candidate_id, version, run_dir, None)
+                        identity_file = (
+                            process_file if process_file.exists() else run_dir / "hello.json"
                         )
-                    except (OSError, ValueError) as error:
+                        settled = settle_process(
+                            identity_file, self.process_alive, self.process_terminator
+                        )
+                        hello_file = run_dir / "hello.json"
+                        if (
+                            settled == "unconfirmed"
+                            and identity_file == process_file
+                            and hello_file.is_file()
+                        ):
+                            fallback = settle_process(
+                                hello_file, self.process_alive, self.process_terminator
+                            )
+                            if fallback in {"dead", "terminated"}:
+                                settled = fallback
+                        if settled == "missing":
+                            settled = settle_unrecorded_worker(
+                                run_dir,
+                                "foam_cell_analysis.inference.run",
+                                self.process_alive,
+                                self.process_terminator,
+                            )
+                        if settled == "missing" and not any(
+                            (run_dir / name).is_file()
+                            for name in ("stop_request.json", "error.json", "result.json")
+                        ):
+                            # hello/status/result がなく、評価開始前に止まった状態。
+                            has_hello = (run_dir / "hello.json").is_file()
+                            if has_hello:
+                                settled = "unconfirmed"
+                        if settled == "unconfirmed":
+                            logger.error("評価プロセスを確認できません: %s", run_dir)
+                            blocked_dirs.append(run_dir)
+                            reason = (
+                                f"評価 {run_dir.name}（候補 {candidate_id}）の"
+                                "終了を確認できません。"
+                                "プロセスを終了してからアプリを再起動してください。"
+                            )
+                            self.recovery_blockers.append(reason)
+                            self.recovery_issues[candidate_id] = ("unconfirmed", reason)
+                            protected = True
+                            continue
+                        if (
+                            not protected
+                            and not self._read_record(candidate_id, version, run_dir).broken
+                        ):
+                            pending_conclusions.append((version, run_dir))
+                    except (OSError, ValueError, TypeError, AttributeError) as error:
                         logger.error("評価の状態を確定できませんでした (%s): %s", run_dir, error)
+                        self.recovery_issues[candidate_id] = (
+                            "unrecoverable",
+                            "評価履歴を読めません",
+                        )
+            if protected or candidate_id in self.recovery_issues:
+                continue
+            for version, run_dir in pending_conclusions:
+                try:
+                    outcomes.append(self._conclude_evaluation(candidate_id, version, run_dir, None))
+                except (OSError, ValueError, TypeError, AttributeError) as error:
+                    logger.error("評価の状態を確定できませんでした (%s): %s", run_dir, error)
+                    self.recovery_issues[candidate_id] = ("unrecoverable", "評価履歴を読めません")
+                    break
+            if candidate_id in self.recovery_issues:
+                continue
             for path in root.glob("*/.preparing_*"):
                 if not _within_any(path, blocked_dirs):
                     self._remove(path)
@@ -1622,8 +2021,12 @@ class ComparisonService:
         if not path.is_file():
             return []
         try:
-            records = read_json(path).get("records")
+            external = read_json(path)
+            records = external.get("records") if isinstance(external, dict) else None
+            if not isinstance(records, list):
+                raise ValueError("外部解析形式が不正です")
         except (OSError, ValueError) as error:
+            self._external_broken.add(candidate_id)
             logger.warning("外部解析結果を読めません (%s): %s", path, error)
             return []
         return [item for item in records or [] if isinstance(item, dict)]
@@ -1675,8 +2078,7 @@ class ComparisonService:
         平均と分類別平均をここで求める。comment を渡すと候補のコメントも更新する。
         """
         record = self._read_candidate(candidate_id)
-        if record.get("status") == "released":
-            raise ValueError("リリース済みの候補の外部解析結果は変更できません")
+        self._guard_candidate(candidate_id)
         version, run_dir = self._locate_evaluation(candidate_id, evaluation_id)
         self._fixed_pair(record)
         if version != record.get("validation_version"):
@@ -1684,6 +2086,10 @@ class ComparisonService:
         evaluation = self._read_record(candidate_id, version, run_dir)
         if evaluation.status != "completed" or evaluation.broken:
             raise ValueError("完了した評価にだけ外部解析結果を保存できます")
+        if not self.external_analysis_editable(candidate_id, evaluation_id):
+            if record.get("status") == "released":
+                raise ValueError("リリース済みの候補の外部解析結果は変更できません")
+            raise ValueError("この評価の外部解析結果は変更できません")
         try:
             item_ids = list(read_json(run_dir / "run_spec.json")["validation"]["item_ids"])
             items = {
@@ -1696,7 +2102,7 @@ class ComparisonService:
             for item_id in item_ids
         }
         cleaned, summary = build_external_analysis(values, classifications, unit=unit)
-        records = self._read_external(candidate_id)
+        records = self._external_records_for_mutation(candidate_id)
         numbers = [
             int(match.group(1))
             for item in records
@@ -1728,6 +2134,34 @@ class ComparisonService:
             record["comment"] = comment
             self._write_candidate(record)
         return self._to_candidate(record)
+
+    def external_analysis_editable(self, candidate_id: str, evaluation_id: str) -> bool:
+        """外部解析を保存できる評価かを、画面とサービスで共通に判定する。"""
+        try:
+            record = self._read_candidate(candidate_id)
+            self._guard_candidate(candidate_id)
+            self._external_records_for_mutation(candidate_id)
+            version, run_dir = self._locate_evaluation(candidate_id, evaluation_id)
+            if version != record.get("validation_version"):
+                return False
+            evaluation = self._read_record(candidate_id, version, run_dir)
+            if evaluation.status != "completed" or evaluation.broken:
+                return False
+            if record.get("status") != "released":
+                return record.get("status") in {"candidate", "rejected"}
+            model_id = record.get("released_model_id")
+            release = self.get_release_record(model_id) if model_id else {}
+            published_eval = str((release.get("evaluation") or {}).get("evaluation_id") or "")
+            run_spec = read_json(run_dir / "run_spec.json")
+            return bool(
+                evaluation_id != published_eval
+                and (_number(_EVALUATION_ID, evaluation_id) or 0)
+                > (_number(_EVALUATION_ID, published_eval) or 0)
+                and _parse_time(run_spec.get("created_at"))
+                > _parse_time(release.get("released_at"))
+            )
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
 
     # ---- リリース（13 章） ----
 
@@ -2143,6 +2577,7 @@ class ComparisonService:
         候補の版と一致することを確かめる。旧形式で学習混入が見つかっていた評価は使えない。
         """
         record = self._read_candidate(candidate_id)
+        self._guard_candidate(candidate_id)
         if record.get("status") != "candidate":
             raise ValueError("候補状態のモデルだけリリースできます")
         active = is_evaluation_active or self.is_evaluation_active
@@ -2395,9 +2830,12 @@ class ComparisonService:
 
     def protected_final_reason(self, experiment_id: str, attempt: int) -> str:
         """final.pt を消せない理由（19.1）。候補状態の候補が参照していれば空でない文字列。"""
+        records = self._candidate_records()
+        if any(record.get("_recovery_issue") for record in records):
+            return "読めない比較候補があるため、安全を確認できず整理できません"
         users = [
             record["candidate_id"]
-            for record in self._candidate_records()
+            for record in records
             if (record.get("source") or {}).get("experiment_id") == experiment_id
             and (record.get("source") or {}).get("attempt") == attempt
             and (
@@ -2411,9 +2849,12 @@ class ComparisonService:
 
     def experiment_reference_reason(self, experiment_id: str) -> str:
         """実験を削除できない理由（13.5）。非採用以外の候補・リリースが参照していれば空でない。"""
+        records = self._candidate_records()
+        if any(record.get("_recovery_issue") for record in records):
+            return "読めない比較候補があるため、安全を確認できず削除できません"
         candidates = [
             record["candidate_id"]
-            for record in self._candidate_records()
+            for record in records
             if record.get("status") != "rejected"
             and (record.get("source") or {}).get("experiment_id") == experiment_id
         ]

@@ -56,8 +56,8 @@ def main() -> int:
                 None, "起動できません", "別のアプリがこの workspace を使用中です。"
             )
             return 2
-        backend = HybridBackend(workspace)
         try:
+            backend = HybridBackend(workspace)
             # 学習（5.4）・比較とリリース（13.3）・評価（7.6）の起動時の復旧
             backend.recover()
         except Exception as error:
@@ -67,9 +67,17 @@ def main() -> int:
             lock.unlock()
             return 2
         blockers = list(getattr(backend, "recovery_blockers", []) or [])
+        report = backend.recovery_report()
+        has_issues = any(report.get(kind) for kind in ("training", "comparison"))
         if blockers:
             # 評価・学習プロセスを終了できなかった。利用者に終了してから再起動するよう案内する
             QMessageBox.warning(None, "終了できない処理があります", "\n\n".join(blockers))
+        if has_issues:
+            QMessageBox.warning(
+                None,
+                "一部の記録を復旧できません",
+                "問題がある記録は保護して一覧に残しました。対象の編集や削除はできません。",
+            )
     else:
         backend = MockBackend()
     jobs = JobManager()

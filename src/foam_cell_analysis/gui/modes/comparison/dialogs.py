@@ -527,7 +527,10 @@ class EvaluationDialog(QDialog):
         super().__init__(parent)
         self.ctx, self.candidate, self.record = ctx, candidate, record
         self.evaluation_id = record.evaluation_id
-        self.read_only = read_only or candidate.status == "released"
+        editable = getattr(ctx.backend, "external_analysis_editable", None)
+        self.read_only = read_only or not bool(
+            editable and editable(candidate.candidate_id, record.evaluation_id)
+        )
         self.setWindowTitle(f"評価詳細 - {candidate.candidate_id}")
         self.setMinimumSize(800, 640)
         self.resize(820, 680)

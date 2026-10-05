@@ -1,5 +1,7 @@
 """比較・リリース画面の動作確認（比較・推論設計 16.2）。"""
 
+from dataclasses import replace
+
 import pytest
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
@@ -56,6 +58,13 @@ def _click_menu_item(window, top_label, item_label):
     QTest.mouseClick(menu, Qt.MouseButton.LeftButton, pos=menu.actionGeometry(action).center())
 
 
+def _open_menu_bar(window, top_label):
+    menu_bar = window.menuBar()
+    top = next(action for action in menu_bar.actions() if action.text().startswith(top_label))
+    QTest.mouseClick(menu_bar, Qt.MouseButton.LeftButton, pos=menu_bar.actionGeometry(top).center())
+    return top.menu()
+
+
 def _candidates(shell):
     shell.navigate(PageId.CANDIDATES)
     window = shell.manager.window(ModeId.COMPARISON)
@@ -71,6 +80,84 @@ def test_duplicate_candidate_raises():
     ctx.backend.add_candidate("exp_0042", 1, config.config_id)
     with pytest.raises(ValueError, match="登録済み"):
         ctx.backend.add_candidate("exp_0042", 1, config.config_id)
+
+
+def test_mock_backend_keeps_rejected_candidate_external_analysis_contract():
+    backend = make_context().backend
+    candidate = next(item for item in backend.list_candidates() if item.status == "candidate")
+    backend._add_completed_evaluation(candidate.candidate_id, "val_v003", backend._evaluation(0.81))
+    backend.candidates[candidate.candidate_id].status = "rejected"
+
+    assert backend.external_analysis_editable(candidate.candidate_id, "eval_001")
+
+
+def test_broken_candidate_placeholder_can_be_selected_and_cloned_by_row_menu(
+    qtbot, shell, monkeypatch
+):
+    ctx = shell.ctx
+    original = ctx.backend.get_candidate("RC-001")
+    placeholder = replace(
+        original,
+        status="",
+        snapshot=None,
+        recovery_state="unrecoverable",
+        recovery_reason="候補の記録を読めません",
+    )
+    monkeypatch.setattr(ctx.backend, "list_candidates", lambda: [placeholder])
+    monkeypatch.setattr(
+        ctx.backend,
+        "get_candidate",
+        lambda _candidate_id: (_ for _ in ()).throw(ValueError("broken source")),
+    )
+    monkeypatch.setattr(
+        ctx.backend,
+        "copy_candidate_settings",
+        lambda _candidate_id: pytest.fail("不明な候補の複製元を読めないまま続行しました"),
+    )
+    window, page = _candidates(shell)
+    qtbot.addWidget(window)
+    _click_checkbox(page, placeholder.candidate_id)
+    assert [candidate.candidate_id for candidate in page._selected()] == [placeholder.candidate_id]
+
+    menu = _open_menu_bar(window, "候補")
+    action = next(item for item in menu.actions() if item.text() == "設定を引き継いで新規作成")
+    assert not action.isEnabled()
+    assert action.toolTip()
+    menu.hide()
+
+
+def test_readable_protected_candidate_clones_through_row_context_menu(qtbot, shell, monkeypatch):
+    ctx = shell.ctx
+    original = ctx.backend.get_candidate("RC-001")
+    protected = replace(
+        original,
+        recovery_state="unrecoverable",
+        recovery_reason="評価履歴を読めません",
+    )
+    ctx.backend.candidates[protected.candidate_id] = protected
+    next_number = 100
+
+    def copy_candidate(candidate_id):
+        nonlocal next_number
+        copied = replace(
+            ctx.backend.get_candidate(candidate_id),
+            candidate_id=f"RC-{next_number:03d}",
+            recovery_state="",
+            recovery_reason="",
+        )
+        next_number += 1
+        ctx.backend.candidates[copied.candidate_id] = copied
+        return copied
+
+    monkeypatch.setattr(ctx.backend, "copy_candidate_settings", copy_candidate)
+    window, page = _candidates(shell)
+    qtbot.addWidget(window)
+    _click_checkbox(page, protected.candidate_id)
+    before = len(ctx.backend.list_candidates())
+    menu = _open_menu_bar(window, "候補")
+    action = next(item for item in menu.actions() if item.text() == "設定を引き継いで新規作成")
+    QTest.mouseClick(menu, Qt.MouseButton.LeftButton, pos=menu.actionGeometry(action).center())
+    assert len(ctx.backend.list_candidates()) == before + 1
 
 
 def test_mask_comparison_slots_and_navigation(qtbot):
@@ -797,6 +884,74 @@ def test_detail_dialog_is_read_only_for_released_candidate(qtbot):
     qtbot.addWidget(dialog)
     assert not dialog.save_button.isEnabled()
     assert dialog.controls.button(QDialogButtonBox.StandardButton.Close).isEnabled()
+
+
+def test_released_candidate_with_malformed_published_evaluation_id_is_read_only(qtbot):
+    ctx = make_context()
+    candidate = ctx.backend.get_candidate("RC-001")
+    candidate.status = "released"
+    release = next(item for item in ctx.backend.released.values() if item.candidate_id == "RC-001")
+    original_evaluation_id = release.evaluation_id
+    release.evaluation_id = ""
+    record = ctx.backend.get_candidate_evaluation("RC-001", "val_v003")
+
+    assert not ctx.backend.external_analysis_editable("RC-001", record.evaluation_id)
+    dialog = EvaluationDialog(ctx, candidate, record)
+    qtbot.addWidget(dialog)
+    assert not dialog.save_button.isEnabled()
+    release.evaluation_id = original_evaluation_id
+
+
+@pytest.mark.parametrize("published_id", [None, "eval_²", "eval_abc", "eval_" + "9" * 5000])
+def test_released_candidate_with_unparseable_published_id_is_read_only(qtbot, published_id):
+    ctx = make_context()
+    candidate = ctx.backend.get_candidate("RC-001")
+    candidate.status = "released"
+    release = next(item for item in ctx.backend.released.values() if item.candidate_id == "RC-001")
+    original_evaluation_id = release.evaluation_id
+    release.evaluation_id = published_id
+    record = ctx.backend.get_candidate_evaluation("RC-001", "val_v003")
+
+    assert not ctx.backend.external_analysis_editable("RC-001", record.evaluation_id)
+    dialog = EvaluationDialog(ctx, candidate, record)
+    qtbot.addWidget(dialog)
+    assert not dialog.save_button.isEnabled()
+    release.evaluation_id = original_evaluation_id
+
+
+def test_released_candidate_allows_same_second_post_release_reevaluation(qtbot):
+    from copy import deepcopy
+    from datetime import UTC, datetime, timedelta
+
+    ctx = make_context()
+    backend = ctx.backend
+    candidate = backend.get_candidate("RC-001")
+    candidate.status = "released"
+    original = backend.get_candidate_evaluation("RC-001", "val_v003")
+    release = next(item for item in backend.released.values() if item.candidate_id == "RC-001")
+    release.evaluation_id = original.evaluation_id
+    base = datetime(2026, 10, 6, 12, 0, 0, 500000, tzinfo=UTC)
+    release.released_at = base
+    backend._now = lambda: base + timedelta(microseconds=100000)
+
+    prepared = backend.prepare_evaluation_run("RC-001")
+    evaluation_id = prepared.run_id.rsplit("/", 1)[-1]
+    run_id = f"RC-001/val_v003/{evaluation_id}"
+    backend.apply_evaluation_event(
+        "RC-001",
+        evaluation_id,
+        {"v": 1, "run_id": run_id, "seq": 1, "time": 0.1, "type": "completed"},
+    )
+    backend.conclude_evaluation_run("RC-001", evaluation_id)
+
+    assert not backend.external_analysis_editable("RC-001", original.evaluation_id)
+    assert backend.external_analysis_editable("RC-001", evaluation_id)
+    before_save = deepcopy(release)
+    values = {item.item_id: 12.3 for item in backend._items_for_version("val_v003")}
+    backend.save_external_analysis("RC-001", evaluation_id, values, software="clock test")
+    assert release == before_save
+    assert release.evaluation_id == original.evaluation_id
+    assert backend.list_external_results("RC-001")[-1]["evaluation_id"] == evaluation_id
 
 
 def test_candidate_dialog_without_existing_config_defaults_to_new(qtbot):

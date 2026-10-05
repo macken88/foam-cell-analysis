@@ -2,9 +2,11 @@ import csv
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 
 import pytest
+import yaml
 
 from foam_cell_analysis.services.mock.backend import MockBackend
 from foam_cell_analysis.services.models import JobExit
@@ -114,6 +116,271 @@ def _queued_service(tmp_path):
     config["data"]["cv"]["n_folds"] = 2
     experiment = service.add_training_queue_item(config)
     return service, experiment
+
+
+def test_broken_event_history_with_confirmed_dead_process_does_not_leave_blocker(tmp_path):
+    service, experiment = _queued_service(tmp_path)
+    prepared = service.prepare_training_run(experiment.experiment_id, experiment.experiment_id)
+    events_path = Path(prepared.run_dir) / "events.jsonl"
+    events_path.write_bytes(b'{"seq": "not-an-integer"}\n')
+    original_events = events_path.read_bytes()
+
+    restored = TrainingService(tmp_path, process_alive=lambda _record: False)
+    restored.recover()
+
+    restored_experiment = restored.get_experiment(experiment.experiment_id)
+    assert restored.recovery_blockers == []
+    assert restored_experiment.recovery_state == "unrecoverable"
+    assert not (Path(prepared.run_dir) / "status.json").exists()
+    assert events_path.read_bytes() == original_events
+
+
+def test_broken_run_spec_with_terminal_status_keeps_files_and_allows_healthy_queue(
+    tmp_path, monkeypatch
+):
+    from foam_cell_analysis.services import training_service as training_service_module
+
+    service, broken = _queued_service(tmp_path)
+    prepared = service.prepare_training_run(broken.experiment_id, broken.experiment_id)
+    healthy_config = service.default_experiment_config("mask_rcnn")
+    healthy_config["data"]["cv"]["n_folds"] = 2
+    healthy = service.add_training_queue_item(healthy_config)
+    run_dir = Path(prepared.run_dir)
+    spec_path = run_dir / "run_spec.json"
+    status_path = run_dir / "status.json"
+    spec_path.write_bytes(b"{broken spec")
+    status_path.write_text(
+        json.dumps({"status": "stopped", "reason": "interrupted"}), encoding="utf-8"
+    )
+    original_spec = spec_path.read_bytes()
+    original_status = status_path.read_bytes()
+
+    restored = TrainingService(tmp_path, process_alive=lambda _record: False)
+    original_read_json = training_service_module.read_json
+    spec_reads = []
+
+    def track_spec_reads(path):
+        if Path(path) == spec_path:
+            spec_reads.append(Path(path))
+        return original_read_json(path)
+
+    monkeypatch.setattr(training_service_module, "read_json", track_spec_reads)
+    restored.recover()
+
+    assert spec_reads == [spec_path]
+    assert not restored.recovery_blockers
+    assert restored.get_experiment(broken.experiment_id).recovery_state == "unrecoverable"
+    with pytest.raises(ValueError, match="学習履歴"):
+        restored.prepare_training_run(broken.experiment_id, broken.experiment_id)
+    assert spec_path.read_bytes() == original_spec
+    assert status_path.read_bytes() == original_status
+    assert restored.take_next_training_queue_item().experiment_id == healthy.experiment_id
+    assert spec_path.read_bytes() == original_spec
+    assert status_path.read_bytes() == original_status
+
+
+def test_broken_process_record_uses_dead_hello_and_preserves_terminal_run(tmp_path):
+    service, experiment = _queued_service(tmp_path)
+    prepared = service.prepare_training_run(experiment.experiment_id, experiment.experiment_id)
+    run_dir = Path(prepared.run_dir)
+    spec_path = run_dir / "run_spec.json"
+    process_path = run_dir / "process.json"
+    hello_path = run_dir / "hello.json"
+    status_path = run_dir / "status.json"
+    process_path.write_bytes(b"{broken process")
+    hello_path.write_text(json.dumps({"pid": 4567, "creation_time": 12345.0}), encoding="utf-8")
+    status_path.write_text(
+        json.dumps({"status": "stopped", "reason": "interrupted"}), encoding="utf-8"
+    )
+    originals = {
+        path: path.read_bytes() for path in (spec_path, process_path, hello_path, status_path)
+    }
+
+    restored = TrainingService(tmp_path, process_alive=lambda _record: False)
+    restored.recover()
+
+    assert restored.recovery_blockers == []
+    assert restored.get_experiment(experiment.experiment_id).recovery_state == "unrecoverable"
+    assert {path: path.read_bytes() for path in originals} == originals
+
+
+def test_queue_recovery_skips_broken_experiment_and_preserves_healthy_work(tmp_path):
+    service, broken = _queued_service(tmp_path)
+    healthy_config = service.default_experiment_config("mask_rcnn")
+    healthy_config["data"]["cv"]["n_folds"] = 2
+    healthy = service.add_training_queue_item(healthy_config)
+    broken_file = service.root / broken.experiment_id / "experiment.json"
+    broken_file.write_bytes(b"{broken manifest")
+    original_manifest = broken_file.read_bytes()
+
+    restored = TrainingService(tmp_path, process_alive=lambda _record: False)
+    restored.recover()
+
+    rows = restored.list_training_queue()
+    assert [(item.experiment_id, item.status) for item in rows] == [
+        (broken.experiment_id, "unrecoverable"),
+        (healthy.experiment_id, "queued"),
+    ]
+    started = restored.take_next_training_queue_item()
+    assert started.experiment_id == healthy.experiment_id
+    raw_rows = {row["experiment_id"]: row for row in restored.queue["rows"]}
+    assert raw_rows[broken.experiment_id]["state"] == "queued"
+    assert raw_rows[broken.experiment_id]["attempt"] is None
+    assert broken_file.read_bytes() == original_manifest
+
+
+def test_clear_finished_keeps_broken_completed_queue_row(tmp_path):
+    service, broken = _queued_service(tmp_path)
+    healthy_config = service.default_experiment_config("mask_rcnn")
+    healthy_config["data"]["cv"]["n_folds"] = 2
+    service.add_training_queue_item(healthy_config)
+    broken_file = service.root / broken.experiment_id / "experiment.json"
+    broken_file.write_bytes(b"{broken manifest")
+    original_manifest = broken_file.read_bytes()
+    for row in service.queue["rows"]:
+        row["state"] = "completed"
+    service._save_queue()
+
+    restored = TrainingService(tmp_path, process_alive=lambda _record: False)
+    restored.recover()
+    restored.clear_finished_training_queue_items()
+
+    assert [row["experiment_id"] for row in restored.queue["rows"]] == [broken.experiment_id]
+    assert restored.queue["rows"][0]["state"] == "completed"
+    assert broken_file.read_bytes() == original_manifest
+
+
+def test_missing_queued_experiment_has_readonly_placeholder_and_keeps_id_reserved(tmp_path):
+    service, missing = _queued_service(tmp_path)
+    healthy_config = service.default_experiment_config("mask_rcnn")
+    healthy_config["data"]["cv"]["n_folds"] = 2
+    healthy = service.add_training_queue_item(healthy_config)
+    missing_dir = service.root / missing.experiment_id
+    shutil.rmtree(missing_dir)
+
+    restored = TrainingService(tmp_path, process_alive=lambda _record: False)
+    restored.recover()
+
+    missing_view = next(
+        item
+        for item in restored.list_training_queue()
+        if item.experiment_id == missing.experiment_id
+    )
+    assert missing_view.status == "unrecoverable"
+    assert missing_view.recovery_reason == "実験フォルダが見つかりません"
+    assert restored.next_experiment_id() == "exp_0003"
+    assert not missing_dir.exists()
+    started = restored.take_next_training_queue_item()
+    assert started.experiment_id == healthy.experiment_id
+    assert not missing_dir.exists()
+
+
+def test_broken_queue_is_preserved_and_blocks_queue_mutation(tmp_path):
+    service = TrainingService(tmp_path)
+    queue_path = service._queue_path()
+    queue_path.write_bytes(b"{broken queue")
+    original = queue_path.read_bytes()
+
+    restored = TrainingService(tmp_path)
+    restored.recover()
+
+    assert queue_path.read_bytes() == original
+    assert restored._queue_broken
+    with pytest.raises(ValueError, match="キュー"):
+        restored.add_training_queue_item({})
+    assert queue_path.read_bytes() == original
+
+
+def test_broken_experiment_is_preserved_and_its_id_is_not_reused(tmp_path):
+    experiment_dir = tmp_path / "experiments" / "exp_0007"
+    experiment_dir.mkdir(parents=True)
+    experiment_file = experiment_dir / "experiment.json"
+    experiment_file.write_bytes(b"{broken experiment")
+
+    service = TrainingService(tmp_path)
+    service.recover()
+
+    assert experiment_file.read_bytes() == b"{broken experiment"
+    assert service.get_experiment("exp_0007").recovery_state == "unrecoverable"
+    assert service.next_experiment_id() == "exp_0008"
+    with pytest.raises(ValueError, match="実験の記録"):
+        service.delete_experiment("exp_0007")
+
+
+def test_experiment_without_manifest_retains_readable_config_for_clone(tmp_path):
+    experiment_dir = tmp_path / "experiments" / "exp_0007"
+    experiment_dir.mkdir(parents=True)
+    _workspace(tmp_path)
+    config = TrainingService(tmp_path).default_experiment_config("mask_rcnn")
+    (experiment_dir / "config.yaml").write_text(
+        yaml.safe_dump(config, allow_unicode=True), encoding="utf-8"
+    )
+
+    service = TrainingService(tmp_path)
+    experiment = service.get_experiment("exp_0007")
+
+    assert experiment.recovery_state == "unrecoverable"
+    assert experiment.config.values == config
+    assert not (experiment_dir / "experiment.json").exists()
+
+
+def test_add_training_queue_item_rejects_injected_experiment_id(tmp_path):
+    _workspace(tmp_path)
+    service = TrainingService(tmp_path)
+    config = service.default_experiment_config("mask_rcnn")
+    config["experiment"]["id"] = "../../outside"
+
+    with pytest.raises(ValueError, match="実験 ID"):
+        service.add_training_queue_item(config)
+    assert not (tmp_path.parent / "outside" / "experiment.json").exists()
+
+
+def test_broken_profile_does_not_prevent_startup_or_get_overwritten(tmp_path):
+    profile_dir = tmp_path / "augmentation"
+    profile_dir.mkdir()
+    profile_file = profile_dir / "aug_v001.yaml"
+    profile_file.write_bytes(b"invalid: [yaml")
+
+    service = TrainingService(tmp_path)
+
+    assert profile_file.read_bytes() == b"invalid: [yaml"
+    assert "profile:aug_v001" in service.recovery_issues
+
+
+def test_recovery_does_not_mark_run_without_process_record_as_stopped(tmp_path):
+    service, experiment = _queued_service(tmp_path)
+    prepared = service.prepare_training_run(experiment.experiment_id, experiment.experiment_id)
+    run_dir = Path(prepared.run_dir)
+    (run_dir / "hello.json").write_text('{"run_id":"exp_0001/attempt_001"}', encoding="utf-8")
+    queue_before = service._queue_path().read_bytes()
+
+    service.recover()
+
+    assert not (run_dir / "status.json").exists()
+    assert service.recovery_issues[experiment.experiment_id][0] == "unconfirmed"
+    assert service.recovery_blockers
+    assert service._queue_path().read_bytes() == queue_before
+    with pytest.raises(ValueError, match="確認できません"):
+        service.prepare_training_run(experiment.experiment_id, experiment.experiment_id)
+
+
+def test_malformed_queue_row_is_preserved_and_draft_ids_remain_available(tmp_path):
+    _workspace(tmp_path)
+    queue_path = tmp_path / "experiments" / "queue.json"
+    queue_path.parent.mkdir(parents=True, exist_ok=True)
+    queue_path.write_text('{"schema":1,"rows":[{}]}', encoding="utf-8")
+    original = queue_path.read_bytes()
+
+    service = TrainingService(tmp_path)
+    service.recover()
+
+    assert service._queue_broken
+    assert queue_path.read_bytes() == original
+    draft = service.save_experiment_draft(service.default_experiment_config("mask_rcnn"))
+    assert draft.experiment_id == "exp_0001"
+    with pytest.raises(ValueError, match="キュー"):
+        service.add_training_queue_item(service.default_experiment_config("mask_rcnn"))
+    assert queue_path.read_bytes() == original
 
 
 def test_mask_rcnn_configuration_validation_covers_backbone_and_anchor_count(tmp_path):

@@ -165,14 +165,26 @@ def test_evaluation_activity_is_passed_to_comparison(hybrid):
 def test_recover_runs_training_comparison_and_evaluation_recovery(hybrid, monkeypatch):
     order = []
     monkeypatch.setattr(hybrid.training, "recover", lambda: order.append("training") or [])
-    monkeypatch.setattr(hybrid.comparison, "recover", lambda: order.append("comparison") or [])
-    monkeypatch.setattr(
-        hybrid.comparison, "recover_evaluations", lambda: order.append("evaluations") or []
-    )
-    hybrid.comparison.recovery_blockers = ["評価 eval_001 を終了できませんでした"]
+
+    def recover_evaluations():
+        order.append("evaluations")
+        hybrid.comparison.recovery_blockers = ["評価 eval_001 を終了できませんでした"]
+        hybrid.comparison.recovery_issues = {
+            "RC-001": ("unconfirmed", hybrid.comparison.recovery_blockers[0])
+        }
+        return []
+
+    def recover_comparison():
+        order.append("comparison")
+        assert hybrid.comparison.recovery_blockers == ["評価 eval_001 を終了できませんでした"]
+        assert hybrid.comparison.recovery_issues["RC-001"][0] == "unconfirmed"
+        return []
+
+    monkeypatch.setattr(hybrid.comparison, "recover", recover_comparison)
+    monkeypatch.setattr(hybrid.comparison, "recover_evaluations", recover_evaluations)
 
     assert hybrid.recover() == []
-    assert order == ["training", "comparison", "evaluations"]
+    assert order == ["training", "evaluations", "comparison"]
     assert hybrid.recovery_blockers == ["評価 eval_001 を終了できませんでした"]
 
 

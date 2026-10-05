@@ -86,7 +86,9 @@ class ExperimentListPage(BasePage):
         self.model_filter.addItems(["すべて", "Mask R-CNN", "Cellpose"])
         self.model_filter.setMaximumWidth(150)
         self.state_filter = QComboBox()
-        self.state_filter.addItems(["すべて", "下書き", "待機", "実行中", "完了", "失敗", "中断"])
+        self.state_filter.addItems(
+            ["すべて", "下書き", "待機", "実行中", "完了", "失敗", "中断", "復旧不可", "終了未確認"]
+        )
         self.state_filter.setMaximumWidth(120)
         filter_row = QHBoxLayout()
         filter_row.addWidget(QLabel("実験群"))
@@ -234,7 +236,7 @@ class ExperimentListPage(BasePage):
         self.button_map: dict[str, QPushButton] = {}
         for key, label in (
             ("compare", "選択した実験を比較"),
-            ("copy", "設定を複製して新規実験"),
+            ("copy", "設定を引き継いで新規作成"),
             ("send", "モデル比較へ送る"),
         ):
             button = QPushButton(label)
@@ -246,7 +248,7 @@ class ExperimentListPage(BasePage):
         self.action_map = {}
         for key, label, callback in (
             ("compare", "選択した実験を比較", self.compare_selected),
-            ("copy", "設定を複製して新規実験", self.copy_selected),
+            ("copy", "設定を引き継いで新規作成", self.copy_selected),
             ("send", "モデル比較へ送る", self.send_selected),
         ):
             self.action_map[key] = QAction(label, self)
@@ -421,7 +423,8 @@ class ExperimentListPage(BasePage):
                 continue
             if (
                 self.state_filter.currentText() != "すべて"
-                and experiment_status_label(experiment.status) != self.state_filter.currentText()
+                and experiment_status_label(experiment.recovery_state or experiment.status)
+                != self.state_filter.currentText()
             ):
                 continue
             row = self.table.rowCount()
@@ -467,13 +470,15 @@ class ExperimentListPage(BasePage):
                 model_type_label(experiment.model_type),
                 str(config.get("data", {}).get("dataset_version", "—")),
                 str(config.get("augmentation", {}).get("profile", "—")),
-                experiment_status_label(experiment.status),
+                experiment_status_label(experiment.recovery_state or experiment.status),
                 progress,
                 format_score(selected_metric.map) if selected_metric else "—",
                 latest.name if latest else "—",
             ]
             for col, value in enumerate(values, start=1):
                 cell = QTableWidgetItem(value)
+                if col == 6 and experiment.recovery_reason:
+                    cell.setToolTip(experiment.recovery_reason)
                 if col in (1, 4, 7, 8):
                     cell.setFont(numeric_font())
                     cell.setTextAlignment(
@@ -538,14 +543,22 @@ class ExperimentListPage(BasePage):
             return
         config = experiment.config.values
         flattened = flatten_config(config)
-        overview_rows = [
+        overview_rows = []
+        if experiment.recovery_reason:
+            overview_rows.extend(
+                [
+                    ("復旧状態", experiment_status_label(experiment.recovery_state)),
+                    ("理由", experiment.recovery_reason),
+                ]
+            )
+        overview_rows.extend(
             (config_key_label(key), self._display_value(key, value))
             for key, value in flattened.items()
             if key not in {"data.used_item_ids", "experiment.id"}
-        ]
+        )
         overview_rows.extend(
             [
-                ("モデル", model_type_label(experiment.model_type)),
+                ("モデル", model_type_label(experiment.model_type) or "—"),
                 ("実使用データ数", f"{len(experiment.used_item_ids)} 件"),
             ]
         )
@@ -730,9 +743,11 @@ class ExperimentListPage(BasePage):
     def _update_buttons(self) -> None:
         selected = self._checked_experiments()
         current = self._current_experiment()
+        protected = current is not None and bool(current.recovery_state)
+        protected_reason = current.recovery_reason if protected else ""
         self.set_menu_action_enabled(self.action_map["compare"], len(selected) >= 2)
         self.set_menu_action_enabled(self.action_map["copy"], current is not None)
-        send_reason = self._send_block_reason(current)
+        send_reason = protected_reason or self._send_block_reason(current)
         self.set_menu_action_enabled(self.action_map["send"], not send_reason)
         self.action_map["compare"].setToolTip(
             "実験を 2 つ以上選ぶと使えます" if len(selected) < 2 else ""
@@ -745,33 +760,38 @@ class ExperimentListPage(BasePage):
             self.action_map["result"], current is not None and current.status == "completed"
         )
         self.set_menu_action_enabled(
-            self.action_map["stop"], current is not None and current.status == "running"
+            self.action_map["stop"],
+            current is not None and not protected and current.status == "running",
         )
         self.set_menu_action_enabled(
             self.action_map["retry"],
-            current is not None and current.status in {"failed", "stopped"},
+            current is not None and not protected and current.status in {"failed", "stopped"},
         )
         self.set_menu_action_enabled(
-            self.action_map["edit"], current is not None and current.status == "draft"
+            self.action_map["edit"],
+            current is not None and not protected and current.status == "draft",
         )
         self.action_map["result"].setToolTip(
             "完了した実験を 1 つ選ぶと結果を開けます"
             if current is None or current.status != "completed"
             else ""
         )
-        stop_tip = (
+        stop_tip = protected_reason or (
             "実行中の実験を 1 つ選ぶと今すぐ停止できます。"
             if current is None or current.status != "running"
             else STOP_TIP
         )
         self.action_map["stop"].setToolTip(stop_tip)
         self.action_map["retry"].setToolTip(
-            "失敗または中断した実験を 1 つ選ぶと使えます"
-            if current is None or current.status not in {"failed", "stopped"}
-            else RETRY_TIP
+            protected_reason
+            or (
+                "失敗または中断した実験を 1 つ選ぶと使えます"
+                if current is None or current.status not in {"failed", "stopped"}
+                else RETRY_TIP
+            )
         )
         self._update_delete_action(current)
-        targets = bool(selected) or current is not None
+        targets = (bool(selected) or current is not None) and not protected
         self.set_menu_action_enabled(self.action_map["cleanup"], targets)
         self.action_map["cleanup"].setToolTip(
             "記録は残したまま、選んだ実験の途中保存モデルなどの大きなファイルを削除します。"
@@ -779,9 +799,12 @@ class ExperimentListPage(BasePage):
             else "整理する実験を選ぶかチェックしてください"
         )
         self.action_map["edit"].setToolTip(
-            "下書きの実験を 1 つ選ぶと編集できます"
-            if current is None or current.status != "draft"
-            else ""
+            protected_reason
+            or (
+                "下書きの実験を 1 つ選ぶと編集できます"
+                if current is None or current.status != "draft"
+                else ""
+            )
         )
         self.action_map["compare"].setToolTip(
             "比較する実験を 2 つ以上選んでください" if len(selected) < 2 else ""
@@ -795,9 +818,10 @@ class ExperimentListPage(BasePage):
             self.yaml_menu_action.setToolTip(
                 "設定 YAML を表示する実験を選んでください" if current is None else ""
             )
-        self.set_menu_action_enabled(self.action_map["queue_copy"], bool(selected))
+        queue_copy_allowed = bool(selected) and not any(item.recovery_state for item in selected)
+        self.set_menu_action_enabled(self.action_map["queue_copy"], queue_copy_allowed)
         self.action_map["queue_copy"].setToolTip(
-            "複製する実験をチェックしてください" if not selected else ""
+            protected_reason or ("複製する実験をチェックしてください" if not selected else "")
         )
 
     def _send_block_reason(self, current: Experiment | None) -> str:
@@ -944,21 +968,96 @@ class ExperimentListPage(BasePage):
 
     def copy_selected(self) -> None:
         experiment = self._current_experiment()
-        if experiment:
-            self.ctx.navigator.navigate(PageId.TRAINING, copy_from=experiment.experiment_id)
+        if not experiment:
+            return
+        missing = self._missing_copy_fields(
+            experiment.config.values, allow_legacy_cv=not bool(experiment.recovery_state)
+        )
+        if missing:
+            reason = experiment.recovery_reason or "必須設定を確認できません"
+            QMessageBox.information(
+                self,
+                "設定を引き継げません",
+                f"{reason}。次の項目を補って新規作成してください: "
+                + ("、".join(missing) or "モデル・学習・データ設定"),
+            )
+            return
+        self.ctx.navigator.navigate(PageId.TRAINING, copy_from=experiment.experiment_id)
 
     def copy_to_queue(self) -> None:
         """選択した実験設定を新しい ID でキューへ複製する。"""
         selected = self._checked_experiments()
         added = []
         for experiment in selected:
-            config = copy.deepcopy(experiment.config.values)
-            config["experiment"]["id"] = self.ctx.backend.next_experiment_id()
-            added.append(self.ctx.backend.add_training_queue_item(config))
+            if experiment.recovery_state or not self._config_copyable(experiment.config.values):
+                self.ctx.status.show_message("必須設定を確認できない実験はキューへ複製できません")
+                continue
+            config, _migrated = self.ctx.backend.migrate_experiment_config(
+                copy.deepcopy(experiment.config.values)
+            )
+            config.setdefault("experiment", {})["id"] = self.ctx.backend.next_experiment_id()
+            try:
+                added.append(self.ctx.backend.add_training_queue_item(config))
+            except (KeyError, TypeError, ValueError):
+                self.ctx.status.show_message("実験設定を確認できないため複製できません")
         if added:
             self.ctx.queue_controller.sync_training_identifier()
             self.ctx.status.show_message(f"{len(added)} 件を学習キューに追加しました")
             self.ctx.navigator.navigate(PageId.TRAINING_QUEUE)
+
+    @staticmethod
+    def _missing_copy_fields(config: object, *, allow_legacy_cv: bool = True) -> list[str]:
+        if not isinstance(config, dict):
+            return ["実験・モデル・学習・データ設定"]
+        required = {
+            "experiment": ("study_id",),
+            "model": ("type",),
+            "training": ("epochs", "batch_size"),
+            "data": ("dataset_version",),
+        }
+        missing = []
+        for section, keys in required.items():
+            value = config.get(section)
+            if not isinstance(value, dict):
+                missing.append(section)
+                continue
+            missing.extend(
+                f"{section}.{key}"
+                for key in keys
+                if key not in value or value[key] is None or value[key] == ""
+            )
+        data = config.get("data")
+        if isinstance(data, dict):
+            cv = data.get("cv")
+            if cv is None:
+                if not (allow_legacy_cv and data.get("split_id")):
+                    missing.append("data.cv")
+            elif not isinstance(cv, dict):
+                missing.append("data.cv")
+            elif not all(
+                key in cv and cv[key] is not None
+                for key in (
+                    "n_folds",
+                    "stratify_by_classification",
+                    "group_by_source_folder",
+                )
+            ):
+                missing.append("data.cv")
+        if not allow_legacy_cv:
+            checkpoint = config.get("checkpoint")
+            if not isinstance(checkpoint, dict):
+                missing.append("checkpoint")
+            else:
+                missing.extend(
+                    f"checkpoint.{key}"
+                    for key in ("best_metric", "save_fold_models")
+                    if key not in checkpoint or checkpoint[key] is None
+                )
+        return missing
+
+    @classmethod
+    def _config_copyable(cls, config: object) -> bool:
+        return not cls._missing_copy_fields(config)
 
     def edit_selected(self) -> None:
         experiment = self._current_experiment()

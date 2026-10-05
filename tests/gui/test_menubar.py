@@ -126,7 +126,7 @@ def test_tab_tools_inactive_action_reason_and_candidate_release_reason(shell):
 
     shell.navigate(PageId.EXPERIMENTS)
     training_window = shell.manager.window(ModeId.TRAINING)
-    copy_action = _find_action(_menu(training_window, "学習"), "設定を複製して新規実験")
+    copy_action = _find_action(_menu(training_window, "学習"), "設定を引き継いで新規作成")
     shell.navigate(PageId.TRAINING_QUEUE)
     assert not copy_action.isEnabled()
     assert "実験一覧タブ" in copy_action.toolTip()

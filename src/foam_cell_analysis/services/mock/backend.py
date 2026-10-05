@@ -2219,6 +2219,16 @@ class MockBackend:
         self.candidates[candidate.candidate_id] = candidate
         return candidate
 
+    def copy_candidate_settings(self, candidate_id: str) -> Candidate:
+        candidate = self.candidates.get(candidate_id)
+        if candidate is None:
+            raise ValueError(f"比較候補がありません: {candidate_id}")
+        return self.add_candidate(
+            candidate.experiment_id,
+            candidate.source_attempt_number,
+            candidate.inference_config_id,
+        )
+
     # ---- 学習用・検証用の版の組（比較・評価設計 3.5 の模擬） ----
 
     def create_candidate_snapshot(
@@ -2409,15 +2419,17 @@ class MockBackend:
     def _add_completed_evaluation(
         self, candidate_id: str, version: str, evaluation: Evaluation
     ) -> EvaluationRecord:
+        now = self._now()
         record = EvaluationRecord(
             self._next_evaluation_id(candidate_id),
             candidate_id,
             version,
             "completed",
             evaluation=evaluation,
-            completed_at=self._now().isoformat(timespec="seconds"),
+            completed_at=now.isoformat(),
             input_fingerprint=self._digest(f"{candidate_id}:{version}"),
             schema=2,
+            created_at=now.isoformat(),
         )
         self.evaluation_records.setdefault(candidate_id, []).append(record)
         return record
@@ -2448,6 +2460,7 @@ class MockBackend:
             "running",
             input_fingerprint=self._digest(f"{candidate_id}:{validation_version}"),
             schema=2,
+            created_at=self._now().isoformat(),
         )
         self.evaluation_records.setdefault(candidate_id, []).append(record)
         self._evaluation_progress[candidate_id] = EvaluationProgress(
@@ -2591,8 +2604,8 @@ class MockBackend:
         )
 
         candidate = self.candidates[candidate_id]
-        if candidate.status == "released":
-            raise ValueError("リリース済みの候補の外部解析結果は変更できません")
+        if not self.external_analysis_editable(candidate_id, evaluation_id):
+            raise ValueError("この評価の外部解析結果は変更できません")
         record = self._find_evaluation(candidate_id, evaluation_id)
         if record.validation_version != candidate.validation_version:
             raise ValueError("候補に固定した検証用データセットと異なる過去の評価は編集できません")
@@ -2631,6 +2644,46 @@ class MockBackend:
         if comment is not None:
             candidate.comment = comment
         return candidate
+
+    def external_analysis_editable(self, candidate_id: str, evaluation_id: str) -> bool:
+        """HybridBackend と同じ公開後再評価の条件で保存可否を返す。"""
+        candidate = self.candidates.get(candidate_id)
+        if candidate is None:
+            return False
+        try:
+            record = self._find_evaluation(candidate_id, evaluation_id)
+        except ValueError:
+            return False
+        if (
+            record.status != "completed"
+            or record.validation_version != candidate.validation_version
+        ):
+            return False
+        if candidate.status != "released":
+            return candidate.status in {"candidate", "rejected"}
+        release = next(
+            (item for item in self.released.values() if item.candidate_id == candidate_id), None
+        )
+        if release is None or evaluation_id == release.evaluation_id:
+            return False
+        try:
+            created = datetime.fromisoformat(record.created_at or "")
+        except ValueError:
+            return False
+        evaluation_number = self._evaluation_id_number(evaluation_id)
+        release_number = self._evaluation_id_number(release.evaluation_id)
+        if evaluation_number is None or release_number is None:
+            return False
+        return evaluation_number > release_number and created > release.released_at
+
+    @staticmethod
+    def _evaluation_id_number(evaluation_id: str) -> int | None:
+        if not isinstance(evaluation_id, str) or not evaluation_id.startswith("eval_"):
+            return None
+        number = evaluation_id[5:]
+        if not number or not number.isascii() or not number.isdigit() or len(number) > 18:
+            return None
+        return int(number)
 
     # ---- 抽出結果出力（12 章の模擬。ファイルは作らない） ----
 

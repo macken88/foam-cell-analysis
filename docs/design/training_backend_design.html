@@ -768,5 +768,6 @@ selected     = save_fold_models ? K × W : 0          … コピーになった�
 </div>
 
 </div>
+<section class="card"><h2>起動時の異常中断復旧</h2><p>TrainingService は読込段階で queue、experiment、run_spec、status、result、event 履歴を検査する。読めない対象は RecoveryIssue をruntimeに保持して一覧へ残し、対象ファイルを変更しない。queue.json が壊れている場合は元ファイルを保護し、キューの変更と実行開始を拒否する。ID採番は壊れた実験ディレクトリも予約済みとして扱う。</p><p>復旧は入力の事前読取、PIDと作成時刻の照合（記録がない場合は実行モジュールとcanonical run_dirをOSプロセス一覧で照合）、同一プロセスと子プロセスの終了・確認、既存lifecycle順での状態確定、安全対象だけのcleanupの順に行う。終了未確認は全体の新規学習をサービス層でも止める。正常中断は自動再実行しない。</p></section>
 </body>
 </html>

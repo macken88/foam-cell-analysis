@@ -519,9 +519,7 @@ def test_recovery_concludes_crashed_evaluations_and_cleans_temporaries(evaluatio
 
 
 def test_recovery_blocks_when_live_process_cannot_be_terminated(evaluation_env, monkeypatch):
-    from types import SimpleNamespace
-
-    from foam_cell_analysis.services import comparison_service
+    from foam_cell_analysis.jobs import lifecycle
 
     env = evaluation_env
     service = env.service
@@ -535,20 +533,30 @@ def test_recovery_blocks_when_live_process_cannot_be_terminated(evaluation_env, 
     preparing.mkdir()
     (preparing / "x.tmp").write_bytes(b"x")
     service.process_terminator = lambda process: None  # 終了できない
-    ticks = iter(range(1000))
+    clock = {"now": 0.0}
+    monkeypatch.setattr(lifecycle.time, "monotonic", lambda: clock["now"])
     monkeypatch.setattr(
-        comparison_service,
-        "time",
-        SimpleNamespace(monotonic=lambda: next(ticks), sleep=lambda _s: None),
+        lifecycle.time, "sleep", lambda seconds: clock.__setitem__("now", clock["now"] + seconds)
     )
+
+    def snapshot_files(root):
+        return {
+            path.relative_to(root).as_posix(): path.read_bytes()
+            for path in root.rglob("*")
+            if path.is_file()
+        }
+
+    before = snapshot_files(service.candidates_root)
 
     assert service.recover_evaluations() == []
 
+    assert snapshot_files(service.candidates_root) == before
     assert not (stuck / "status.json").exists()
-    assert partial.exists()
-    assert not preparing.exists()  # 別の準備中フォルダは評価の外なので消える
+    assert partial.read_bytes() == b"partial"
+    assert (preparing / "x.tmp").read_bytes() == b"x"
     assert len(service.recovery_blockers) == 1
     assert "eval_001" in service.recovery_blockers[0]
+    assert service.recovery_issues["RC-001"][0] == "unconfirmed"
 
 
 def test_evaluation_fails_when_image_changes_after_preflight(evaluation_env):

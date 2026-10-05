@@ -4,7 +4,7 @@ import copy
 from unittest.mock import patch
 
 import pytest
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QLabel, QLineEdit, QMessageBox
 
@@ -50,6 +50,75 @@ def test_cv_fold_spin_updates_yaml_and_estimate_through_keyboard(shell, qapp):
     qapp.processEvents()
     assert "n_folds: 6" in page.yaml_preview.toPlainText()
     assert "6 分割" in page.estimate_label.text()
+
+
+def test_protected_experiment_with_missing_cv_is_rejected_by_row_menu(shell, monkeypatch):
+    backend = shell.ctx.backend
+    experiment = backend.get_experiment("exp_0042")
+    experiment.config.values["data"].pop("cv")
+    experiment.recovery_state = "unrecoverable"
+    experiment.recovery_reason = "実験の記録を読めません"
+    saved_config = copy.deepcopy(experiment.config.values)
+    monkeypatch.setattr(backend, "list_experiments", lambda: [experiment])
+    monkeypatch.setattr(backend, "get_experiment", lambda _experiment_id: experiment)
+    shell.navigate(PageId.EXPERIMENTS)
+    page = shell.page(PageId.EXPERIMENTS)
+    page.refresh()
+    row = next(
+        index
+        for index in range(page.table.rowCount())
+        if page.table.item(index, 1).text() == experiment.experiment_id
+    )
+    shown = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        lambda _parent, _title, message: shown.append(message),
+    )
+
+    rect = page.table.visualItemRect(page.table.item(row, 0))
+    QTest.mouseClick(page.table.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
+    menu_bar = page.window().menuBar()
+    top = next(action for action in menu_bar.actions() if action.text().startswith("学習"))
+    QTest.mouseClick(menu_bar, Qt.MouseButton.LeftButton, pos=menu_bar.actionGeometry(top).center())
+    menu = top.menu()
+    action = page.action_map["copy"]
+    QTest.mouseClick(menu, Qt.MouseButton.LeftButton, pos=menu.actionGeometry(action).center())
+
+    assert shown and "data.cv" in shown[0]
+    assert shell.current_page() is page
+    assert experiment.config.values == saved_config
+
+
+def test_protected_experiment_with_complete_config_can_be_copied(shell):
+    backend = shell.ctx.backend
+    experiment = backend.get_experiment("exp_0042")
+    experiment.recovery_state = "termination_unknown"
+    experiment.recovery_reason = "終了状態を確認できません"
+    saved_config = copy.deepcopy(experiment.config.values)
+
+    shell.navigate(PageId.EXPERIMENTS)
+    page = shell.page(PageId.EXPERIMENTS)
+    row = next(
+        index
+        for index in range(page.table.rowCount())
+        if page.table.item(index, 1).text() == experiment.experiment_id
+    )
+    rect = page.table.visualItemRect(page.table.item(row, 1))
+    QTest.mouseClick(page.table.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
+    menu_bar = page.window().menuBar()
+    top = next(action for action in menu_bar.actions() if action.text().startswith("学習"))
+    QTest.mouseClick(menu_bar, Qt.MouseButton.LeftButton, pos=menu_bar.actionGeometry(top).center())
+    menu = top.menu()
+    action = page.action_map["copy"]
+    assert action.isEnabled()
+    QTest.mouseClick(menu, Qt.MouseButton.LeftButton, pos=menu.actionGeometry(action).center())
+
+    copied_page = shell.page(PageId.TRAINING)
+    assert shell.current_page() is copied_page
+    assert copied_page.config["experiment"]["id"] != experiment.experiment_id
+    assert copied_page.config["data"] == saved_config["data"]
+    assert experiment.config.values == saved_config
 
 
 def test_qtest_training_click_finishes_cv_and_final_model(shell, qapp, monkeypatch):
@@ -382,6 +451,10 @@ def test_legacy_draft_edit_and_copy_migrate_via_experiment_actions(shell, qapp):
 
     store_legacy(edited)
     store_legacy(copied)
+    edited_original = copy.deepcopy(edited.config.values)
+    copied_original = copy.deepcopy(copied.config.values)
+    assert "cv" not in edited.config.values["data"]
+    assert "cv" not in copied.config.values["data"]
     shell.navigate(PageId.EXPERIMENTS)
     results = shell.page(PageId.EXPERIMENTS)
     results.refresh()
@@ -396,10 +469,26 @@ def test_legacy_draft_edit_and_copy_migrate_via_experiment_actions(shell, qapp):
         QTest.mouseClick(results.table.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
         return row
 
+    def click_training_action(action):
+        menu_bar = results.window().menuBar()
+        menu_title = "編集" if action is results.action_map["edit"] else "学習"
+        top = next(item for item in menu_bar.actions() if item.text().startswith(menu_title))
+        QTest.mouseClick(
+            menu_bar, Qt.MouseButton.LeftButton, pos=menu_bar.actionGeometry(top).center()
+        )
+        menu = top.menu()
+        QTest.qWait(20)
+        assert menu.isVisible()
+        QTest.mouseClick(menu, Qt.MouseButton.LeftButton, pos=menu.actionGeometry(action).center())
+        QTest.qWait(20)
+
     row = select(edited.experiment_id)
     results.table.setCurrentCell(row, 1)
-    results.action_map["edit"].trigger()
+    assert results.action_map["edit"].isEnabled()
+    click_training_action(results.action_map["edit"])
     page = shell.page(PageId.TRAINING)
+    assert shell.current_page() is page
+    assert page._edit_id == edited.experiment_id
     assert "split_id" not in page.config["data"]
     assert page.config["data"]["cv"]["n_folds"] == 5
     assert page.config["checkpoint"]["save_fold_models"] is True
@@ -407,15 +496,20 @@ def test_legacy_draft_edit_and_copy_migrate_via_experiment_actions(shell, qapp):
     assert "split_001" not in page.yaml_preview.toPlainText()
     assert "設定を入力してください" not in page.yaml_preview.toPlainText()
     assert page._read_control("model.rescale", QLineEdit("auto")) == "auto"
+    assert edited.config.values == edited_original
 
     shell.navigate(PageId.EXPERIMENTS)
     row = select(copied.experiment_id)
     results.table.setCurrentCell(row, 1)
-    results.action_map["copy"].trigger()
+    assert results.action_map["copy"].isEnabled()
+    click_training_action(results.action_map["copy"])
     copied_page = shell.page(PageId.TRAINING)
+    assert shell.current_page() is copied_page
     assert "split_id" not in copied_page.config["data"]
     assert copied_page.config["data"]["cv"]["n_folds"] == 5
     assert copied_page.config["checkpoint"]["save_fold_models"] is True
+    assert copied_page.config["experiment"]["id"] != copied.experiment_id
+    assert copied.config.values == copied_original
 
 
 def test_legacy_stopped_experiment_retry_is_blocked_without_mutating_record(
@@ -613,7 +707,7 @@ def test_training_validation_warning_is_clickable_and_clears_after_edit(shell, m
 
 
 def _wheel(widget, delta=-120):
-    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtCore import QPointF, Qt
     from PySide6.QtGui import QWheelEvent
     from PySide6.QtWidgets import QApplication
 

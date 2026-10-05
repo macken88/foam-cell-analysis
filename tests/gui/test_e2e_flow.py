@@ -143,19 +143,28 @@ def test_candidate_compare_keeps_sidebar_and_returns(shell):
 
 
 def test_copy_experiment_allocates_new_id_and_copies_config(shell):
+    shell.navigate(PageId.EXPERIMENTS)
     experiments = shell.page(PageId.EXPERIMENTS)
     row = next(
         index
         for index in range(experiments.table.rowCount())
         if experiments.table.item(index, 1).text() == "exp_0042"
     )
-    experiments.table.setCurrentCell(row, 1)
+    rect = experiments.table.visualItemRect(experiments.table.item(row, 1))
+    QTest.mouseClick(experiments.table.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
     config = shell.ctx.backend.get_experiment("exp_0042").config.values
-    experiments.copy_selected()
+    menu_bar = experiments.window().menuBar()
+    top = next(action for action in menu_bar.actions() if action.text().startswith("学習"))
+    QTest.mouseClick(menu_bar, Qt.MouseButton.LeftButton, pos=menu_bar.actionGeometry(top).center())
+    menu = top.menu()
+    action = experiments.action_map["copy"]
+    assert action.isEnabled()
+    QTest.mouseClick(menu, Qt.MouseButton.LeftButton, pos=menu.actionGeometry(action).center())
     training = shell.page(PageId.TRAINING)
     assert shell.current_page() is training
     assert training.config["experiment"]["id"] != "exp_0042"
     assert training.config["model"] == config["model"]
+    assert training.config["data"] == config["data"]
 
 
 def test_unassigned_inference_routes_to_released_models(shell):

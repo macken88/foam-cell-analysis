@@ -5,6 +5,7 @@ import csv
 import hashlib
 import json
 import shutil
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -133,6 +134,7 @@ def _write_evaluation(
         "run_id": run_id,
         "candidate_id": candidate_id,
         "evaluation_id": evaluation_id,
+        "created_at": datetime.now().astimezone().isoformat(),
         "input_fingerprint": fingerprint,
         "validation": {"version": version, "item_ids": item_ids},
         "metric": {"id": "cellpose_ap_iou50_95_image_mean_v1"},
@@ -387,6 +389,11 @@ def test_released_candidate_can_be_reevaluated_without_changing_public_release(e
     assert release_path.read_bytes() == before_release
     assert (release_path.parent / "model.pt").read_bytes() == before_weight
     assert service.get_release_record("model_001")["evaluation"]["evaluation_id"] == "eval_001"
+    values = {
+        item.item_id: 2.5 for item in service.dataset_store.select_evaluation_items("val_v000")
+    }
+    service.save_external_analysis(cid, "eval_002", values, software="再評価")
+    assert release_path.read_bytes() == before_release
 
 
 def test_release_archive_delete_preserves_history_and_blocks_routing(env):
@@ -717,6 +724,103 @@ def test_external_analysis_is_validated_and_saved_as_snapshots(env):
     path.write_text(json.dumps(value, ensure_ascii=False), "utf-8")
     assert service.get_candidate(cid).external_summary["n_images"] == 1
     assert len(service.list_external_results(cid)) == 3
+
+
+def test_rejected_candidate_keeps_external_analysis_editable(env):
+    service, _training = env
+    cid = service.add_candidate("exp_0001", 1, _default_config(service).config_id).candidate_id
+    _write_evaluation(service, cid, "eval_001")
+    service.reject_candidate(cid)
+
+    assert service.external_analysis_editable(cid, "eval_001")
+    saved = service.save_external_analysis(cid, "eval_001", {"val_v000_0": 12.0})
+    assert saved.status == "rejected"
+    assert service.list_external_results(cid)[-1]["values"] == {"val_v000_0": 12.0}
+
+
+def test_broken_external_record_cannot_be_overwritten(env):
+    service, _training = env
+    cid = service.add_candidate("exp_0001", 1, _default_config(service).config_id).candidate_id
+    _write_evaluation(service, cid, "eval_001")
+    external_path = service.candidates_root / cid / "external.json"
+    external_path.write_bytes(b"{broken external")
+
+    with pytest.raises(ValueError, match="外部解析"):
+        service.save_external_analysis(cid, "eval_001", {"val_v000_0": 1.0})
+
+    assert external_path.read_bytes() == b"{broken external"
+
+
+def test_broken_evaluation_result_does_not_block_candidate_settings_copy(env):
+    service, _training = env
+    candidate = service.add_candidate("exp_0001", 1, _default_config(service).config_id)
+    run_dir = _write_evaluation(service, candidate.candidate_id, "eval_001")
+    result_path = run_dir / "result.json"
+    result_path.write_bytes(b"{broken result")
+    original_candidate = (
+        service.candidates_root / candidate.candidate_id / "candidate.json"
+    ).read_bytes()
+
+    service.recover_evaluations()
+    copied = service.copy_candidate_settings(candidate.candidate_id)
+
+    assert copied.candidate_id != candidate.candidate_id
+    assert copied.status == "candidate"
+    assert copied.evaluations == {}
+    assert result_path.read_bytes() == b"{broken result"
+    assert (
+        service.candidates_root / candidate.candidate_id / "candidate.json"
+    ).read_bytes() == original_candidate
+
+
+def test_candidate_with_malformed_source_protects_experiment_and_weights(env):
+    service, _training = env
+    candidate = service.add_candidate("exp_0001", 1, _default_config(service).config_id)
+    path = service.candidates_root / candidate.candidate_id / "candidate.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["source"] = []
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+    assert service.experiment_reference_reason("exp_0001")
+    assert service.protected_final_reason("exp_0001", 1)
+
+
+def test_released_weight_copy_can_seed_new_candidate_when_training_weight_is_pruned(env):
+    service, _training = env
+    candidate = service.add_candidate("exp_0001", 1, _default_config(service).config_id)
+    _write_evaluation(service, candidate.candidate_id, "eval_001")
+    service.release_candidate(candidate.candidate_id, "eval_001")
+    original = service.get_candidate_record(candidate.candidate_id)
+    original_bytes = (
+        service.candidates_root / candidate.candidate_id / "candidate.json"
+    ).read_bytes()
+    source_path = service._weights_path(original["source"])
+    source_path.unlink()
+    service.recovery_issues[candidate.candidate_id] = ("unrecoverable", "評価履歴を読めません")
+
+    copied = service.copy_candidate_settings(candidate.candidate_id)
+
+    copied_record = service.get_candidate_record(copied.candidate_id)
+    assert copied_record["source"]["weights"]["release_model_id"] == "model_001"
+    assert service._weights_path(copied_record["source"]).is_file()
+    assert (
+        service.candidates_root / candidate.candidate_id / "candidate.json"
+    ).read_bytes() == original_bytes
+
+
+def test_candidate_list_tolerates_malformed_nested_snapshot_values(env):
+    service, _training = env
+    candidate = service.add_candidate("exp_0001", 1, _default_config(service).config_id)
+    path = service.candidates_root / candidate.candidate_id / "candidate.json"
+    value = json.loads(path.read_text("utf-8"))
+    value["source"] = []
+    value["oof"] = []
+    value["effective_params"] = []
+    path.write_text(json.dumps(value), encoding="utf-8")
+
+    listed = service.list_candidates()
+
+    assert [item.candidate_id for item in listed] == [candidate.candidate_id]
 
 
 def _rewrite_result(run_dir, mutate):

@@ -869,5 +869,6 @@ PruneResult(freed_bytes, n_files, skipped: list[ArtifactGroup])   # 条件を満
 採用済みモデル [保管済みを表示]
 ☐ モデル  候補  検証 AP  学習時 OOF AP  振り分け  状態
 [詳細] [保管] [削除]</code></pre><p>公開済み候補の採用操作は通常のリリース登録であり、公開記録・公開評価は不変。再評価は公開済み候補でも固定検証版で許可し、比較には同一固定版の正常な最新評価を使う。公開登録の再試行は既存 release を再利用し、二重公開しない。採用状態は公開状態を示し、独立した比較採用評価 ID は保存しない。候補一覧はチェック・行選択・色を同期し、保管・削除済みモデルは既定で隠し、履歴表示で見られる。OOF は学習時の参考数値を常に表示し、推論条件 different/unknown の場合は薄色と日本語理由 tooltip を付ける。最高値の強調はしない。</p><p>保管は可逆で、振り分け中のモデルは保管・削除できない。削除対象は model_NNN が所有する通常ファイルだけで、容量は実ファイルから計測する。reparse point を拒否してから同一 volume の staging に移動し削除する。失敗時は削除前の状態を復元する。小さな release.json と削除状態・評価要約の履歴は残し、candidate/evaluation/dataset/experiment/routing は変更しない。削除 journal は起動時に release ID から決まる既知の path のみで復旧する。</p></div>
+<section class="card"><h2>異常中断・読取破損の保護</h2><p>候補・評価・外部解析を復旧前に読み、破損対象をruntime RecoveryIssueとして保持する。破損候補や終了未確認評価のフォルダでは移行、status保存、cleanup、候補編集、評価、release、外部保存を行わない。読めない候補参照がある間は実験削除とfinal.pt整理を保守的に拒否する。外部解析を読めない場合は空配列として保存し直さず、追記を拒否する。process.jsonがない評価は実行モジュールとcanonical run_dirでOSプロセス一覧を照合し、照合不能なら全体の評価開始を保留する。読める候補のコピーは公開済みmodel.ptが正常で元重みが整理済みなら、その公開コピーを参照できる。</p><p>公開後の再評価は公開評価より新しい評価IDで、run_spec.created_at が release.json の released_at より後、固定検証版一致、正常完了、保護なしを確認した場合だけ外部解析を保存できる。公開評価と release.json は変更しない。</p></section>
 </body>
 </html>
