@@ -2,6 +2,7 @@
 
 気泡インスタンスセグメンテーションアプリ（データ準備・モデル学習・モデル比較/リリース・本番推論）。
 文書の入口は [docs/index.html](docs/index.html) です。仕様書は [docs/specs/](docs/specs/) を参照。
+利用者向けの操作手順は [利用者マニュアル](docs/manual/index.html) を参照してください。
 
 ## セットアップ（pip のみ、Python 3.12）
 
