@@ -468,18 +468,54 @@ def test_cellpose_configuration_validation_covers_batch_and_sampling(tmp_path):
 
     config["model"]["nimg_per_epoch"] = 0
     config["model"]["min_train_masks"] = -1
+    config["model"]["bsize"] = 128
     config["model"]["scale_range"] = float("nan")
     config["training"]["batch_size"] = 0
     issues = service.validate_experiment_config(config)
     messages = [issue["message"] for issue in issues]
     assert any("nimg_per_epoch" in message for message in messages)
     assert any("min_train_masks" in message for message in messages)
+    assert any("bsize" in message for message in messages)
     assert any("scale_range" in message for message in messages)
+    for key in (
+        "model.scale_range",
+        "model.nimg_per_epoch",
+        "model.min_train_masks",
+        "model.bsize",
+        "training.batch_size",
+    ):
+        assert sum(issue.get("key") == key for issue in issues) == 1
     assert any("batch_size" in message for message in messages)
     config["training"]["batch_size"] = 2
     assert not any(
         "batch_size" in issue["message"] for issue in service.validate_experiment_config(config)
     )
+
+
+def test_shared_training_numeric_validation_rejects_invalid_values_before_attempt(tmp_path):
+    _workspace(tmp_path)
+    service = TrainingService(tmp_path)
+    config = service.default_experiment_config("mask_rcnn")
+    config["data"]["cv"]["n_folds"] = 2
+    config["training"]["learning_rate"] = float("inf")
+    config["checkpoint"]["save_every"] = True
+    issues = service.validate_experiment_config(config)
+    assert any("learning_rate" in item["message"] for item in issues)
+    assert any("save_every" in item["message"] for item in issues)
+    experiment = service.save_experiment_draft(config)
+    with pytest.raises(ValueError, match="設定エラー"):
+        service.prepare_training_run(experiment.experiment_id, experiment.experiment_id)
+    assert service.get_experiment(experiment.experiment_id).runs == []
+
+
+def test_mock_backend_uses_shared_numeric_rules_without_model_dependency(tmp_path):
+    backend = MockBackend()
+    config = backend.default_experiment_config("cellpose")
+    config["model"]["scale_range"] = float("nan")
+    issues = backend.validate_experiment_config(config)
+    messages = [item["message"] for item in issues]
+    assert any("scale_range は 0〜1" in message for message in messages)
+    assert not any("インストールされていません" in message for message in messages)
 
 
 def _write_valid_result(run_dir):

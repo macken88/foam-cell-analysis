@@ -140,7 +140,7 @@ val_v003</pre>
 Base Training    : train_v007
 Validation Set   : val_v003</pre>
 <p>学習版を確定するときに、同時に作成する検証版または既存の確定済み検証版との item ID と画像 SHA-256 の重複を検査する。検証版を変更しても既存学習版の組は変更しない。旧形式の <code>found</code> 混入記録は履歴として閲覧できるが、新規リリースには使用しない。旧形式の <code>none</code>/<code>unknown</code> は、候補固定版など他の条件を満たせば利用できる。</p>
-</section>
+<p>検証版の <code>dataset_info.json</code> で <code>dataset_version</code> を省略した場合は、DatasetStore と同じく親フォルダ名を版名として扱う。値を明示した場合はフォルダ名と一致しなければならない。</p></section>
 <section class="card">
 <h2>8. 検証データの保存情報</h2>
 <table>

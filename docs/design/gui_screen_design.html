@@ -314,10 +314,10 @@ table.rev{font-size:.92rem}
 │     └─ synthetic.py          # 気泡風の合成画像・インスタンスマスク生成（numpy）
 └─ gui/
    ├─ theme.py                 # 色・フォントの定義とスタイルシートの生成（2.6）
-   ├─ main_window.py           # サイドバー + QStackedWidget + ステータスバー（v2 で廃止。2.5）
+   ├─ home_window.py           # ホーム画面（WindowManager が管理）
    ├─ context.py               # AppContext（backend, navigator, jobs）
    ├─ navigation.py            # PageId 列挙、Navigator（画面遷移）
-   ├─ jobs.py                  # FakeJob / JobManager（QTimer で進捗を模擬）
+   ├─ jobs.py                  # FakeJob / JobManager（本番推論画面の画面確認用模擬ジョブ）
    ├─ widgets/
    │  ├─ page_base.py          # BasePage（見出し・説明・on_enter）
    │  ├─ form.py               # FormSection, CollapsibleSection, 数値入力ヘルパ
@@ -340,7 +340,7 @@ table.rev{font-size:.92rem}
 <li>ページは表示されるたびに <code>on_enter</code> で backend から最新データを読み直す（画面間の整合はこれで取る）。</li>
 <li>画面遷移は必ず <code>ctx.navigator.navigate(PageId.X, **params)</code> を使う。ページ同士が直接参照し合わない。</li>
 <li>ダイアログは各モードの <code>dialogs.py</code> などに置き、モーダル（<code>exec()</code>）とする。ただし、データ拡張プロファイル編集は大きめのダイアログにする。</li>
-<li>長い処理（取り込み、整合性確認、アーカイブ、学習、評価、粒子解析用画像出力、推論）は <code>FakeJob</code> で進捗を模擬する。</li>
+<li>取り込み・整合性確認・アーカイブ・粒子解析用画像出力・本番推論は MockBackend の模擬処理。学習は TrainingRunner の ProcessTrainingJob / FakeTrainingJob、候補評価は EvaluationRunner の子プロセスが担当する。</li>
 <li>画面遷移してもジョブは継続する（<code>JobManager</code> が保持）。</li>
 <li>実行中ジョブ数をステータスバーに表示する。</li>
 <li>確定済みのもの（データセット版、実験で使用済みのデータ拡張プロファイル、リリース済みモデル）は、GUI 上でも編集不可（読み取り専用表示）にする。</li>
@@ -453,18 +453,8 @@ table.rev{font-size:.92rem}
 <tr><td>どのウィンドウ</td><td><code>Ctrl</code>+<code>H</code></td><td>ホーム</td><td>—</td></tr>
 </tbody></table></div>
 
-<h3 id="sec2-5">2.5 実装への影響</h3>
-<ul>
-<li><code>gui/main_window.py</code>（サイドバー＋スタック）を廃止し、次の3つに分ける。
-  <ul>
-  <li><code>gui/home_window.py</code>: ホームウィンドウ</li>
-  <li><code>gui/mode_window.py</code>: タブを持つ共通のモードウィンドウ</li>
-  <li><code>gui/window_manager.py</code>: <code>PageId</code> を「ウィンドウとタブ」に対応付け、開く・前面に出す・位置の保存を行う</li>
-  </ul></li>
-<li><code>Navigator</code>・<code>AppContext</code>・<code>JobManager</code> と各ページのクラス（<code>on_enter</code> を含む）は変更しない。ページの見出しは <code>BasePage</code> の引数で非表示にできるようにする。</li>
-<li><code>tests/gui/test_main_window.py</code> と E2E テストは、ウィンドウをまたぐ遷移に合わせて書き換える。</li>
-</ul>
-
+<h3 id="sec2-5">2.5 現行ウィンドウ構成</h3>
+<p>HomeWindow・ModeWindow・WindowManager が画面遷移を管理する。Navigator と AppContext は画面から backend やジョブ管理への接続を提供する。ウィンドウ横断の操作テストは <code>tests/gui/test_windows.py</code> に置く。</p>
 <h3 id="sec2-6">2.6 見た目の設計（全画面共通）<span class="badge">v2.5</span></h3>
 <p>このアプリで一日の大半を占めるのは、数百〜数千枚の画像を見て用途・分類・品質を決める作業と、学習・評価の数字を見比べる作業である。見た目はこの2つを速く、間違えずに行えることを優先し、装飾で作業エリアを狭めない。本書の画面モックはすべてこの節の見た目で描いている（ブラウザ上の近似であり、Qt での実際の表示とは細部が異なる）。</p>
 
@@ -576,11 +566,12 @@ table.rev{font-size:.92rem}
 <h3 id="sec3-1">3.1 FakeJob / JobManager（<code>gui/jobs.py</code>）</h3>
 <ul>
 <li><code>FakeJob(QObject)</code>: <code>name</code>, <code>total_steps</code>, <code>interval_ms</code> を持つ。シグナルは <code>progress(int step, int total, str message)</code>, <code>finished(bool ok, str message)</code>。</li>
-<li>1ステップごとに <code>on_step(step)</code> コールバックを呼ぶ。backend の状態更新に使う。</li>
+<li>各 interval で <code>on_step(step)</code> を呼び、進捗を通知する。本番推論画面の模擬ジョブから使用する。</li>
 <li><code>cancel()</code> あり。</li>
-<li><code>JobManager(QObject)</code>: ジョブを保持し、<code>jobs_changed</code> シグナルでステータスバーの件数を更新する。</li>
+<li><code>JobManager(QObject)</code>: <code>start(job)</code> で FakeJob を保持して開始し、完了時に除く。<code>running_count</code> と <code>jobs_changed</code> を画面に提供する。学習・評価の件数は TrainingRunner / EvaluationRunner の busy 状態から数える。</li>
+<li>比較画面のファイル出力は <code>gui/modes/comparison/dialogs.py</code> の <code>WorkerJob</code> が担当し、FakeJob とは別クラス。</li>
 <li>速度係数: 環境変数 <code>FOAM_MOCK_SPEED</code>（既定 1.0）で <code>interval_ms</code> を割る。テストでは大きな値にして高速化する。</li>
-<li>進捗表示: <code>JobProgressDialog</code>（ページ内でジョブを開始し、進捗を見せたい場合に使う。キャンセルボタン付き・非モーダル可）。</li>
+<li>進捗表示: <code>JobProgressDialog</code> は現行画面では使用していない。</li>
 </ul>
 <h3 id="sec3-2">3.2 画像表示（<code>gui/widgets/image_view.py</code>, <code>image_convert.py</code>）</h3>
 <ul>
@@ -1125,7 +1116,7 @@ table.rev{font-size:.92rem}
 <p>上に絞り込み（実験群、モデル、状態）、中央に表、下に詳細タブ（上下 <code>QSplitter</code>）。</p>
 <p>表の列: 選択（チェック）、ID、実験群、モデル、データセット、データ拡張、状態（下書き / 実行中 / 完了 / 失敗 / 中断）、進捗（「分割 2/5・epoch 20/100」または「最終学習・epoch 40/80」）、OOF AP、途中保存モデル（最新）。</p>
 <ul>
-<li>実行中の行は FakeJob の進捗に合わせて自動更新する（<code>JobManager</code> のシグナル、または 1 秒ごとの再読込）。</li>
+<li>実行中の行は TrainingRunner の進捗イベントに合わせて自動更新する（<code>JobManager</code> のシグナル、または 1 秒ごとの再読込）。</li>
 </ul>
 <p>ボタン:
 - [選択した実験を比較]（チェック2件以上）: 実験比較ダイアログ。
@@ -1408,7 +1399,7 @@ table.rev{font-size:.92rem}
 <ul>
 <li>適用モデルは、画像分類と現在のモデル振り分けから自動で決まる（読み取り専用）。分類を変えると即時更新する。</li>
 <li>割り当てがない分類の画像があると実行できない。その場合は「振り分け画面へ」ボタン付きのメッセージを出す。</li>
-<li>実行は FakeJob（画像ごとに状態を 待機 → 実行中 → 完了 に更新）。完了した行を選ぶと結果をプレビューする。</li>
+<li>実行は MockBackend の模擬処理（画像ごとに状態を 待機 → 実行中 → 完了 に更新）。完了した行を選ぶと結果をプレビューする。</li>
 <li>ファイル追加はファイルダイアログで実ファイルを選ぶ。モックなので内容は読まず、ファイル名だけを使い合成画像を表示する。</li>
 </ul>
 <hr />
@@ -1489,5 +1480,7 @@ table.rev{font-size:.92rem}
 └────────────────────────────┘
 選択詳細: 評価結果を読み取れません
 行メニュー: 設定を引き継いで新規作成</pre><p>再作成は読めた設定だけを新IDの下書きへ複製し、履歴・結果・進捗は引き継がない。必須設定が読めない場合は不足項目を明示して補完を求める。候補の再作成は重みと固定検証条件を照合し、新しい候補ファイルだけを作る。</p></section>
+
+<section class="card" id="gui-job-lifecycle-current"><h2>ジョブ所有関係と終了手順（現行）</h2><p>app.py が AppContext を作成し、AppContext.__post_init__ が TrainingRunner・EvaluationRunner を組み立てる。WindowManager は必要時に TrainingQueueController を生成し AppContext.queue_controller に設定する。HomeWindow は AppContext と WindowManager を受け取り、どちらも所有者にはならない。QueueController は学習キューを進め、各 Runner が自身のジョブと終端処理を所有する。ComputeCoordinator は学習・評価の排他と待機要求を管理する。</p><p>学習・評価は「待機 → 準備（保存先・試行の確定）→ 実行（hello/go 後のイベント反映）→ 終端処理（結果確定・compute.release）」。復旧や停止の完了が確認できない場合は blocked とし、新しい計算を止める。終了時は学習キューを停止して確認し、Yes の場合は計算を block して学習・評価の停止要求を保存し、停止を要求する。停止要求の保存で例外が出てもログに記録し、もう一方の停止要求・画面設定保存・アプリ終了を続ける。10秒以内にプロセス終了を確認できない場合は試行を確定せず、次回起動時の復旧に任せる。No の場合は学習キューを元に戻す。</p><p>TrainingRunner の API は <code>start(experiment_id, queue_id=None, retry=False, *, ticket=None)</code>、<code>request_stop(reason="user_stop", timeout_ms=None) -&gt; bool</code>。TrainingRunner に <code>shutdown</code> はない。EvaluationRunner は <code>request_stop(reason="user_stop", timeout_ms=None) -&gt; bool</code> と <code>shutdown(timeout_ms=...)</code> を持つ。</p><p>主要 API は TrainingRunner.request_stop(reason, timeout_ms) → bool、TrainingRunner.experiment_id、Backend.apply_training_event(experiment_id, event)、ComputeCoordinator.release(ticket, ok, error)。テストは shell fixture が作った利用者データを fixture teardown で片付け、ボタン・メニュー・キー入力など実際の利用者経路で操作する。ジョブを直接 cancel せず、テスト終了前に実ジョブと Qt オブジェクトの後片付けを確認する。</p></section>
 </body>
 </html>

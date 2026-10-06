@@ -15,6 +15,8 @@ from collections.abc import Callable
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, TextIO
 
+from foam_cell_analysis.training.config_rules import validate_numeric_config
+
 
 def _timestamp() -> str:
     return dt.datetime.now().astimezone().isoformat()
@@ -109,52 +111,18 @@ def _validate_spec(run_dir: Path, spec: dict[str, Any]) -> None:
     ):
         raise ValueError("config の必須項目がありません")
     model = config["model"]
-    training = config["training"]
-    checkpoint = config["checkpoint"]
-    data = config["data"]
     if not isinstance(model, dict) or not isinstance(model.get("type"), str) or not model["type"]:
         raise ValueError("config.model.type が不正です")
-    if model["type"] == "cellpose":
-        scale_range = model.get("scale_range")
-        nimg_per_epoch = model.get("nimg_per_epoch")
-        minimum_masks = model.get("min_train_masks")
-        if model.get("pretrained_model") not in {"cpsam", "cpsam_v2"}:
-            raise ValueError("config.model.pretrained_model が不正です")
-        if type(model.get("bsize")) is not int or model["bsize"] != 256:
-            raise ValueError("config.model.bsize は 256 固定です")
-        if not _is_finite_number(scale_range) or not 0 <= scale_range <= 1:
-            raise ValueError("config.model.scale_range が不正です")
-        if nimg_per_epoch is not None and (type(nimg_per_epoch) is not int or nimg_per_epoch < 1):
-            raise ValueError("config.model.nimg_per_epoch が不正です")
-        if type(minimum_masks) is not int or minimum_masks < 0:
-            raise ValueError("config.model.min_train_masks が不正です")
-    if not isinstance(training, dict):
-        raise ValueError("config.training が不正です")
-    if model["type"] == "cellpose" and (
-        type(training.get("batch_size")) is not int or training["batch_size"] < 1
-    ):
-        raise ValueError("config.training.batch_size は 1 以上が必要です")
-    if type(training.get("epochs")) is not int or training["epochs"] < 1:
-        raise ValueError("config.training.epochs が不正です")
-    learning_rate = training.get("learning_rate")
-    if not _is_finite_number(learning_rate) or learning_rate <= 0:
-        raise ValueError("config.training.learning_rate が不正です")
-    if "weight_decay" in training and (
-        not _is_finite_number(training["weight_decay"]) or training["weight_decay"] < 0
-    ):
-        raise ValueError("config.training.weight_decay が不正です")
-    early = training.get("early_stopping")
-    if not isinstance(early, dict) or type(early.get("enabled")) is not bool:
-        raise ValueError("config.training.early_stopping が不正です")
-    if type(early.get("patience")) is not int or early["patience"] < 1:
-        raise ValueError("config.training.early_stopping.patience が不正です")
-    if not isinstance(checkpoint, dict):
-        raise ValueError("config.checkpoint が不正です")
-    for key in ("validation_interval", "save_every"):
-        if type(checkpoint.get(key)) is not int or checkpoint[key] < 1:
-            raise ValueError(f"config.checkpoint.{key} が不正です")
-    if type(checkpoint.get("save_fold_models")) is not bool:
-        raise ValueError("config.checkpoint.save_fold_models が不正です")
+    if model["type"] == "cellpose" and model.get("pretrained_model") not in {
+        "cpsam",
+        "cpsam_v2",
+    }:
+        raise ValueError("config.model.pretrained_model が不正です")
+    numeric_errors = validate_numeric_config(config)
+    if numeric_errors:
+        key, message = numeric_errors[0]
+        raise ValueError(f"{key}: {message}")
+    data = config["data"]
     if not isinstance(data, dict) or data.get("dataset_version") != version:
         raise ValueError("config.data.dataset_version が不正です")
     if not isinstance(spec["fold_assignments"], dict) or not spec["fold_assignments"]:
@@ -284,6 +252,7 @@ def run_job(
     *,
     stdin: TextIO | None = None,
     stdout: TextIO | None = None,
+    stderr: TextIO | None = None,
     start_watchdog: bool = True,
     free_bytes_fn: Any = None,
     weight_size_fn: Any = None,
@@ -302,7 +271,14 @@ def run_job(
     try:
         spec = read_run_spec(run_path)
         _validate_spec(run_path, spec)
-    except (OSError, ValueError, KeyError, TypeError):
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        message = f"学習設定の検証に失敗しました: {error}\n"
+        if stderr is not None:
+            stderr.write(message)
+            stderr.flush()
+        else:
+            sys.stderr.buffer.write(message.encode("utf-8", errors="replace"))
+            sys.stderr.buffer.flush()
         return 2
 
     run_id = spec["run_id"]

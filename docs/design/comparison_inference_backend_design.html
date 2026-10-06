@@ -309,7 +309,7 @@ ComparisonService.add_candidate(experiment_id, attempt, inference_config_id, com
 <h3>5.4 同一性と fingerprint</h3>
 <ul>
 <li>候補の fingerprint = sha256（重みの sha256、model_type、model_config、preprocessing、effective_params を正規化した JSON）。<strong>fingerprint が同じ候補（非採用を除く）がすでにあれば、推論設定 ID が違っても重複としてエラー</strong>（「既に RC-00x として登録済みです」）。</li>
-<li>評価の input_fingerprint = sha256（候補の fingerprint、検証版の manifest・metadata の sha256、対象 ID の一覧、metric の ID）。</li>
+<li>評価の input_fingerprint = sha256（候補の fingerprint、検証版の manifest.csv と metadata.csv の SHA-256、対象 ID 一覧、metric の ID）。manifest の SHA-256 は各画像・マスクの記録済み hash を含む版の記録全体を識別し、個別ファイル hash は preflight 時の内容確認に使う。</li>
 <li>JSON の正規化は <code>json.dumps(sort_keys=True, separators=(",", ":"), ensure_ascii=False)</code>。数値は float に揃えてから入れる（<code>0.5</code> と <code>1/2</code> を区別しない）。</li>
 </ul>
 
@@ -418,7 +418,7 @@ class InferenceAdapter(Protocol):
 </ul>
 
 <h3>8.2 入力の変換</h3>
-<p>前処理（学習 9.1 の正規化。設定は候補の preprocessing）→ モデル固有の入力形式（Mask R-CNN の 3 チャンネル複製、Cellpose の <code>[画像, 0, 0]</code>）の順です。<strong>学習時の検証（学習 9.5）と同じ関数を使う</strong>ように、今の検証の処理から関数を切り出して共有する。データ拡張・拡大縮小・切り出し・学習用の除外規則は通さない。</p>
+<p>画像前処理は <code>training.preprocessing.prepare_model_input</code> を使い、候補の preprocessing 設定で percentile 正規化した後、モデル固有の形式（Mask R-CNN は3チャンネル複製、Cellpose は <code>[画像, 0, 0]</code>）へ変換する。学習時の検証と推論で同じ関数を使い、データ拡張・拡大縮小・切り出し・学習用除外規則は適用しない。</p>
 
 <h3>8.3 デバイス</h3>
 <p>学習と同じく、CUDA が使えれば CUDA、使えなければ CPU（<code>device_request=auto</code>）。実際に使った device、torch・torchvision・cellpose の版を environment.json と result.json に記録する。</p>
@@ -435,7 +435,7 @@ class InferenceAdapter(Protocol):
 <pre><code>overall   = {"ap": float | null, "n_images": int}           # 対象全画像の画像平均
 per_class = {"分類A": {"ap": float | null, "n_images": int}, ...}
             # 分類が未設定の画像は "未分類" として集計する。対象 0 件の分類は ap = null</code></pre>
-<p>GUI が使う <code>Evaluation</code>（overall_map, per_class の (値, 件数)）は変換層で作る。<code>Evaluation</code> には全体の件数 <code>n_images: int = 0</code> を追加する（仕様 9 章の「対象件数」の全体列を出すため）。OOF の per_class も同じ変換を通す。</p>
+<p><code>match_counts</code> は画像ごとに各 IoU 閾値の TP / (TP + FP + FN) を求める。<code>aggregate</code> はまず10閾値を平均して画像ごとの AP とし、全体 AP は画像 AP の算術平均、分類別 AP は各分類の画像 AP の算術平均（macro average）を使う。<code>pooled_ap_reference</code> は画像間で TP/FP/FN を合算した参考値で、全体 AP とは別に保存する。</p><p>GUI 向けの <code>Evaluation</code> は変換層で作り、全体と分類別の対象件数も持つ。</p>
 
 <h3>9.3 表記</h3>
 <ul>
@@ -541,7 +541,7 @@ get_candidate_prediction(candidate_id, evaluation_id, item_id) -&gt; np.ndarray<
 <li>対象: 検証版全体、または画像分類で絞り込み。開始時に evaluation_id と対象 ID の一覧を固定し、出力中の画面操作の影響を受けない。</li>
 <li>開始前に必要容量（原ラベル・二値の非圧縮サイズの合計 + 100 MB）と空き容量を比べる。</li>
 <li>1 枚ごとにキャンセルを確認する。</li>
-<li>export_info.json: schema=1, export_id, created_at, app_version, particle_split_id, format, contents（label / binary）, 候補ごとの candidate_id・evaluation_id・validation_version・input_fingerprint・対象 ID 一覧。</li>
+<li><code>export_info.json</code> の実フィールド: <code>schema</code>, <code>export_id</code>（生成フォルダ名）, <code>created_at</code>, <code>app_version</code>, <code>particle_split_id</code>, <code>format</code>, <code>contents</code>, <code>sources</code>。sources の各要素は <code>candidate_id</code>, <code>evaluation_id</code>, <code>validation_version</code>, <code>input_fingerprint</code>, <code>item_ids</code>。</li>
 <li>出力の履歴を ComparisonService は保存しない（外部解析結果と結び付けたいときは、9.4 の export_id に出力フォルダ名を入れる）。</li>
 </ul>
 </div>
@@ -596,7 +596,10 @@ get_candidate_prediction(candidate_id, evaluation_id, item_id) -&gt; np.ndarray<
 </ul>
 
 <h3>13.5 実験の削除との関係</h3>
-<p>今の参照保護（比較候補（非採用を除く）・リリース済みモデルから参照されている実験は削除できない。学習 12.3）は、ComparisonService の候補・リリースを見るように変えて維持する。リリースは重みを独立に持つので実験が消えても動くが、削除の許可を緩めるのは別の仕様変更とする。</p>
+<p>この参照保護は実験フォルダ・学習成果物の削除に適用する（学習 12.3）。公開重みの削除とは別の操作である。公開重みを削除しても release.json、候補、評価、実験と各履歴は残す。公開重み削除時の拒否条件と復旧規則は 13.6 に示す。</p>
+<h3>13.6 公開重みの保管・削除・復旧</h3>
+<p>保管は lifecycle.json の状態変更で行い、振り分け中のモデルは保管・削除できない。削除は公開モデル配下の <code>model.pt</code> だけを対象にし、削除開始前に現在振り分けで使用中か、および候補の評価が実行中・待機中かを確認する。拒否理由に候補・評価・実験履歴の参照を使わない。削除後も release.json と lifecycle.json の削除済み要約、候補・評価・データセット・実験・振り分け履歴は残す。</p>
+<p>削除では reparse point と通常ファイル以外を拒否し、model.pt を <code>releases/.deleting/&lt;model_id&gt;/model.pt</code> へ移してから消す。lifecycle.json の SHA-256 と移動前後の重みを照合する。起動時復旧は staging のみなら staging の hash を、保存先のみなら保存先の hash を journal と照合して前状態へ戻す。両方なしなら削除済みへ進める。両方あり、hash 不一致、reparse point は重みと lifecycle を変更せず deleting のまま保留する。</p>
 </div>
 
 <!-- ============================================================ -->
@@ -868,7 +871,9 @@ PruneResult(freed_bytes, n_files, skipped: list[ArtifactGroup])   # 条件を満
 
 採用済みモデル [保管済みを表示]
 ☐ モデル  候補  検証 AP  学習時 OOF AP  振り分け  状態
-[詳細] [保管] [削除]</code></pre><p>公開済み候補の採用操作は通常のリリース登録であり、公開記録・公開評価は不変。再評価は公開済み候補でも固定検証版で許可し、比較には同一固定版の正常な最新評価を使う。公開登録の再試行は既存 release を再利用し、二重公開しない。採用状態は公開状態を示し、独立した比較採用評価 ID は保存しない。候補一覧はチェック・行選択・色を同期し、保管・削除済みモデルは既定で隠し、履歴表示で見られる。OOF は学習時の参考数値を常に表示し、推論条件 different/unknown の場合は薄色と日本語理由 tooltip を付ける。最高値の強調はしない。</p><p>保管は可逆で、振り分け中のモデルは保管・削除できない。削除対象は model_NNN が所有する通常ファイルだけで、容量は実ファイルから計測する。reparse point を拒否してから同一 volume の staging に移動し削除する。失敗時は削除前の状態を復元する。小さな release.json と削除状態・評価要約の履歴は残し、candidate/evaluation/dataset/experiment/routing は変更しない。削除 journal は起動時に release ID から決まる既知の path のみで復旧する。</p></div>
+[詳細] [保管] [削除]</code></pre><p>公開済み候補の採用操作は通常のリリース登録であり、公開記録・公開評価は不変。再評価は公開済み候補でも固定検証版で許可し、比較には同一固定版の正常な最新評価を使う。公開登録の再試行は既存 release を再利用し、二重公開しない。採用状態は公開状態を示し、独立した比較採用評価 ID は保存しない。候補一覧はチェック・行選択・色を同期し、保管・削除済みモデルは既定で隠し、履歴表示で見られる。OOF は学習時の参考数値を常に表示し、推論条件 different/unknown の場合は薄色と日本語理由 tooltip を付ける。最高値の強調はしない。</p><p>公開重み削除の対象・実行中評価の拒否・履歴保持・lifecycle journal の復旧規則は本文 13.6 に従う。</p></div>
 <section class="card"><h2>異常中断・読取破損の保護</h2><p>候補・評価・外部解析を復旧前に読み、破損対象をruntime RecoveryIssueとして保持する。破損候補や終了未確認評価のフォルダでは移行、status保存、cleanup、候補編集、評価、release、外部保存を行わない。読めない候補参照がある間は実験削除とfinal.pt整理を保守的に拒否する。外部解析を読めない場合は空配列として保存し直さず、追記を拒否する。process.jsonがない評価は実行モジュールとcanonical run_dirでOSプロセス一覧を照合し、照合不能なら全体の評価開始を保留する。読める候補のコピーは公開済みmodel.ptが正常で元重みが整理済みなら、その公開コピーを参照できる。</p><p>公開後の再評価は公開評価より新しい評価IDで、run_spec.created_at が release.json の released_at より後、固定検証版一致、正常完了、保護なしを確認した場合だけ外部解析を保存できる。公開評価と release.json は変更しない。</p></section>
+
+<section class="card" id="approved-release-and-export-policy"><h2>現行の比較・公開・出力契約</h2><p>公開済み候補も公開済み重みと候補に固定した検証版を使って再評価する。公開評価と release.json は変更せず、公開後の新しい評価に対する外部解析は external 保存先へ追加する。再評価と公開登録の再試行で公開記録を作り直さない。</p><p>公開モデルの保管・削除状態は lifecycle.json に記録し、削除中の .deleting journal は起動時に安全性と SHA-256 を検査して復旧する。staging と保存先の双方に重みがある場合やハッシュが異なる場合は自動削除せず、そのまま保留する。振り分けは active の公開モデルだけを受け入れ、inactive（保管・削除中・削除済み）は拒否する。公開重みの削除では候補・評価・実験などの履歴を保持し、これらへの参照自体は拒否条件にしない。</p><p>抽出結果出力の <code>export_info.json</code> は schema、export_id、created_at、app_version、particle_split_id、format、contents と、候補ごとの candidate_id・evaluation_id・validation_version・input_fingerprint・対象 ID を記録する。評価指標は IoU 0.50〜0.95 の AP を画像単位で集約する。画像前処理は保存済み設定を用い、出力条件とともに固定する。</p><p>検証版の manifest・metadata fingerprint は対象集合とメタデータの同一性を、画像・マスク hash は各ファイル内容の同一性を確認する。両者は用途が異なる。</p></section>
 </body>
 </html>

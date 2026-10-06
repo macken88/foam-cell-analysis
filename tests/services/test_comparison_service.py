@@ -1024,3 +1024,111 @@ def test_released_model_without_recorded_applicability_is_not_matching(env):
     record["oof"].pop("reason")
     path.write_text(json.dumps(record), "utf-8")
     assert service.list_released_models()[0].oof_applicability == ""
+
+
+@pytest.mark.parametrize(
+    "case", ["staging_only", "saved_only", "neither", "both", "staging_mismatch"]
+)
+def test_release_delete_recovery_preserves_weights_and_lifecycle_on_conflict(env, case):
+    service, _training = env
+    cid = service.add_candidate("exp_0001", 1, _default_config(service).config_id).candidate_id
+    _write_evaluation(service, cid, "eval_001")
+    service.release_candidate(cid, "eval_001")
+    service.set_release_archived("model_001", True)
+    folder = service.releases_root / "model_001"
+    weight = folder / "model.pt"
+    stage = service.releases_root / ".deleting" / "model_001" / "model.pt"
+    recorded_hash = _sha(weight.read_bytes())
+    lifecycle = {
+        "status": "deleting",
+        "previous_status": "archived",
+        "sha256": recorded_hash,
+        "size": weight.stat().st_size,
+        "evaluation": {"evaluation_id": "eval_001"},
+    }
+    service._write_release_lifecycle("model_001", lifecycle)
+    if case in {"staging_only", "both", "staging_mismatch"}:
+        stage.parent.mkdir(parents=True, exist_ok=True)
+        stage.write_bytes(b"mismatched" if case == "staging_mismatch" else weight.read_bytes())
+    if case in {"staging_only", "neither", "staging_mismatch"}:
+        weight.unlink()
+    before_stage = stage.read_bytes() if stage.exists() else None
+    before_weight = weight.read_bytes() if weight.exists() else None
+
+    recovered = service.recover_release_deletions()
+    after = service._release_lifecycle("model_001")
+    if case == "neither":
+        assert recovered == ["model_001"] and after["status"] == "deleted"
+        assert after["sha256"] == recorded_hash and after["evaluation"] == lifecycle["evaluation"]
+    elif case in {"both", "staging_mismatch"}:
+        assert recovered == [] and after == {"schema": 1, "model_id": "model_001", **lifecycle}
+        assert (
+            weight.read_bytes() == before_weight
+            if before_weight is not None
+            else not weight.exists()
+        )
+        assert stage.read_bytes() == before_stage
+    else:
+        assert recovered == ["model_001"] and after["status"] == "archived"
+        assert weight.read_bytes() == before_weight or weight.read_bytes() == before_stage
+        assert _sha(weight.read_bytes()) == recorded_hash
+
+
+def test_release_delete_recovery_rejects_reparse_point_without_touching_weight(env, monkeypatch):
+    from types import SimpleNamespace
+
+    service, _training = env
+    cid = service.add_candidate("exp_0001", 1, _default_config(service).config_id).candidate_id
+    _write_evaluation(service, cid, "eval_001")
+    service.release_candidate(cid, "eval_001")
+    service.set_release_archived("model_001", True)
+    weight = service.releases_root / "model_001" / "model.pt"
+    before = weight.read_bytes()
+    lifecycle = {
+        "status": "deleting",
+        "previous_status": "archived",
+        "sha256": _sha(before),
+        "size": len(before),
+    }
+    service._write_release_lifecycle("model_001", lifecycle)
+    real_lstat = Path.lstat
+
+    def flagged_lstat(path):
+        if path == weight:
+            return SimpleNamespace(st_mode=0, st_file_attributes=0x400)
+        return real_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", flagged_lstat)
+    assert service.recover_release_deletions() == []
+    assert weight.read_bytes() == before
+    assert service._release_lifecycle("model_001")["status"] == "deleting"
+
+
+def test_release_delete_recovery_saved_weight_hash_mismatch_stays_blocked(env):
+    service, _training = env
+    cid = service.add_candidate("exp_0001", 1, _default_config(service).config_id).candidate_id
+    _write_evaluation(service, cid, "eval_001")
+    service.release_candidate(cid, "eval_001")
+    service.set_release_archived("model_001", True)
+    weight = service.releases_root / "model_001" / "model.pt"
+    original = weight.read_bytes()
+    stage = service.releases_root / ".deleting" / "model_001"
+    stage.mkdir(parents=True)
+    lifecycle = {
+        "status": "deleting",
+        "previous_status": "archived",
+        "sha256": _sha(original),
+        "size": len(original),
+        "evaluation": {"evaluation_id": "eval_001"},
+    }
+    service._write_release_lifecycle("model_001", lifecycle)
+    weight.write_bytes(b"altered published weights")
+    altered = weight.read_bytes()
+
+    assert service.recover_release_deletions() == []
+    assert weight.read_bytes() == altered
+    assert service._release_lifecycle("model_001") == {
+        "schema": 1,
+        "model_id": "model_001",
+        **lifecycle,
+    }

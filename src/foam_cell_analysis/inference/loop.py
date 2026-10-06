@@ -223,7 +223,8 @@ def run_preflight(
         raise ValueError(f"検証用データセット {version} の情報を読めません") from error
     if info.get("purpose") != "val" or info.get("status") != "RELEASED":
         raise ValueError(f"{version} は確定済みの検証用データセットではありません")
-    if info.get("dataset_version") != version:
+    info_version = info.get("dataset_version", dataset_dir.name)
+    if info_version != version:
         raise ValueError(f"データセットの版名とフォルダ名が一致しません: {version}")
     # 3（前半）. manifest・metadata の sha256
     for name, expected in validation["sha256"].items():

@@ -401,7 +401,7 @@ def test_invalid_run_spec_exits_with_code_two_without_hello(tmp_path):
     process = subprocess.run(
         [sys.executable, "-m", "foam_cell_analysis.training.run", "--run-dir", str(run_dir)],
         cwd=run_dir,
-        env=_environment(),
+        env={**_environment(), "PYTHONIOENCODING": "utf-8"},
         input="",
         capture_output=True,
         text=True,
@@ -410,6 +410,17 @@ def test_invalid_run_spec_exits_with_code_two_without_hello(tmp_path):
     )
     assert process.returncode == 2
     assert process.stdout == ""
+
+
+def test_invalid_numeric_run_spec_keeps_specific_reason_on_stderr(tmp_path):
+    run_dir, spec = _workspace(tmp_path)
+    spec["config"]["training"]["epochs"] = 0
+    write_run_spec(run_dir, spec)
+    stderr = io.StringIO()
+    assert run_job(run_dir, stdin=io.StringIO(), stdout=io.StringIO(), stderr=stderr) == 2
+    assert "training.epochs" in stderr.getvalue()
+    assert "1 以上" in stderr.getvalue()
+    assert not (run_dir / "error.json").exists()
 
 
 @pytest.mark.parametrize(
@@ -694,3 +705,15 @@ def test_capacity_estimate_matches_design_formula():
         + 1024**3
     )
     assert value["required"] == expected
+
+
+def test_invalid_cellpose_pretrained_model_exits_before_hello(tmp_path):
+    run_dir, spec = _workspace(tmp_path)
+    spec["config"]["model"] = {"type": "cellpose", "pretrained_model": "cyto3"}
+    write_run_spec(run_dir, spec)
+    stderr = io.StringIO()
+    stdout = io.StringIO()
+
+    assert run_job(run_dir, stdin=io.StringIO(""), stdout=stdout, stderr=stderr) == 2
+    assert stdout.getvalue() == ""
+    assert "config.model.pretrained_model" in stderr.getvalue()

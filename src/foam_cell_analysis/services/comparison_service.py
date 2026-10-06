@@ -2414,6 +2414,8 @@ class ComparisonService:
                         {"status": lifecycle.get("previous_status", "active")},
                     )
                 elif weight.exists() and not stage.exists():
+                    if file_sha256(weight) != lifecycle.get("sha256"):
+                        raise ValueError("保存先の重みが削除記録と一致しません")
                     self._write_release_lifecycle(
                         model_id,
                         {"status": lifecycle.get("previous_status", "active")},

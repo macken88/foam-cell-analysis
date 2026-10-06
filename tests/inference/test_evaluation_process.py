@@ -20,8 +20,6 @@ from foam_cell_analysis.jobs.protocol import read_json
 from foam_cell_analysis.services.comparison_service import validate_evaluation_result
 from foam_cell_analysis.services.models import JobExit
 
-pytest.importorskip("cellpose")
-
 
 def _run(prepared, **kwargs) -> tuple[int, list[dict]]:
     stdout = io.StringIO()
@@ -37,6 +35,7 @@ def _run(prepared, **kwargs) -> tuple[int, list[dict]]:
 
 
 def _evaluate(env, candidate_id="RC-001"):
+    pytest.importorskip("cellpose", reason="AP 実計算に Cellpose が必要です")
     prepared = env.service.prepare_evaluation_run(candidate_id)
     code, lines = _run(prepared)
     return prepared, code, lines
@@ -110,6 +109,42 @@ def test_evaluation_completes_and_writes_valid_result(evaluation_env):
     prediction = service.get_candidate_prediction("RC-001", "eval_001", "val_a")
     truth = np.asarray(Image.open(env.root / "datasets/val_v000/masks/val_a.png"))
     assert np.array_equal(prediction, truth)
+
+
+def test_preflight_dataset_version_defaults_to_folder_name_and_rejects_explicit_mismatch(
+    evaluation_env,
+):
+    from foam_cell_analysis.inference.loop import run_preflight
+
+    env = evaluation_env
+    info_path = env.root / "datasets/val_v000/dataset_info.json"
+    original = json.loads(info_path.read_text("utf-8"))
+    info_path.write_text(
+        json.dumps({key: value for key, value in original.items() if key != "dataset_version"}),
+        "utf-8",
+    )
+    prepared = env.service.prepare_evaluation_run("RC-001")
+    spec = read_json(Path(prepared.run_dir) / "run_spec.json")
+    events = []
+    result = run_preflight(
+        prepared.run_dir,
+        spec,
+        lambda event_type, **fields: events.append((event_type, fields)),
+        device="cpu",
+        free_bytes_fn=lambda _path: 10**12,
+    )
+    assert result["resolved"]["validation_version"] == "val_v000"
+    assert events[0][0] == "preflight"
+
+    info_path.write_text(json.dumps({**original, "dataset_version": "val_v999"}), "utf-8")
+    with pytest.raises(ValueError, match="版名とフォルダ名が一致しません"):
+        run_preflight(
+            prepared.run_dir,
+            spec,
+            lambda *_args, **_kwargs: None,
+            device="cpu",
+            free_bytes_fn=lambda _path: 10**12,
+        )
 
 
 def test_progress_follows_events_and_replays_gaps(evaluation_env):

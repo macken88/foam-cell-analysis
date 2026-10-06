@@ -40,7 +40,7 @@ td.nowrap{white-space:nowrap}
 <div class="hero">
 <h1>学習バックエンド設計書</h1>
 <p class="small">気泡インスタンスセグメンテーションアプリ / モデル学習モードの実装設計（v1.1、2026-09-28）</p>
-<p>学習モードの GUI は完成済みで、今は <code>MockBackend</code> と模擬ジョブ（<code>FakeJob</code>）で動いています。本書は、これを実際の学習（Mask R-CNN / Cellpose）に置き換えるための設計です。
+<p>学習モードの GUI は完成済み。TrainingService を使う学習経路と、MockBackend の FakeTrainingJob を使う模擬経路がある。本書は学習のサービス・子プロセス・GUI 間の契約を示す。
 仕様は <a href="../specs/foam_cell_segmentation_model_training_spec_ja_v2.html">モデル学習モード仕様</a>、画面は <a href="gui_screen_design.html">GUI 画面設計書</a> を前提とします。</p>
 <p class="small">読み手: 実装担当と開発者本人。本書だけで実装に迷わないことを目標にし、判断が割れそうな箇所は数式・ファイル形式・優先順位まで固定しています。</p>
 <ul class="toc">
@@ -86,7 +86,7 @@ td.nowrap{white-space:nowrap}
 <pre><code>GUI プロセス（PySide6。torch は import しない）
   AppContext.training_runner : TrainingRunner(QObject)      … 学習ジョブの唯一の窓口（6 章）
      ├ ProcessTrainingJob   … hybrid 時。QProcess で学習プロセスを起動
-     └ FakeTrainingJob      … mock 時。現行 FakeJob の学習部分を移したもの
+     └ FakeTrainingJob      … mock 時。学習イベントを模擬する
   AppContext.backend : HybridBackend | MockBackend
      HybridBackend
        ├ TrainingService    … 学習系の実装（実験・試行・キュー・プロファイル・学習版の読み込み・設定検証）
@@ -306,17 +306,17 @@ td.nowrap{white-space:nowrap}
     ended = Signal(object)              # TrainingOutcome(experiment_id, attempt, queue_id, status, message)
     busy_changed = Signal(bool)
 
-    def start(self, experiment_id: str, queue_id: str | None = None, retry: bool = False) -&gt; None
-    def request_stop(self) -&gt; None      # すぐに中断する
-    def shutdown(self) -&gt; None          # アプリ終了時
+    def start(self, experiment_id, queue_id=None, retry=False, *, ticket: Ticket | None = None) -&gt; None
+    def request_stop(self, reason="user_stop", timeout_ms=None) -&gt; bool
+    # TrainingRunner に shutdown はない。終了時も request_stop("app_exit", timeout_ms=10_000) を呼ぶ。
     is_busy: bool                       # 準備中・実行中・照合中は True
-    active_experiment_id: str | None</code></pre>
+    experiment_id: str | None</code></pre>
 <ul>
 <li>学習の開始は必ず <code>runner.start</code> を通す。画面・一覧・キューが直接ジョブを作ることはやめる。</li>
 <li><b>占有期間</b>: 準備（<code>prepare_training_run</code>）→ 起動 → 実行 → 照合（<code>conclude_training_run</code>）の間ずっと <code>is_busy</code>。この間に <code>start</code> が呼ばれたら <code>RuntimeError</code>（既存の「学習は同時に 1 件」と同じ）。</li>
 <li><b>終端処理は runner だけが 1 回だけ行う</b>: ジョブの終了 → <code>backend.conclude_training_run</code> → <code>ended</code> を送る。起動失敗も同じ経路を通す。</li>
 <li><b>中断</b>: <code>request_stop</code> → <code>backend.request_training_stop</code>（<code>stop_request.json</code> を保存）→ ジョブに kill を要求 → <b>プロセスの終了を確認してから</b>終端処理。</li>
-<li><b>進捗</b>: ジョブが受け取ったイベントを <code>backend.apply_training_event(experiment_id, attempt, event)</code> に渡し、<code>progressed</code> を送る。</li>
+<li><b>進捗</b>: ジョブが受け取ったイベントを <code>backend.apply_training_event(experiment_id, event)</code> に渡し、<code>progressed</code> を送る。</li>
 <li>イベント反映が例外になった場合は最初の理由を保持し、以後そのジョブのイベントを適用しない。終了情報を保ったまま <code>protocol_error</code> として失敗判定し、終端処理は一度だけ行う。次のジョブに遅れて届いた旧ジョブのイベント・終了通知は無視する。</li>
 <li>JobManager: 学習ジョブは JobManager に登録しない。<code>JobManager.has_training_job</code> と実行中件数の表示は runner の <code>is_busy</code> を見る。</li>
 </ul>
@@ -325,7 +325,7 @@ td.nowrap{white-space:nowrap}
 <div class="table-wrap"><table class="keys">
 <tr><th>場所</th><th>変更</th></tr>
 <tr><td><code>page.start_training</code></td><td><code>backend.start_training</code>（設定の保存と実行待ち化だけを行う）→ <code>runner.start(experiment_id)</code>。<code>create_training_job</code> は <code>FakeTrainingJob</code> へ移す。</td></tr>
-<tr><td><code>experiment_list.stop_selected</code></td><td><code>runner.request_stop()</code> だけにする（状態の確定は runner の終端処理）。</td></tr>
+<tr><td><code>experiment_list.stop_selected</code></td><td><code>runner.request_stop(reason, timeout_ms) -> bool</code> だけにする（状態の確定は runner の終端処理）。</td></tr>
 <tr><td><code>experiment_list.retry_selected</code></td><td>空いていれば <code>runner.start(id, retry=True)</code>、実行中なら従来どおり再試行予約。</td></tr>
 <tr><td><code>queue_controller</code></td><td><code>take_next_training_queue_item</code>（行を返すだけ）→ <code>runner.start(experiment_id, queue_id, retry)</code>。次へ進むのは <code>runner.ended</code> を受けたとき。「停止」は従来どおり、今の学習の完了後にキューを止める。</td></tr>
 <tr><td>学習曲線・実験詳細</td><td>「mAP」の表示を「AP」に変える。OOF の見出しは「OOF AP（Cellpose 方式、IoU 0.50–0.95）」。</td></tr>
@@ -772,5 +772,7 @@ selected     = save_fold_models ? K × W : 0          … コピーになった�
 
 </div>
 <section class="card"><h2>起動時の異常中断復旧</h2><p>TrainingService は読込段階で queue、experiment、run_spec、status、result、event 履歴を検査する。読めない対象は RecoveryIssue をruntimeに保持して一覧へ残し、対象ファイルを変更しない。queue.json が壊れている場合は元ファイルを保護し、キューの変更と実行開始を拒否する。ID採番は壊れた実験ディレクトリも予約済みとして扱う。</p><p>復旧は入力の事前読取、PIDと作成時刻の照合（記録がない場合は実行モジュールとcanonical run_dirをOSプロセス一覧で照合）、同一プロセスと子プロセスの終了・確認、既存lifecycle順での状態確定、安全対象だけのcleanupの順に行う。終了未確認は全体の新規学習をサービス層でも止める。正常中断は自動再実行しない。</p></section>
+
+<section class="card" id="numeric-validation-and-version-fallback"><h2>数値検証と検証版情報</h2><p>学習設定の数値範囲は標準ライブラリだけの <code>training.config_rules</code> で検証し、サービスは利用者向けエラー一覧、学習子プロセスは最初の違反を理由付きで終了コード2として返す。構造、データセット指紋、fold、依存ライブラリ、拡張プロファイルの検査は各担当に残す。数値条件はサービスの準備時に確認し、失敗時に試行番号を消費しない。</p><p>データセット fingerprint は版の manifest.csv と metadata.csv の SHA-256 を識別する。画像・マスクの SHA-256 は個別ファイルの内容確認に使い、別の値である。検証版の <code>dataset_info.json</code> は <code>dataset_version</code> 省略時にフォルダ名を採用する。明示値はフォルダ名との一致を必須とする。</p></section>
 </body>
 </html>

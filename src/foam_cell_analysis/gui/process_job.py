@@ -113,6 +113,8 @@ class ProcessJob(QObject):
             self._handle_line(line)
 
     def _stderr_ready(self) -> None:
+        if self._stderr_log.closed:
+            return
         data = bytes(self.process.readAllStandardError())
         self._stderr_log.write(data)
         self._stderr_log.flush()
@@ -281,6 +283,8 @@ class ProcessJob(QObject):
             self._finish(JobExit(start_failed=True, message=self.process.errorString()))
 
     def _process_finished(self, code, _status) -> None:
+        # finished 時点で残っている stderr もログへ追記してから末尾を読む。
+        self._stderr_ready()
         if self._pending_failure:
             self._finish(JobExit(start_failed=True, message=self._pending_failure))
             return
@@ -290,11 +294,25 @@ class ProcessJob(QObject):
             )
             return
         if not self._hello:
-            self._finish(
-                JobExit(start_failed=True, message=f"hello 前に{self.info.label}が終了しました")
-            )
+            detail = self._stderr_tail()
+            message = f"hello 前に{self.info.label}が終了しました"
+            if detail:
+                message = f"{message}: {detail}"
+            self._finish(JobExit(start_failed=True, message=message))
             return
         self._finish(JobExit(returncode=int(code), message=f"{self.info.label}が終了しました"))
+
+    def _stderr_tail(self) -> str:
+        """stderr.log の短い末尾を安全に利用者向け終了理由へ添える。"""
+        try:
+            with (self.run_dir / "stderr.log").open("rb") as stream:
+                stream.seek(0, os.SEEK_END)
+                stream.seek(max(0, stream.tell() - 800))
+                data = stream.read(800)
+            lines = [line.strip() for line in data.decode("utf-8", errors="replace").splitlines()]
+            return " ".join(line for line in lines if line)[-300:]
+        except OSError:
+            return ""
 
     def _fail(self, message: str) -> None:
         """起動失敗として子プロセスを終わらせる（hello 前・登録失敗）。"""

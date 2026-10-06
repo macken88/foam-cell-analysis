@@ -11,6 +11,7 @@ from typing import Any, ClassVar
 
 import numpy as np
 
+from ...training.config_rules import validate_numeric_config
 from ...training.folds import assign_folds
 from ..backend import normalization_for_weights
 from ..comparison_service import DuplicateCandidateError
@@ -1379,6 +1380,10 @@ class MockBackend:
     def validate_experiment_config(self, config: dict[str, Any]) -> list[dict[str, str]]:
         """入れ子設定を検証し、同一設定も警告する。"""
         results = []
+        results.extend(
+            {"level": "error", "key": key, "message": message}
+            for key, message in validate_numeric_config(config)
+        )
         data = config.get("data", {})
         training = config.get("training", {})
         dataset_version = data.get("dataset_version")
@@ -1422,16 +1427,11 @@ class MockBackend:
                         )
             except (KeyError, ValueError) as error:
                 results.append({"level": "error", "message": str(error)})
-        if int(training.get("batch_size", 1)) > 16:
+        batch_size = training.get("batch_size", 1)
+        if type(batch_size) is int and batch_size > 16:
             results.append(
                 {"level": "warning", "message": "GPU メモリ使用量が大きくなる可能性があります"}
             )
-        if int(training.get("epochs", 0)) < 1:
-            results.append({"level": "error", "message": "エポック数は 1 以上にしてください"})
-        if float(training.get("learning_rate", 0)) <= 0:
-            results.append({"level": "error", "message": "学習率は 0 より大きくしてください"})
-        if float(training.get("weight_decay", 0)) < 0:
-            results.append({"level": "error", "message": "重み減衰は 0 以上にしてください"})
         model = config.get("model", {})
         if model.get("type") == "mask_rcnn":
             expected_mean, expected_std = normalization_for_weights(
