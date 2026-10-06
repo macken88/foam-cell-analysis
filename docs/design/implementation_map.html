@@ -118,7 +118,7 @@ h1,h2,h3,p{margin-top:0}h1{font-size:clamp(1.6rem,5vw,2.15rem);line-height:1.35}
 <section class="panel">
 <h2>外部解析の分担</h2>
 <p><code>external_analysis.py</code>は外部解析値の形式判定、入力値検証、全体・分類別の集計を担当します。依存は<code>math</code>と<code>typing.Any</code>だけで、ファイル保存は行いません。</p>
-<p><code>ComparisonService</code>は候補・評価ID・固定検証版との整合を確認し、検証済み値と集計を外部解析記録へ保存します。保存形式と検証内容は<a href="comparison_inference_backend_design.html#s9">比較設計 9.4節</a>を参照してください。</p>
+<p><code>ComparisonService.export_source</code> は候補・評価・保存済み記録から抽出結果出力元を作り、HybridBackend は互換 wrapper で委譲します。Runner は共通 wait helper で終了を確認し、確認済み旧ジョブだけを通知と占有返却の後に遅延破棄します。ファイル hash は torch・GUI 非依存の pure module を共有します。学習と比較で同一の評価既定値、および粒子分割 ID は標準ライブラリだけに依存する <code>utils.backend_contracts</code> が定義し、評価 factory は毎回独立した辞書を返します。ComparisonService は従来の変更可能な <code>LEGACY_TRAINING_EVAL_PARAMS</code> 名を保ち、粒子分割 ID の参照で scipy を eager import しません。</p><p><code>ComparisonService</code>は候補・評価ID・固定検証版との整合を確認し、検証済み値と集計を外部解析記録へ保存します。保存形式と検証内容は<a href="comparison_inference_backend_design.html#s9">比較設計 9.4節</a>を参照してください。</p>
 </section>
 <p class="muted">各テスト欄は関連機能の代表例です。画面モックの確認には<a href="gui_screen_design.html#sec1">GUI画面設計</a>も参照してください。</p>
 

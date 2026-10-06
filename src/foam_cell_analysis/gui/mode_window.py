@@ -385,18 +385,13 @@ class ModeWindow(QMainWindow):
                             tooltip=f"{tab_label}タブで利用できます",
                         )
         page = self._page_widgets.get(page_id)
-        refresh_menu_actions = getattr(page, "refresh_menu_actions", None)
-        if callable(refresh_menu_actions):
-            refresh_menu_actions()
-        elif callable(getattr(page, "_update_buttons", None)):
-            page._update_buttons()
-        elif callable(getattr(page, "_update_thumbnail_action", None)):
-            page._update_thumbnail_action()
-        elif callable(getattr(page, "_show_model_detail", None)):
-            page._show_model_detail()
-            update_routing = getattr(page, "_update_routing_rows", None)
-            if callable(update_routing):
-                update_routing()
+        if page is not None:
+            try:
+                refresh_menu_actions = getattr(page, "refresh_menu_actions", None)
+            except RuntimeError:  # Qt の破棄済み wrapper
+                refresh_menu_actions = None
+            if callable(refresh_menu_actions):
+                refresh_menu_actions()
         for target, action in getattr(self, "_tab_menu_actions", {}).items():
             action.setChecked(target == page_id)
         for menu in self._menus.values():

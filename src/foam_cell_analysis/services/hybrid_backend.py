@@ -329,52 +329,8 @@ class HybridBackend:
     # ---- 抽出結果出力（12 章） ----
 
     def _export_source(self, candidate_id: str, evaluation_id: str, item_ids: list[str] | None):
-        """評価の記録から ExportSource を作る。未完了・破損・対象外の画像は ValueError。"""
-        from foam_cell_analysis.inference.mask_export import ExportSource
-        from foam_cell_analysis.services.comparison_service import resolve_recorded_path
-        from foam_cell_analysis.training.protocol import read_json
-
-        record = None
-        for version in self.training.dataset_store.list_versions("val"):
-            for item in self.comparison.list_candidate_evaluations(candidate_id, version):
-                if item.evaluation_id == evaluation_id:
-                    record = item
-        if record is None:
-            raise ValueError(f"評価がありません: {candidate_id} / {evaluation_id}")
-        if record.status != "completed":
-            raise ValueError(f"{candidate_id} は評価が完了していないため出力できません")
-        if record.broken:
-            raise ValueError("評価結果のファイルが壊れています。再評価してください")
-        run_dir = self.comparison.evaluation_run_dir(candidate_id, evaluation_id)
-        try:
-            spec = read_json(run_dir / "run_spec.json")
-            result = read_json(run_dir / "result.json")
-            targets = list(spec["validation"]["item_ids"])
-            predictions = result["predictions"]
-        except (OSError, ValueError, KeyError, TypeError) as error:
-            raise ValueError("評価結果のファイルが壊れています。再評価してください") from error
-        if item_ids is not None:
-            missing = [item_id for item_id in item_ids if item_id not in targets]
-            if missing:
-                raise ValueError(
-                    f"{candidate_id} の評価に含まれない画像があります: " + "、".join(missing[:5])
-                )
-            targets = [item_id for item_id in targets if item_id in set(item_ids)]
-        entries = []
-        for item_id in targets:
-            try:
-                entry = predictions[item_id]
-                path = resolve_recorded_path(run_dir, entry["path"])
-                entries.append((item_id, path, int(entry["bytes"]), str(entry["sha256"]).lower()))
-            except (KeyError, TypeError, ValueError) as error:
-                raise ValueError("評価結果のファイルが壊れています。再評価してください") from error
-        return ExportSource(
-            candidate_id,
-            evaluation_id,
-            record.validation_version,
-            record.input_fingerprint or "",
-            entries,
-        )
+        """旧呼び出し・monkeypatch 点を保つ委譲 wrapper。"""
+        return self.comparison.export_source(candidate_id, evaluation_id, item_ids)
 
     def export_particle_masks(self, request, progress, is_cancelled):
         """採用した評価の予測から抽出結果を出力する（ワーカースレッドから呼ぶ）。"""

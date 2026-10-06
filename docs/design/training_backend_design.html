@@ -314,7 +314,7 @@ td.nowrap{white-space:nowrap}
 <ul>
 <li>学習の開始は必ず <code>runner.start</code> を通す。画面・一覧・キューが直接ジョブを作ることはやめる。</li>
 <li><b>占有期間</b>: 準備（<code>prepare_training_run</code>）→ 起動 → 実行 → 照合（<code>conclude_training_run</code>）の間ずっと <code>is_busy</code>。この間に <code>start</code> が呼ばれたら <code>RuntimeError</code>（既存の「学習は同時に 1 件」と同じ）。</li>
-<li><b>終端処理は runner だけが 1 回だけ行う</b>: ジョブの終了 → <code>backend.conclude_training_run</code> → <code>ended</code> を送る。起動失敗も同じ経路を通す。</li>
+<li><b>終端処理は runner だけが 1 回だけ行う</b>: ジョブの終了 → <code>backend.conclude_training_run</code> → <code>ended</code> を送る。起動失敗も同じ経路を通す。通常終了を確認した Fake/Process ジョブは通知と占有返却の後に遅延破棄する。停止待ちが timeout した場合は古いジョブだけを保護し、後着の終了通知で終端処理を再開しない。</li>
 <li><b>中断</b>: <code>request_stop</code> → <code>backend.request_training_stop</code>（<code>stop_request.json</code> を保存）→ ジョブに kill を要求 → <b>プロセスの終了を確認してから</b>終端処理。</li>
 <li><b>進捗</b>: ジョブが受け取ったイベントを <code>backend.apply_training_event(experiment_id, event)</code> に渡し、<code>progressed</code> を送る。</li>
 <li>イベント反映が例外になった場合は最初の理由を保持し、以後そのジョブのイベントを適用しない。終了情報を保ったまま <code>protocol_error</code> として失敗判定し、終端処理は一度だけ行う。次のジョブに遅れて届いた旧ジョブのイベント・終了通知は無視する。</li>
@@ -600,7 +600,7 @@ h·w &gt; LIMIT（= 16,777,216、4096×4096 相当）のとき:
 <li>cellpose 4.2 は、モデルの構造（バックボーン）を重みファイルの中身から判定する。<code>cpsam</code> と <code>cpsam_v2</code> はどちらも SAM 系（<code>net.backbone == "sam_vitl"</code>）を前提とし、事前検査（8.2）でこれを確かめる。違えば失敗にする（アダプタ・<code>bsize</code>・容量見積もりが SAM 系を前提にしているため）。</li>
 <li>最適化手法は AdamW 固定（cellpose 4 と同じ）。<code>bsize</code> は 256 固定。</li>
 <li>1 エポック = 学習画像から <code>nimg_per_epoch</code> 枚（null なら、その fold の除外後の学習画像数）。枚数が学習画像数と違う場合は、fold の seed による乱数で重複ありで選ぶ。</li>
-<li><b>評価パラメータ</b>: <code>eval(x, channel_axis=2, normalize=False, flow_threshold=0.4, cellprob_threshold=0.0, min_size=15, max_size_fraction=0.4, bsize=256)</code>。x は (H, W, 3) の <code>[画像, 0, 0]</code>。学習時の入力の並びと一致することをテストで確認する。</li>
+<li><b>評価パラメータ</b>: <code>eval(x, channel_axis=2, normalize=False, flow_threshold=0.4, cellprob_threshold=0.0, min_size=15, max_size_fraction=0.4, bsize=256)</code>。x は (H, W, 3) の <code>[画像, 0, 0]</code>。学習時の入力の並びと一致することをテストで確認する。学習時評価条件の定義は比較側と共有する標準ライブラリ専用の <code>utils.backend_contracts.training_eval_params()</code> が新しい辞書で返す。</li>
 </ul>
 </div>
 

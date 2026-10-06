@@ -69,12 +69,16 @@ from foam_cell_analysis.services.models import (
     RoutingState,
 )
 from foam_cell_analysis.training.protocol import atomic_write_json, read_json
+from foam_cell_analysis.utils.backend_contracts import (
+    PARTICLE_SPLIT_ID,
+    training_eval_params,
+)
+from foam_cell_analysis.utils.file_hash import file_sha256 as _shared_file_sha256
 
 logger = logging.getLogger(__name__)
 
 SCHEMA = 1
 METRIC_ID = "cellpose_ap_iou50_95_image_mean_v1"
-PARTICLE_SPLIT_ID = "particle_split_symmetric8_v1"
 RELEASE_SPACE_MARGIN = 100 * 1024**2
 # release_candidate が公開済みリリースを再利用したときに、返すモデルへ付ける属性名
 RECOVERED_RELEASE_ATTR = "recovered_release"
@@ -102,23 +106,7 @@ INFERENCE_PARAM_SPECS: dict[str, dict[str, tuple[float, float, bool, str]]] = {
 }
 
 # 学習時の評価パラメータ（学習 10.2・10.3）。run_spec に記録がない旧形式の試行の補完にだけ使う
-LEGACY_TRAINING_EVAL_PARAMS: dict[str, dict[str, Any]] = {
-    "mask_rcnn": {
-        "box_score_thresh": 0.5,
-        "box_nms_thresh": 0.5,
-        "box_detections_per_img": 300,
-        "mask_thresh": 0.5,
-    },
-    "cellpose": {
-        "channel_axis": 2,
-        "normalize": False,
-        "flow_threshold": 0.4,
-        "cellprob_threshold": 0.0,
-        "min_size": 15,
-        "max_size_fraction": 0.4,
-        "bsize": 256,
-    },
-}
+LEGACY_TRAINING_EVAL_PARAMS: dict[str, dict[str, Any]] = training_eval_params()
 
 _CANDIDATE_ID = re.compile(r"RC-(\d{3,})")
 _EVALUATION_ID = re.compile(r"eval_(\d{3,})")
@@ -160,11 +148,7 @@ def _sha256_text(text: str) -> str:
 
 def file_sha256(path: str | Path) -> str:
     """ファイルの sha256 を 1 MiB ずつ読んで求める。"""
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return _shared_file_sha256(path)
 
 
 def candidate_fingerprint(
@@ -1371,6 +1355,50 @@ class ComparisonService:
         if len(matches) > 1:
             raise ValueError(f"評価 ID が複数の検証版にあります: {candidate_id}/{evaluation_id}")
         return matches[0]
+
+    def export_source(self, candidate_id: str, evaluation_id: str, item_ids: list[str] | None):
+        """保存済み評価の出力元を作る。評価一覧への採用状態には依存しない。"""
+        from foam_cell_analysis.inference.mask_export import ExportSource
+
+        self._read_candidate(candidate_id)
+        try:
+            version, run_dir = self._locate_evaluation(candidate_id, evaluation_id)
+        except ValueError as error:
+            message = str(error)
+            if message.startswith(("評価がありません:", "評価 IDが不正です:")):
+                raise ValueError(f"評価がありません: {candidate_id} / {evaluation_id}") from error
+            raise
+        record = self._read_record(candidate_id, version, run_dir)
+        if record.status != "completed":
+            raise ValueError(f"{candidate_id} は評価が完了していないため出力できません")
+        if record.broken:
+            raise ValueError(BROKEN_MESSAGE)
+        try:
+            spec = read_json(run_dir / "run_spec.json")
+            result = read_json(run_dir / "result.json")
+            targets = list(spec["validation"]["item_ids"])
+            predictions = result["predictions"]
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise ValueError(BROKEN_MESSAGE) from error
+        if item_ids is not None:
+            missing = [item_id for item_id in item_ids if item_id not in targets]
+            if missing:
+                raise ValueError(
+                    f"{candidate_id} の評価に含まれない画像があります: " + "、".join(missing[:5])
+                )
+            selected = set(item_ids)
+            targets = [item_id for item_id in targets if item_id in selected]
+        entries = []
+        try:
+            for item_id in targets:
+                entry = predictions[item_id]
+                path = resolve_recorded_path(run_dir, entry["path"])
+                entries.append((item_id, path, int(entry["bytes"]), str(entry["sha256"]).lower()))
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError(BROKEN_MESSAGE) from error
+        return ExportSource(
+            candidate_id, evaluation_id, version, record.input_fingerprint or "", entries
+        )
 
     def evaluation_run_dir(self, candidate_id: str, evaluation_id: str) -> Path:
         """評価フォルダ（candidates/<候補>/evaluations/<検証版>/<評価>）を返す。

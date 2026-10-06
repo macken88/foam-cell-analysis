@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import csv
 import datetime as dt
-import hashlib
 import io
 import json
 import os
@@ -37,6 +36,7 @@ from foam_cell_analysis.inference.protocol import (
     workspace_of,
 )
 from foam_cell_analysis.jobs.protocol import atomic_write_json
+from foam_cell_analysis.utils.file_hash import file_sha256 as _shared_file_sha256
 
 GIB = 1024**3
 UINT16_LABEL_LIMIT = 65535
@@ -131,11 +131,7 @@ def _counts_bytes(rows: list[dict[str, Any]], thresholds: list[float]) -> bytes:
 
 
 def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return _shared_file_sha256(path)
 
 
 def _read_csv(path: Path) -> tuple[list[str], dict[str, dict[str, str]]]:

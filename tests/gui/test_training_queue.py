@@ -32,6 +32,25 @@ def test_training_queue_tab_and_enqueue_flow(shell, monkeypatch):
     assert all(item.status == "queued" for item in shell.ctx.backend.list_training_queue())
 
 
+def test_queue_take_oserror_hides_path_and_logs_details(shell, monkeypatch, caplog):
+    shell.page(PageId.TRAINING_QUEUE)
+    controller = shell.ctx.queue_controller
+    messages = []
+    shell.ctx.status.message.connect(messages.append)
+
+    def fail_take():
+        raise OSError(r"C:\private\queue\item.json")
+
+    monkeypatch.setattr(shell.ctx.backend, "take_next_training_queue_item", fail_take)
+    controller.start()
+
+    assert messages and "private" not in messages[-1]
+    assert "キュー項目の取得に失敗しました" in messages[-1]
+    assert any(
+        record.exc_info and "item.json" in str(record.exc_info[1]) for record in caplog.records
+    )
+
+
 def test_queue_edit_validation_and_order_operations(shell):
     queue = shell.page(PageId.TRAINING_QUEUE)
     backend = shell.ctx.backend
@@ -334,7 +353,9 @@ def test_training_queue_order_and_page_navigation(shell):
     assert queue.empty_label.text().startswith("キューは空です")
 
 
-def test_terminal_save_failure_stops_queue_and_reports_reason(shell, qapp, qtbot, monkeypatch):
+def test_terminal_save_failure_stops_queue_and_reports_reason(
+    shell, qapp, qtbot, monkeypatch, caplog
+):
     backend = shell.ctx.backend
     first_config = backend.default_experiment_config("mask_rcnn")
     first_config["training"]["epochs"] = 1
@@ -360,7 +381,11 @@ def test_terminal_save_failure_stops_queue_and_reports_reason(shell, qapp, qtbot
     assert queue.model.rowCount() == 2
     assert backend.get_experiment(second.experiment_id).status == "queued"
     assert "終端状態を保存できないため、キューを停止しました" in shell.status_text.text()
-    assert "status.json の保存に失敗" in shell.status_text.text()
+    assert "status.json の保存に失敗" not in shell.status_text.text()
+    assert "学習結果を保存できませんでした" in shell.status_text.text()
+    assert any(
+        record.exc_info and "status.json" in str(record.exc_info[1]) for record in caplog.records
+    )
 
 
 def _open_context_menu(view, pos):

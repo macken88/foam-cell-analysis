@@ -9,7 +9,8 @@ from __future__ import annotations
 import numpy as np
 from scipy import ndimage
 
-PARTICLE_SPLIT_ID = "particle_split_symmetric8_v1"
+from foam_cell_analysis.utils.backend_contracts import PARTICLE_SPLIT_ID
+
 _EIGHT = np.ones((3, 3), dtype=bool)
 
 

@@ -57,6 +57,7 @@ from foam_cell_analysis.training.protocol import (
     write_status,
 )
 from foam_cell_analysis.training.seeds import derive
+from foam_cell_analysis.utils.backend_contracts import training_eval_params
 
 logger = logging.getLogger(__name__)
 
@@ -1070,24 +1071,7 @@ class TrainingService:
             "fold_algorithm": FOLD_ALGORITHM,
             "augmentation_profile": {"value": profile_value, "sha256": profile_hash},
             "preprocessing": config["model"].get("input", {}).get("normalization"),
-            "eval_params": (
-                {
-                    "channel_axis": 2,
-                    "normalize": False,
-                    "flow_threshold": 0.4,
-                    "cellprob_threshold": 0.0,
-                    "min_size": 15,
-                    "max_size_fraction": 0.4,
-                    "bsize": 256,
-                }
-                if config["model"]["type"] == "cellpose"
-                else {
-                    "box_score_thresh": 0.5,
-                    "box_nms_thresh": 0.5,
-                    "box_detections_per_img": 300,
-                    "mask_thresh": 0.5,
-                }
-            ),
+            "eval_params": training_eval_params()[config["model"]["type"]],
             "metric": {
                 "id": "cellpose_ap_iou50_95_image_mean_v1",
                 "thresholds": [round(0.5 + 0.05 * i, 2) for i in range(10)],

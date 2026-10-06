@@ -303,7 +303,7 @@ table.rev{font-size:.92rem}
 <h2>1. ソース構成</h2>
 <pre><code>src/foam_cell_analysis/
 ├─ __main__.py                 # from .app import main
-├─ app.py                      # QApplication 生成、MockBackend・MainWindow 構築、main()
+├─ app.py                      # バックエンド選択、apply_theme、HomeWindow 構築、main()
 ├─ services/
 │  ├─ __init__.py
 │  ├─ models.py                # ドメインのデータクラス（Qt 非依存）
@@ -551,7 +551,7 @@ table.rev{font-size:.92rem}
 <ul>
 <li><code>gui/theme.py</code> を追加する。
   <ul>
-  <li>色とフォントを定数で持ち（<code>Color.TRAIN</code>、<code>Font.NUMERIC</code> など）、<code>build_stylesheet()</code> でアプリ全体のスタイルシートを作る。<code>app.py</code> の <code>apply_style</code> はこれを呼ぶだけにする。</li>
+  <li>色とフォントを定数で持ち（<code>Color.TRAIN</code>、<code>Font.NUMERIC</code> など）、<code>build_stylesheet()</code> でアプリ全体のスタイルシートを作る。<code>app.py</code> は <code>apply_theme</code> を呼び、テーマ適用後に HomeWindow を構築する。</li>
   <li>フォントが見つからない場合の代わり（BIZ UDPゴシック → Yu Gothic UI、Bahnschrift → Segoe UI）を <code>QFontDatabase</code> で確かめて選ぶ。</li>
   </ul></li>
 <li>ページ内で直接 <code>setStyleSheet</code> で色を書くのをやめ、動的プロパティで名前付きのスタイルを指定する: <code>role="note"</code>（補足文）、<code>role="readonly"</code>、<code>role="numeric"</code>、<code>state="ok" | "error" | "changed"</code>、<code>usage="train" | "val" | "unassigned" | "excluded"</code>。</li>
@@ -1481,6 +1481,6 @@ table.rev{font-size:.92rem}
 選択詳細: 評価結果を読み取れません
 行メニュー: 設定を引き継いで新規作成</pre><p>再作成は読めた設定だけを新IDの下書きへ複製し、履歴・結果・進捗は引き継がない。必須設定が読めない場合は不足項目を明示して補完を求める。候補の再作成は重みと固定検証条件を照合し、新しい候補ファイルだけを作る。</p></section>
 
-<section class="card" id="gui-job-lifecycle-current"><h2>ジョブ所有関係と終了手順（現行）</h2><p>app.py が AppContext を作成し、AppContext.__post_init__ が TrainingRunner・EvaluationRunner を組み立てる。WindowManager は必要時に TrainingQueueController を生成し AppContext.queue_controller に設定する。HomeWindow は AppContext と WindowManager を受け取り、どちらも所有者にはならない。QueueController は学習キューを進め、各 Runner が自身のジョブと終端処理を所有する。ComputeCoordinator は学習・評価の排他と待機要求を管理する。</p><p>学習・評価は「待機 → 準備（保存先・試行の確定）→ 実行（hello/go 後のイベント反映）→ 終端処理（結果確定・compute.release）」。復旧や停止の完了が確認できない場合は blocked とし、新しい計算を止める。終了時は学習キューを停止して確認し、Yes の場合は計算を block して学習・評価の停止要求を保存し、停止を要求する。停止要求の保存で例外が出てもログに記録し、もう一方の停止要求・画面設定保存・アプリ終了を続ける。10秒以内にプロセス終了を確認できない場合は試行を確定せず、次回起動時の復旧に任せる。No の場合は学習キューを元に戻す。</p><p>TrainingRunner の API は <code>start(experiment_id, queue_id=None, retry=False, *, ticket=None)</code>、<code>request_stop(reason="user_stop", timeout_ms=None) -&gt; bool</code>。TrainingRunner に <code>shutdown</code> はない。EvaluationRunner は <code>request_stop(reason="user_stop", timeout_ms=None) -&gt; bool</code> と <code>shutdown(timeout_ms=...)</code> を持つ。</p><p>主要 API は TrainingRunner.request_stop(reason, timeout_ms) → bool、TrainingRunner.experiment_id、Backend.apply_training_event(experiment_id, event)、ComputeCoordinator.release(ticket, ok, error)。テストは shell fixture が作った利用者データを fixture teardown で片付け、ボタン・メニュー・キー入力など実際の利用者経路で操作する。ジョブを直接 cancel せず、テスト終了前に実ジョブと Qt オブジェクトの後片付けを確認する。</p></section>
+<section class="card" id="gui-job-lifecycle-current"><h2>ジョブ所有関係と終了手順（現行）</h2><p>app.py が AppContext を作成し、AppContext.__post_init__ が TrainingRunner・EvaluationRunner を組み立てる。WindowManager は必要時に TrainingQueueController を生成し AppContext.queue_controller に設定する。HomeWindow は AppContext と WindowManager を受け取り、どちらも所有者にはならない。QueueController は学習キューを進め、各 Runner が自身のジョブと終端処理を所有する。ComputeCoordinator は学習・評価の排他と待機要求を管理する。</p><p>学習・評価は「待機 → 準備（保存先・試行の確定）→ 実行（hello/go 後のイベント反映）→ 終端処理（結果確定・compute.release）」。復旧や停止の完了が確認できない場合は blocked とし、新しい計算を止める。終了時は学習キューを停止して確認し、Yes の場合は計算を block して学習・評価の停止要求を保存し、停止を要求する。停止要求の保存で例外が出てもログに記録し、もう一方の停止要求・画面設定保存・アプリ終了を続ける。10秒以内にプロセス終了を確認できない場合は試行を確定せず、次回起動時の復旧に任せる。No の場合は学習キューを元に戻す。</p><p>TrainingRunner の API は <code>start(experiment_id, queue_id=None, retry=False, *, ticket=None)</code>、<code>request_stop(reason="user_stop", timeout_ms=None) -&gt; bool</code>。TrainingRunner に <code>shutdown</code> はない。EvaluationRunner は <code>request_stop(reason="user_stop", timeout_ms=None) -&gt; bool</code> と <code>shutdown(timeout_ms=...)</code> を持つ。停止待ちは kill 前に finished を接続し、開始直後にも終了述語を確認する。終端済みジョブだけを終端処理・ended通知・占有返却の後に遅延破棄し、timeout や終了未確認のジョブは保持する。</p><p>メニュー可否の更新入口は各ページの <code>refresh_menu_actions()</code>。BasePage の no-op を既定とし、状態を再評価するページだけが override する。ModeWindow は現在表示中のページに公開入口を呼び、非表示タブの無効化理由を保つ。</p><p>主要 API は TrainingRunner.request_stop(reason, timeout_ms) → bool、TrainingRunner.experiment_id、Backend.apply_training_event(experiment_id, event)、ComputeCoordinator.release(ticket, ok, error)。テストは shell fixture が作った利用者データを fixture teardown で片付け、ボタン・メニュー・キー入力など実際の利用者経路で操作する。ジョブを直接 cancel せず、テスト終了前に実ジョブと Qt オブジェクトの後片付けを確認する。</p></section>
 </body>
 </html>

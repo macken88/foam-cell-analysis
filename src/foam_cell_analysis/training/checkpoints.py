@@ -12,6 +12,8 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
+from foam_cell_analysis.utils.file_hash import file_sha256 as _shared_file_sha256
+
 
 def save_state(adapter: Any, path: str | Path) -> Path:
     """state_dict を同じディレクトリの一時ファイル経由で保存する。"""
@@ -55,11 +57,7 @@ def write_checkpoint(
 
 
 def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return _shared_file_sha256(path)
 
 
 def write_checkpoint_metadata(

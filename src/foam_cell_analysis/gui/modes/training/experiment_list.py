@@ -740,6 +740,9 @@ class ExperimentListPage(BasePage):
             fit_table_columns(table)
         self._update_buttons()
 
+    def refresh_menu_actions(self) -> None:
+        self._update_buttons()
+
     def _update_buttons(self) -> None:
         selected = self._checked_experiments()
         current = self._current_experiment()

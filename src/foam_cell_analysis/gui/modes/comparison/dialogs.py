@@ -43,6 +43,7 @@ from ....services.comparison_service import (
 )
 from ....services.models import Candidate, EvaluationRecord, Experiment
 from ...context import AppContext
+from ...error_messages import value_error_message
 from ...labels import (
     OOF_NOTE,
     config_key_label,
@@ -79,10 +80,7 @@ def user_message(error: BaseException, fallback: str) -> str:
 
     パスや内部の詳細は「: 」の後ろに入るので出さない。ValueError 以外は fallback。
     """
-    if not isinstance(error, ValueError):
-        return fallback
-    text = str(error).split(": ", 1)[0].strip()
-    return text or fallback
+    return value_error_message(error, fallback)
 
 
 def completed_attempts(experiment: Experiment) -> list[int]:

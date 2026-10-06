@@ -860,6 +860,9 @@ class CandidatesPage(BasePage):
         action.setToolTip(reason)
         self.set_menu_action_enabled(action, not reason)
 
+    def refresh_menu_actions(self) -> None:
+        self._update_buttons()
+
     def _update_buttons(self) -> None:
         selected = self._selected()
         self.selection_count.setText(f"{len(selected)} 件を選択")

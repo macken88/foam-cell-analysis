@@ -4,13 +4,17 @@ import copy
 from unittest.mock import patch
 
 import pytest
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QPoint, QProcess, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QLabel, QLineEdit, QMessageBox
+from shiboken6 import isValid
 
 from foam_cell_analysis.gui.modes.training.augmentation_dialog import AugmentationDialog
 from foam_cell_analysis.gui.navigation import ModeId, PageId
 from foam_cell_analysis.gui.theme import numeric_font
+from foam_cell_analysis.gui.training_jobs import FakeTrainingJob
+from foam_cell_analysis.gui.waiting import disconnect_runner_slots
+from foam_cell_analysis.services.models import JobExit
 
 
 def test_training_start_navigates_and_records_final_model(shell, qapp):
@@ -997,3 +1001,137 @@ def test_training_runner_owns_the_single_training_slot(shell):
     assert shell.ctx.jobs.has_training_job
     assert shell.ctx.jobs.jobs() == []
     shell.ctx.training_runner.request_stop()
+
+
+def test_ended_receiver_can_start_next_training_during_stop_wait(shell, qtbot, monkeypatch):
+    backend = shell.ctx.backend
+    runner = shell.ctx.training_runner
+    first = backend.start_training(backend.default_experiment_config("mask_rcnn"))
+    second = backend.start_training(backend.default_experiment_config("mask_rcnn"))
+    outcomes = []
+    new_jobs = []
+    original_start = FakeTrainingJob.start
+
+    def hold_second_job(job):
+        original_start(job)
+        if job.experiment_id == second.experiment_id:
+            job._timer.stop()
+            new_jobs.append(job)
+
+    monkeypatch.setattr(FakeTrainingJob, "start", hold_second_job)
+    runner.ended.connect(outcomes.append)
+
+    def start_next(outcome):
+        if outcome.experiment_id == first.experiment_id:
+            runner.start(second.experiment_id)
+
+    runner.ended.connect(start_next)
+    runner.start(first.experiment_id)
+    old_job = runner.job
+
+    try:
+        assert runner.request_stop(timeout_ms=1)
+        assert new_jobs and runner.job is new_jobs[0] and new_jobs[0] is not old_job
+        assert len(outcomes) == 1
+        assert runner._skip_conclude is False
+        new_jobs[0]._timer.start(new_jobs[0].interval_ms)
+        qtbot.waitUntil(lambda: len(outcomes) == 2, timeout=10_000)
+        assert [outcome.status for outcome in outcomes] == ["stopped", "completed"]
+    finally:
+        for job in new_jobs:
+            if isValid(job):
+                job._timer.stop()
+        if runner.job is not None and isValid(runner.job) and runner.job is not old_job:
+            runner._skip_conclude = False
+            runner.job.kill()
+
+
+def test_training_runner_hides_oserror_path_but_logs_details(shell, monkeypatch, caplog):
+    backend = shell.ctx.backend
+    runner = shell.ctx.training_runner
+    experiment = backend.start_training(backend.default_experiment_config("mask_rcnn"))
+
+    def fail_prepare(*_args, **_kwargs):
+        raise OSError(r"C:\private\workspace\run")
+
+    with monkeypatch.context() as prepare_patch:
+        prepare_patch.setattr(backend, "prepare_training_run", fail_prepare)
+        outcomes = []
+        runner.ended.connect(outcomes.append)
+        runner.start(experiment.experiment_id)
+
+        assert outcomes and "private" not in outcomes[0].message
+        assert "準備に失敗しました" in outcomes[0].message
+        assert any(
+            record.exc_info and "private" in str(record.exc_info[1]) for record in caplog.records
+        )
+    second = backend.start_training(backend.default_experiment_config("mask_rcnn"))
+
+    def fail_conclude(*_args, **_kwargs):
+        raise OSError(r"C:\private\workspace\status.json")
+
+    monkeypatch.setattr(backend, "conclude_training_run", fail_conclude)
+    runner.start(second.experiment_id)
+    assert runner.request_stop(timeout_ms=1000)
+    assert "private" not in outcomes[-1].message
+    assert outcomes[-1].message == "学習結果を保存できませんでした。ログを確認してください。"
+    assert any(
+        record.exc_info and "status.json" in str(record.exc_info[1]) for record in caplog.records
+    )
+
+
+def test_training_kill_timeout_late_finish_does_not_conclude(shell, monkeypatch):
+    backend = shell.ctx.backend
+    runner = shell.ctx.training_runner
+    experiment = backend.start_training(backend.default_experiment_config("mask_rcnn"))
+    monkeypatch.setattr(FakeTrainingJob, "start", lambda _self: None)
+    monkeypatch.setattr(FakeTrainingJob, "kill", lambda _self: None)
+    outcomes = []
+    runner.ended.connect(outcomes.append)
+    runner.start(experiment.experiment_id)
+    old_job = runner.job
+
+    assert not runner.request_stop(timeout_ms=1)
+    assert runner.job is old_job and runner._skip_conclude
+    old_job.finished.emit(JobExit(returncode=-1))
+    assert not outcomes and isValid(old_job)
+
+    old_job._timer.stop()
+    disconnect_runner_slots(old_job)
+    ticket, runner._ticket = runner._ticket, None
+    runner.job = None
+    runner._concluded = True
+    runner._skip_conclude = False
+    runner._set_busy(False)
+    if ticket is not None:
+        runner.compute.release(ticket)
+    old_job.deleteLater()
+
+
+@pytest.mark.parametrize(
+    "job_exit",
+    [JobExit(returncode=-1, process_alive=True), JobExit(returncode=0)],
+    ids=["process-alive", "qprocess-running"],
+)
+def test_training_job_with_unconfirmed_process_is_not_discarded(shell, job_exit):
+    from types import SimpleNamespace
+
+    backend = shell.ctx.backend
+    runner = shell.ctx.training_runner
+    experiment = backend.start_training(backend.default_experiment_config("mask_rcnn"))
+    runner.start(experiment.experiment_id)
+    job = runner.job
+    job.process = SimpleNamespace(state=lambda: QProcess.ProcessState.Running)
+    job.finished.emit(job_exit)
+
+    assert isValid(job)
+    job._timer.stop()
+    disconnect_runner_slots(job)
+    runner.job = None
+    runner._concluded = True
+    runner._skip_conclude = False
+    if runner._ticket is not None:
+        ticket, runner._ticket = runner._ticket, None
+        runner.compute.release(ticket)
+    runner._set_busy(False)
+    job.deleteLater()

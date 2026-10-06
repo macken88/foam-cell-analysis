@@ -13,12 +13,14 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import QEventLoop, QObject, QTimer, Signal
+from PySide6.QtCore import QObject, QTimer, Signal
 
 from ..jobs.protocol import read_json
 from ..services.models import EvaluationOutcome, JobExit, PreparedRun
 from .compute_coordinator import ComputeCoordinator, Ticket
+from .error_messages import user_failure_message as _shared_user_failure_message
 from .process_job import HELLO_TIMEOUT_MS, ProcessJob, ProcessJobInfo
+from .waiting import disconnect_runner_slots, job_exit_confirmed, wait_until
 
 logger = logging.getLogger(__name__)
 
@@ -27,18 +29,13 @@ UNEXPECTED_FAILED_TEXT = "評価を開始できませんでした。ログを確
 
 
 def user_failure_message(error: BaseException) -> str:
-    """例外を、画面に出してよい日本語の理由へ置き換える（詳細はログにだけ残す）。
-
-    ValueError は最初の「: 」より前（パスや内部の詳細は後ろに入る）、
-    OSError はパス長などの準備失敗の文、それ以外は汎用の文にする。
-    """
-    if isinstance(error, OSError):
-        return PREPARE_FAILED_TEXT
-    if isinstance(error, ValueError):
-        text = str(error).split(": ", 1)[0].strip()
-        if text:
-            return text
-    return UNEXPECTED_FAILED_TEXT
+    """既存の評価画面向け例外変換 API。"""
+    return _shared_user_failure_message(
+        error,
+        prepare_message=PREPARE_FAILED_TEXT,
+        fallback=UNEXPECTED_FAILED_TEXT,
+        preserve_value_error=True,
+    )
 
 
 OWNER = "evaluation"
@@ -313,8 +310,15 @@ class EvaluationRunner(QObject):
             ):
                 self._apply_event(event, source, candidate, evaluation_id)
 
+            def finished_slot(job_exit):
+                self._job_finished(job_exit, job)
+
             job.event_received.connect(apply_event)
-            job.finished.connect(lambda job_exit, source=job: self._job_finished(job_exit, source))
+            job.finished.connect(finished_slot)
+            job._runner_slots = (
+                ("event_received", apply_event),
+                ("finished", finished_slot),
+            )
             job.start()
         except Exception as error:
             logger.warning("評価を開始できません (%s): %s", candidate_id, error, exc_info=True)
@@ -349,11 +353,11 @@ class EvaluationRunner(QObject):
                 message=f"評価イベントを反映できませんでした: {self._event_failure}",
                 protocol_error=True,
             )
-        self._conclude(job_exit)
+        self._conclude(job_exit, source_job)
 
     # ---- 終端処理 ----
 
-    def _conclude(self, job_exit: JobExit) -> None:
+    def _conclude(self, job_exit: JobExit, old_job=None) -> None:
         if self._concluded or self._current is None:
             return
         self._concluded = True
@@ -376,7 +380,7 @@ class EvaluationRunner(QObject):
                 )
         except Exception as error:
             saved = False
-            logger.error("評価の終了状態を保存できません (%s): %s", candidate_id, error)
+            logger.exception("評価の終了状態を保存できません (%s)", candidate_id)
             outcome = EvaluationOutcome(
                 candidate_id,
                 evaluation_id,
@@ -398,6 +402,9 @@ class EvaluationRunner(QObject):
             self.compute.release(ticket, ok=saved, error=None if saved else outcome.message)
         if saved:
             self._request_next()
+        if job_exit_confirmed(job_exit, old_job):
+            disconnect_runner_slots(old_job)
+            old_job.deleteLater()
 
     # ---- 中断 ----
 
@@ -442,26 +449,14 @@ class EvaluationRunner(QObject):
         job = self.job
         if job is None:
             return not self.is_busy
-        job.kill()
         if timeout_ms is None:
+            job.kill()
             return True
-        if self._current is not None:
-            loop = QEventLoop(self)
-            timer = QTimer(self)
-            timer.setSingleShot(True)
-            self.ended.connect(loop.quit)
-            timer.timeout.connect(loop.quit)
-            timer.start(timeout_ms)
-            loop.exec()
-            timer.stop()
-            try:
-                self.ended.disconnect(loop.quit)
-            except (RuntimeError, TypeError):
-                pass
-        if self._current is not None:
+        completed = wait_until(lambda: self.job is not job, job.finished, timeout_ms, job.kill)
+        if not completed and self.job is job:
             self._skip_conclude = True
             return False
-        return True
+        return completed
 
     def shutdown(self, timeout_ms: int = APP_EXIT_TIMEOUT_MS) -> bool:
         """アプリ終了時の手順（stop_request.json → kill → 最大 10 秒待つ）。

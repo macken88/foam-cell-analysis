@@ -27,6 +27,15 @@ def _find_action(menu, title):
     return None
 
 
+def _click_mode_tab(window, title):
+    index = next(i for i in range(window.tab_bar.count()) if window.tab_bar.tabText(i) == title)
+    QTest.mouseClick(
+        window.tab_bar,
+        Qt.MouseButton.LeftButton,
+        pos=window.tab_bar.tabRect(index).center(),
+    )
+
+
 def test_mode_menu_order_and_mode_specific_menus(shell):
     assert [a.text().split("(", 1)[0] for a in shell.home.menuBar().actions()] == [
         "ファイル",
@@ -115,29 +124,66 @@ def test_menu_action_uses_same_operation_and_shortcut_display_tracks_changes(she
     assert page._shortcut_actions["auto_triage"].shortcut().toString() == "Ctrl+Alt+D"
 
 
-def test_tab_tools_inactive_action_reason_and_candidate_release_reason(shell):
+def test_tab_tools_and_refresh_routes_follow_real_tab_clicks(shell):
     shell.navigate(PageId.DATA_PREPARATION)
     data_window = shell.manager.window(ModeId.DATA_PREPARATION)
     data_page = shell.page(PageId.DATA_PREPARATION)
     assert data_window.tab_tools_layout.count() == 1
     assert data_window.tab_tools_layout.itemAt(0).widget() is data_page.tab_tools
-    shell.navigate(PageId.DATASET_HISTORY)
+    _click_mode_tab(data_window, "データセット版履歴")
     assert data_window.tab_tools_layout.count() == 0
+    _click_mode_tab(data_window, "作業中データ")
+    assert data_window.tab_tools_layout.itemAt(0).widget() is data_page.tab_tools
 
     shell.navigate(PageId.EXPERIMENTS)
     training_window = shell.manager.window(ModeId.TRAINING)
+    experiment_page = shell.page(PageId.EXPERIMENTS)
+    experiment_index = experiment_page.table.model().index(0, 0)
+    QTest.mouseClick(
+        experiment_page.table.viewport(),
+        Qt.MouseButton.LeftButton,
+        pos=experiment_page.table.visualRect(experiment_index).center(),
+    )
     copy_action = _find_action(_menu(training_window, "学習"), "設定を引き継いで新規作成")
-    shell.navigate(PageId.TRAINING_QUEUE)
+    assert copy_action.isEnabled()
+    _click_mode_tab(training_window, "学習キュー")
     assert not copy_action.isEnabled()
     assert "実験一覧タブ" in copy_action.toolTip()
+    _click_mode_tab(training_window, "実験一覧")
+    assert copy_action.isEnabled()
 
     shell.navigate(PageId.CANDIDATES)
     comparison_window = shell.manager.window(ModeId.COMPARISON)
     release = _find_action(_menu(comparison_window, "候補"), "選択候補を採用")
     candidates = shell.page(PageId.CANDIDATES)
+    # シード済みで評価完了している候補を、この画面テスト用に採用前状態へ戻す。
+    shell.ctx.backend.get_candidate("RC-001").status = "candidate"
+    candidates.refresh()
+    candidates.table.clearSelection()
+    candidate_row = next(
+        row
+        for row in range(candidates.table.rowCount())
+        if candidates.table.item(row, 1).text() == "RC-001"
+    )
+    candidate_index = candidates.table.model().index(candidate_row, 0)
+    QTest.mouseClick(
+        candidates.table.viewport(),
+        Qt.MouseButton.LeftButton,
+        pos=candidates.table.visualRect(candidate_index).center(),
+    )
+    assert release.isEnabled()
+    _click_mode_tab(comparison_window, "リリース済みモデル・振り分け")
     assert not release.isEnabled()
-    assert candidates.release_reason.text() == "採用する候補を 1 件選択してください"
-    assert release.toolTip() == candidates.release_reason.text()
+    assert "リリース候補タブ" in release.toolTip()
+    released = shell.page(PageId.RELEASED_MODELS)
+    detail = released.release_actions["detail"]
+    released.model_table.clearSelection()
+    assert not detail.isEnabled()
+    assert detail.toolTip() == "モデルを選択してください"
+    _click_mode_tab(comparison_window, "リリース候補")
+    assert release.isEnabled()
+    _click_mode_tab(comparison_window, "リリース済みモデル・振り分け")
+    assert detail.isEnabled() == bool(released.model_table.selectionModel().selectedRows())
 
 
 def test_toolbar_menus_follow_current_data_and_share_home_tool_names(shell, monkeypatch):
