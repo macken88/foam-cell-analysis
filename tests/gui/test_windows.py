@@ -213,6 +213,33 @@ def test_reopening_mode_uses_single_window(shell):
     assert window.tabs.currentIndex() == 2
 
 
+def test_closing_each_mode_restores_home_and_allows_reopen(shell, qapp):
+    for mode, pages in MODE_PAGES.items():
+        shell.navigate(pages[0])
+        window = shell.manager.window(mode)
+        if mode == ModeId.DATA_PREPARATION:
+            shell.home.showMinimized()
+        else:
+            shell.home.hide()
+        window.close()
+        qapp.processEvents()
+        assert shell.home.isVisible()
+        assert not shell.home.isMinimized()
+        shell.navigate(pages[0])
+        qapp.processEvents()
+        assert window.isVisible()
+
+
+def test_mode_close_does_not_restore_home_during_application_shutdown(shell, qapp):
+    shell.navigate(PageId.TRAINING)
+    window = shell.manager.window(ModeId.TRAINING)
+    shell.home.hide()
+    shell.manager._shutdown_requested = True
+    window.close()
+    qapp.processEvents()
+    assert not shell.home.isVisible()
+
+
 def test_navigation_passes_params_once(shell):
     calls = []
     page = shell.page(PageId.MASK_COMPARISON)
@@ -291,6 +318,7 @@ def test_ctrl_h_brings_home_forward(shell, qtbot):
     window.activateWindow()
     qtbot.keyClick(window, Qt.Key.Key_H, modifier=Qt.KeyboardModifier.ControlModifier)
     assert shell.home.isVisible()
+    assert all(not hasattr(shell.manager.window(mode), "home_button") for mode in MODE_PAGES)
 
 
 def test_home_summary_values_match_backend(shell):

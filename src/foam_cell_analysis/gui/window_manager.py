@@ -2,7 +2,8 @@
 
 from time import monotonic
 
-from PySide6.QtCore import QObject, QSettings, Signal
+import shiboken6
+from PySide6.QtCore import QObject, QSettings, QTimer, Signal
 
 from .context import AppContext
 from .mode_window import ModeWindow
@@ -70,6 +71,7 @@ class WindowManager(QObject):
         self._last_status = "準備完了"
         self._last_navigation_at: dict[ModeId, float] = {}
         self._last_activation_refresh_at: dict[ModeId, float] = {}
+        self._shutdown_requested = False
         self.ctx.navigator.navigation_requested.connect(self.navigate)
         self.ctx.status.message.connect(self._remember_status)
 
@@ -197,7 +199,7 @@ class WindowManager(QObject):
             page.refresh_on_activate()
 
     def show_home_requested(self) -> None:
-        """Ctrl+H またはホームボタンをホーム側へ通知する。"""
+        """メニューまたは Ctrl+Hをホーム側へ通知する。"""
         self.home_requested.emit()
 
     def set_home_callback(self, callback) -> None:
@@ -209,6 +211,14 @@ class WindowManager(QObject):
         if window:
             self._store_geometry(mode, window)
         self.mode_closed.emit(ModeId(mode))
+        QTimer.singleShot(
+            0, lambda: self._restore_home_after_mode_close() if shiboken6.isValid(self) else None
+        )
+
+    def _restore_home_after_mode_close(self) -> None:
+        """closeEvent 完了後にホームを表示する。終了処理中は復帰させない。"""
+        if not self._shutdown_requested:
+            self.home_requested.emit()
 
     def _store_geometry(self, mode: ModeId, window: ModeWindow) -> None:
         rect = window.geometry()

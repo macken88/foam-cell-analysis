@@ -499,6 +499,7 @@ class HomeWindow(QMainWindow):
                 == QMessageBox.StandardButton.Yes
             )
         if answer:
+            self.manager._shutdown_requested = True
             self.ctx.compute.block("アプリを終了しています")
             if self.ctx.training_runner.is_busy:
                 try:

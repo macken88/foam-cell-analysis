@@ -124,7 +124,7 @@ table.rev{font-size:.92rem}
 .mock .input.focus{border-color:var(--graphite);box-shadow:0 0 0 1px var(--graphite)}
 .mock .warn,.mock td.warn,.mock span.warn{color:var(--error)}
 .mock .err{color:var(--error);font-weight:700}
-/* モードウィンドウの上端: ホーム・タブ（下線式） */
+/* モードウィンドウの上端: タブ（下線式） */
 .mock .m-toolbar{margin:0 0 8px}
 .mock .mtabs{border:0;border-radius:0;gap:2px;align-self:stretch}
 .mock .mtabs span{border:0;padding:4px 12px 5px;color:var(--slate);border-bottom:2px solid transparent}
@@ -396,15 +396,15 @@ table.rev{font-size:.92rem}
 <div class="mock"><div class="mock-title">モデル比較・リリース — 気泡インスタンスセグメンテーション</div>
 <div class="mock-body">
 <div class="v27-menubar"><span>ファイル(F)</span><span>表示(V)</span><span>候補(C)</span><span>リリース(R)</span><span>ツール(T)</span><span>ヘルプ(H)</span></div>
-<div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span class="on">リリース候補</span><span>抽出結果比較</span><span>リリース済みモデル・振り分け</span></span><span class="spacer"></span></div>
+<div class="topbar"><span class="mtabs"><span class="on">リリース候補</span><span>抽出結果比較</span><span>リリース済みモデル・振り分け</span></span><span class="spacer"></span></div>
 <div class="panel" style="min-height:140px;display:flex;align-items:center;justify-content:center;color:var(--slate)">作業エリア（ウィンドウの幅をすべて使う）</div>
 <div class="status"><span>RC-004 を追加しました</span><span>実行中ジョブ <span class="num">1</span></span><span>自動保存 <span class="num">10:42:08</span></span></div>
 </div></div>
 <ul>
 <li>モードごとに専用の <code>QMainWindow</code> を持つ。初回は最大化で開き、次回からは前回の位置とサイズで開く。</li>
 <li>1つのモードにつきウィンドウは1つ。開いているモードをもう一度選ぶと、既存のウィンドウを前面に出す。複数のモードのウィンドウを同時に開いて並べられる（例: 学習の進み具合を見ながらデータ準備を進める）。</li>
-<li>ホームから既存モードを開き直す場合と、OS のタスクバーからウィンドウを再度前面に出す場合は、現在のタブを保って表示中のページを更新する。フィルター、選択、編集中の値は各ページの再表示更新で維持する。</li>
-<li>ウィンドウ上部にメニューバー、ホームボタン、モード内のタブを置く。データ準備・モデル学習は「ファイル(F)・編集(E)・表示(V)・モード固有・ツール(T)・ヘルプ(H)」、モデル比較・リリースは編集を省いて「ファイル(F)・表示(V)・候補(C)・リリース(R)・ツール(T)・ヘルプ(H)」。本番推論は現在どおり「ヘルプ(H)」だけ。ホームは「ファイル・ツール・ヘルプ」とする。</li>
+<li>ホームから既存モードを開き直す場合と、OS のタスクバーからウィンドウを再度前面に出す場合は、現在のタブを保って表示中のページを更新する。フィルター、選択、編集中の値は各ページの再表示更新で維持する。モードウィンドウを閉じるとホームを再表示する。</li>
+<li>ウィンドウ上部にメニューバー、モード内のタブを置く。データ準備・モデル学習は「ファイル(F)・編集(E)・表示(V)・モード固有・ツール(T)・ヘルプ(H)」、モデル比較・リリースは編集を省いて「ファイル(F)・表示(V)・候補(C)・リリース(R)・ツール(T)・ヘルプ(H)」。本番推論は現在どおり「ヘルプ(H)」だけ。ホームは「ファイル・ツール・ヘルプ」とする。</li>
 <li>各メニュー項目は改善案 3.4 の構成と区切り位置に従う。ファイルは取り込み・入出力・新規作成とウィンドウ操作、編集は取り消し・選択・検索と行操作、表示はタブ切り替え・絞り込み・列・画像表示、モード固有メニューは各モードの確定・振り分け・キュー・候補・リリース操作、ツールは設定とキー割り当て、ヘルプはキー一覧を持つ。学習キューの操作は「学習(L)」、振り分け変更の破棄は「リリース(R)」に置く。</li>
 <li>割り当てキーを項目名の右に表示し、キー設定の変更に追従させる。キー処理は既存の ShortcutMap を使い、メニュー項目に別のキー処理を登録しない。選択行やタブで使えない項目は無効にし、理由または対象タブをツールチップに示す。使える項目には無効理由を表示しない。「表示」のタブ項目は選択するとそのタブへ移動する。画像分類と実験群のサブメニューは現在のデータ・絞り込み候補から作り、絞り込み項目は画面のコンボと連動する。表示する列の項目名は対象タブを含め、現在のタブの列だけを有効にする。</li>
 <li>メニュー、ボタン、右クリックは同じ QAction または同じ処理を使う。表の右クリックは行を選択に加えてからメニューを開き、すでに選択中の行なら複数選択を保つ。各タブの右端の主操作部品はタブ切り替えに応じて入れ替える。</li>
@@ -669,7 +669,7 @@ table.rev{font-size:.92rem}
 <div class="mock">
 <div class="mock-title">データ準備 — 気泡インスタンスセグメンテーション</div>
 <div class="mock-body">
-<div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span class="on">作業中データ</span><span>データセット版履歴</span></span>
+<div class="topbar"><span class="mtabs"><span class="on">作業中データ</span><span>データセット版履歴</span></span>
 <span class="spacer"></span><span class="small">ベース 学習 <span class="num">train_v003</span> / 検証 <span class="num">val_v003</span></span><span class="err">⚠ エラー 2 件を直すと確定できます</span><span class="btn primary dis">確定</span></div>
 <div class="m-chips"><span class="small">用途</span>
 <span class="chip on plain">すべて <b>612</b></span><span class="chip gray">未振り分け <b>23</b></span><span class="chip blue">学習 <b>489</b></span><span class="chip orange">検証 <b>96</b></span><span class="chip strike">不採用 <b>4</b></span></div>
@@ -1023,7 +1023,7 @@ table.rev{font-size:.92rem}
 <h3 id="sec5-1">5.1 レイアウト</h3>
 <p>フォーム上部に、白い背景・枠・左側のアクセント線を持つカードで、データセット版・画像分類・品質条件と見込み件数、交差検証の分割数・有効な層別とフォルダ単位の条件・各分割の検証件数、モデルと事前学習済み重み、エポック数・バッチサイズ・学習率を要約する。入力変更に追従して更新する。設定検証に警告またはエラーがあれば要約の右側に件数を示し、選ぶと検証結果を開く。設定変更時は古い検証結果を消す。</p>
 <div class="mock"><div class="mock-title">モデル学習 — 学習設定（実装）</div><div class="mock-body">
-<div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span class="on">学習設定</span><span>学習キュー</span><span>実験一覧</span></span></div>
+<div class="topbar"><span class="mtabs"><span class="on">学習設定</span><span>学習キュー</span><span>実験一覧</span></span></div>
 <div class="v27-summary"><span>データ <span class="num">train_v003</span>・全分類・すべて・学習 <b class="num">515</b> 件</span><span>交差検証 <span class="num">5</span> 分割・層別・フォルダ単位・各検証 約 <span class="num">103</span> 件</span><span>モデル Mask R-CNN（COCO）</span><span>学習 <span class="num">100</span> エポック・バッチ <span class="num">8</span>・学習率 <span class="num">0.0001</span></span><span class="spacer"></span><span class="btn">設定プレビュー（YAML）</span></div>
 <div class="v27-form2"><div><p class="v27-h">実験</p><div class="row"><span>実験群</span><span class="sel-combo">foam_study ▾</span></div><div class="row"><span>実験識別子</span><span class="input ro num">exp_0046</span></div><div class="row"><span>説明</span><span class="input"></span></div><p class="v27-h">データセット・交差検証</p><div class="row"><span>データセット版</span><span class="sel-combo num">train_v003 ▾</span></div><div class="row"><span>画像分類 / 品質条件</span><span class="sel-combo">全分類 ▾　すべて ▾</span></div><div class="row"><span>分割数・条件・乱数シード</span><span class="input num">5</span>　☑ 画像分類で層別　☑ 取り込み元フォルダ単位</div><p class="small">交差検証は学習用版だけを使い、検証用版は含めない</p><p class="v27-h">共通学習設定</p><div class="row"><span>エポック / バッチ</span><span class="input num">100</span>　<span class="input num">8</span></div><div class="row"><span>学習率</span><span class="input num">0.0001</span></div></div>
 <div><p class="v27-h">モデル種類・固有設定</p><div class="row"><span>モデル種類</span><span class="sel-combo">Mask R-CNN ▾</span></div><div class="row"><span>事前学習済み重み</span><span class="sel-combo">COCO ▾</span></div><div class="row"><span>画像平均・標準偏差</span><span class="small">重みから自動決定</span></div><div class="row"><span>アンカーサイズ</span><span class="input num">32, 64, 128, 256, 512</span></div><div class="row"><span>アンカー縦横比</span><span class="input num">0.5, 1.0, 2.0</span></div><p class="small">▶ 前処理 詳細設定　▶ RPN 詳細設定　▶ ROI 詳細設定</p><p class="v27-h">データ拡張</p><div class="row"><span>プロファイル</span><span class="sel-combo num">aug_v003 ▾</span> <span class="btn">データ拡張を設定</span></div><p class="v27-h">途中保存モデル / 評価</p><div class="row"><span>保存間隔 / 検証間隔</span><span class="input num">10</span>　<span class="input num">5</span> エポック</div><div class="row"><span>エポックの選び方</span><span class="small">OOF AP 最大</span></div></div></div>
@@ -1080,7 +1080,7 @@ table.rev{font-size:.92rem}
 </section>
 <section class="card" id="sec5-queue"><h3 id="sec5-3">5.3 学習キュー（<code>PageId.TRAINING_QUEUE</code>）</h3>
 <p>学習設定・学習キュー・実験一覧の順にタブを置く。学習設定の「キューに追加」は検証後に末尾へ登録し、画面遷移せず次の実験 ID を採番する。実験一覧の「複製してキューに追加」も選択した設定を新しい ID で登録する。実験一覧の「同じ設定でやり直す」は同じ実験 ID の新しい実行試行であり、学習中は試行番号付きの読み取り専用予約行としてキューへ入る。予約の削除は試行の記録を変更しない。</p>
-<div class="mock"><div class="mock-title">モデル学習 — 学習キュー</div><div class="mock-body"><div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span>学習設定</span><span class="on">学習キュー</span><span>実験一覧</span></span></div><div class="panel"><p>待機 3 件・実行中 exp_0047（分割 2/5・エポック 12/40） <span class="spacer"></span><span class="btn">表示する列 ▾</span> <span class="btn primary">▶ キューをすべて実行</span> <span class="btn">この学習の後で停止</span> <span class="btn">■ 今すぐ停止</span></p><table><thead><tr><th>順番</th><th>状態</th><th>実験識別子</th><th>説明</th><th>実験群</th><th>データセット版</th><th>モデル種類</th><th>エポック数</th><th>学習率</th><th>プロファイル</th></tr></thead><tbody><tr><td>1</td><td>実行中<br><span style="display:block;height:3px;background:#D3D9DE"><span style="display:block;height:3px;width:30%;background:#1C2630"></span></span></td><td>exp_0047</td><td>分類A / 基準設定</td><td>foam_study</td><td>train_v004</td><td>Mask R-CNN</td><td>100</td><td>1e-04</td><td>aug_v003</td></tr><tr><td>2</td><td>待機</td><td>exp_0048</td><td>サイズ比較</td><td>foam_study</td><td>train_v004</td><td>Cellpose</td><td>80</td><td>1e-03</td><td>aug_v003</td></tr></tbody></table><p class="small">停止予約後は現在の学習を完了して停止。複製・削除・並べ替え・設定編集・「終了・中断した行を削除」は「学習」メニューまたは右クリックから行う。今すぐ停止は確認後、学習とキューを停止する。失敗・中断後も次の待機行へ進む。</p></div></div></div>
+<div class="mock"><div class="mock-title">モデル学習 — 学習キュー</div><div class="mock-body"><div class="topbar"><span class="mtabs"><span>学習設定</span><span class="on">学習キュー</span><span>実験一覧</span></span></div><div class="panel"><p>待機 3 件・実行中 exp_0047（分割 2/5・エポック 12/40） <span class="spacer"></span><span class="btn">表示する列 ▾</span> <span class="btn primary">▶ キューをすべて実行</span> <span class="btn">この学習の後で停止</span> <span class="btn">■ 今すぐ停止</span></p><table><thead><tr><th>順番</th><th>状態</th><th>実験識別子</th><th>説明</th><th>実験群</th><th>データセット版</th><th>モデル種類</th><th>エポック数</th><th>学習率</th><th>プロファイル</th></tr></thead><tbody><tr><td>1</td><td>実行中<br><span style="display:block;height:3px;background:#D3D9DE"><span style="display:block;height:3px;width:30%;background:#1C2630"></span></span></td><td>exp_0047</td><td>分類A / 基準設定</td><td>foam_study</td><td>train_v004</td><td>Mask R-CNN</td><td>100</td><td>1e-04</td><td>aug_v003</td></tr><tr><td>2</td><td>待機</td><td>exp_0048</td><td>サイズ比較</td><td>foam_study</td><td>train_v004</td><td>Cellpose</td><td>80</td><td>1e-03</td><td>aug_v003</td></tr></tbody></table><p class="small">停止予約後は現在の学習を完了して停止。複製・削除・並べ替え・設定編集・「終了・中断した行を削除」は「学習」メニューまたは右クリックから行う。今すぐ停止は確認後、学習とキューを停止する。失敗・中断後も次の待機行へ進む。</p></div></div></div>
 <p>1行を1実験として保存し、状態は待機・実行中・完了・失敗・中断・設定エラーで示す。設定編集列は分類ごとに表示を切り替え、選択肢は学習設定と同じ Backend オプションを使う。モデルにない設定セルは無効にする。セル編集ごとに設定を検証し、エラーは行頭の注意印とツールチップで示す。未表示の詳細設定は行のダブルクリックまたは編集ボタンから学習設定へ渡し、「キューに保存」または「キャンセル」する。</p>
 <p>実行はGPU 1台を前提に一度に1件とし、失敗・中断後も次の待機行へ進む。設定エラー行は飛ばして待機リストに残す。「▶ キューをすべて実行」「この学習の後で停止」「■ 今すぐ停止」を別操作としてボタンと学習メニューに置く。今すぐ停止は確認後に実行中学習へ停止を依頼し、キューの続行も止める。実験一覧の停止操作名も「■ 今すぐ停止」とする。複製・削除・並べ替えを提供し、Ctrl+↑ / Ctrl+↓ でも順番を変更できる。状態、選択行、スクロール、列幅と列表示を保持する。</p>
 <ul>
@@ -1093,7 +1093,7 @@ table.rev{font-size:.92rem}
 <h3 id="sec6-1">6.1 レイアウト</h3>
 <div class="mock"><div class="mock-title">モデル学習 — 気泡インスタンスセグメンテーション</div>
 <div class="mock-body">
-<div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span>学習設定</span><span class="on">実験一覧</span></span><span class="spacer"></span></div>
+<div class="topbar"><span class="mtabs"><span>学習設定</span><span class="on">実験一覧</span></span><span class="spacer"></span></div>
 <div class="m-toolbar"><span class="sel-combo">実験群: すべて ▾</span><span class="sel-combo">モデル: すべて ▾</span><span class="sel-combo">状態: すべて ▾</span><span class="spacer"></span><span class="btn primary">モデル比較へ送る</span></div>
 <div class="table-wrap"><table>
 <thead><tr><th></th><th>ID</th><th>実験群</th><th>モデル</th><th>データセット</th><th>データ拡張</th><th>状態</th><th class="n">進捗</th><th class="n">OOF AP</th><th>途中保存モデル</th></tr></thead>
@@ -1206,7 +1206,7 @@ table.rev{font-size:.92rem}
 <h3 id="sec7-1">7.1 レイアウト</h3>
 <div class="mock"><div class="mock-title">モデル比較・リリース — 気泡インスタンスセグメンテーション</div>
 <div class="mock-body">
-<div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span class="on">リリース候補</span><span>抽出結果比較</span><span>リリース済みモデル・振り分け</span></span><span class="spacer"></span></div>
+<div class="topbar"><span class="mtabs"><span class="on">リリース候補</span><span>抽出結果比較</span><span>リリース済みモデル・振り分け</span></span><span class="spacer"></span></div>
 <div class="m-toolbar"><span class="btn">候補追加</span><span class="btn">設定を変えて候補追加</span><span class="btn primary">評価実行 / 評価中止</span><span class="sel-combo">検証版: すべて ▾</span><span class="sel-combo">評価状態: すべて ▾</span><span class="sel-combo">採用状態: 候補・採用 ▾</span></div>
 <div class="table-wrap"><table>
 <thead><tr><th>選択</th><th>候補ID</th><th>モデル</th><th>実験</th><th>学習モデル</th><th>推論設定</th><th>検証版</th><th class="n">検証 AP</th><th class="n">学習時 OOF AP</th><th>評価状態</th><th>採用</th><th>外部解析</th><th>コメント</th></tr></thead>
@@ -1282,7 +1282,7 @@ table.rev{font-size:.92rem}
 <p>仕様: モデル比較・リリース仕様 10章・14章。</p>
 <div class="mock"><div class="mock-title">モデル比較・リリース — 気泡インスタンスセグメンテーション</div>
 <div class="mock-body">
-<div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span>リリース候補</span><span class="on">抽出結果比較</span><span>リリース済みモデル・振り分け</span></span><span class="spacer"></span></div>
+<div class="topbar"><span class="mtabs"><span>リリース候補</span><span class="on">抽出結果比較</span><span>リリース済みモデル・振り分け</span></span><span class="spacer"></span></div>
 <div class="m-toolbar"><span class="small">検証用データセット <span class="num">val_v003</span></span><span class="sel-combo">画像分類: すべて ▾</span><span class="sel-combo num">IMG-000123 ▾</span><span class="small num">12 / 233</span>
 <span class="spacer"></span><span class="mtabs"><span>原画像</span><span class="on">抽出結果</span></span><span class="btn">+ 候補</span><span class="btn">候補を外す</span></div>
 <div class="m-split" style="grid-template-columns:repeat(2,1fr)">
@@ -1321,7 +1321,7 @@ table.rev{font-size:.92rem}
 <p>上下 <code>QSplitter</code>。</p>
 <div class="mock"><div class="mock-title">モデル比較・リリース — 気泡インスタンスセグメンテーション</div>
 <div class="mock-body">
-<div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span>リリース候補</span><span>抽出結果比較</span><span class="on">リリース済みモデル・振り分け</span></span><span class="spacer"></span></div>
+<div class="topbar"><span class="mtabs"><span>リリース候補</span><span>抽出結果比較</span><span class="on">リリース済みモデル・振り分け</span></span><span class="spacer"></span></div>
 <div class="m-split" style="grid-template-columns:2fr 1fr">
 <div class="table-wrap"><table>
 <thead><tr><th>モデルID</th><th>モデル</th><th>候補</th><th>検証用</th><th class="n">検証 AP</th><th class="n">OOF AP</th><th>リリース日時</th><th>割り当て中</th></tr></thead>
@@ -1368,7 +1368,7 @@ table.rev{font-size:.92rem}
 <p>仕様: 全体概要 3〜4章（本番推論は詳細仕様書がないため、概要から最小構成で設計）。</p>
 <div class="mock"><div class="mock-title">本番推論 — 気泡インスタンスセグメンテーション</div>
 <div class="mock-body">
-<div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="spacer"></span></div>
+<div class="topbar"><span class="spacer"></span></div>
 <div class="m-split" style="grid-template-columns:1.3fr 1fr">
 <div>
 <div class="m-toolbar" style="margin-top:0"><span class="btn">画像を追加</span><span class="btn">フォルダを追加</span><span class="btn">選択を削除</span><span class="spacer"></span><span class="small"><span class="num">3</span> 枚</span></div>
