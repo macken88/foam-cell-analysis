@@ -282,6 +282,7 @@ td.nowrap{white-space:nowrap}
 <tr><td><code>completed</code> / <code>failed</code> / <code>stopped</code></td><td>最新の試行の <code>status.json</code></td></tr>
 </table></div>
 <p>既存 GUI の状態一覧（待機・実行中・完了・失敗・中断・設定エラー）はそのまま使えます。<code>interrupted</code> は独立した状態にせず、「中断」＋理由として表示します。</p>
+<p>復旧時、試行がなく下書きでも保護対象でもない実験は、キュー行の正規化後に状態をメモリ上で導出する。<code>queued</code> の通常（<code>kind=new</code>）行があれば <code>queued</code>、なければ（失敗行だけが残る場合も含め）<code>failed</code> とする。状態は <code>experiment.json</code> に追加保存しない。<code>queue.json</code> が壊れている場合や実験が復旧保護中の場合は既存の状態・原本を保つ。</p>
 
 <h3 id="s5-4">5.4 起動時の復旧</h3>
 <ol>
@@ -316,6 +317,7 @@ td.nowrap{white-space:nowrap}
 <li><b>終端処理は runner だけが 1 回だけ行う</b>: ジョブの終了 → <code>backend.conclude_training_run</code> → <code>ended</code> を送る。起動失敗も同じ経路を通す。</li>
 <li><b>中断</b>: <code>request_stop</code> → <code>backend.request_training_stop</code>（<code>stop_request.json</code> を保存）→ ジョブに kill を要求 → <b>プロセスの終了を確認してから</b>終端処理。</li>
 <li><b>進捗</b>: ジョブが受け取ったイベントを <code>backend.apply_training_event(experiment_id, attempt, event)</code> に渡し、<code>progressed</code> を送る。</li>
+<li>イベント反映が例外になった場合は最初の理由を保持し、以後そのジョブのイベントを適用しない。終了情報を保ったまま <code>protocol_error</code> として失敗判定し、終端処理は一度だけ行う。次のジョブに遅れて届いた旧ジョブのイベント・終了通知は無視する。</li>
 <li>JobManager: 学習ジョブは JobManager に登録しない。<code>JobManager.has_training_job</code> と実行中件数の表示は runner の <code>is_busy</code> を見る。</li>
 </ul>
 
@@ -340,6 +342,7 @@ td.nowrap{white-space:nowrap}
 </ol>
 <ul>
 <li>2 で「いいえ」を選んだら、1 で止めたキューを元の状態（実行中なら実行中）に戻す。</li>
+<li>「はい」が確定したら、学習・評価の停止や設定保存より先に調停役を終了中として block する。停止要求の保存で例外が起きた場合は個別にログへ残し、もう一方の停止、設定保存、アプリ終了を続ける。ダイアログで「いいえ」を選んだ場合は block せずキューを復元する。</li>
 <li>10 秒たっても子プロセスの終了を確認できなければ、終端処理はせずにそのままアプリを終了する（終了を確認していないので状態は確定しない）。GUI が終わると Job Object が閉じて OS が子を終了させ、次回起動時の復旧（5.4）が <code>stop_request.json</code> により <code>stopped</code>（<code>app_exit</code>）に確定する。</li>
 </ul>
 

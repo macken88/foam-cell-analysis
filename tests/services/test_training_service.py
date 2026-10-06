@@ -250,6 +250,64 @@ def test_clear_finished_keeps_broken_completed_queue_row(tmp_path):
     assert broken_file.read_bytes() == original_manifest
 
 
+def test_failed_preparation_without_attempt_recovers_as_failed_and_can_be_deleted(tmp_path):
+    service, experiment = _queued_service(tmp_path)
+    row = service.queue["rows"][0]
+    service.fail_training_preparation(experiment.experiment_id)
+    service.finish_training_queue_item(row["queue_id"], "failed")
+
+    restored = TrainingService(tmp_path, process_alive=lambda _record: False)
+    assert restored.get_experiment(experiment.experiment_id).status == "queued"
+    restored.recover()
+
+    assert restored.get_experiment(experiment.experiment_id).status == "failed"
+    assert restored.list_training_queue()[0].status == "failed"
+    restored.clear_finished_training_queue_items()
+    assert restored.list_training_queue() == []
+    assert restored.experiment_deletion_info(experiment.experiment_id).allowed
+    restored.delete_experiment(experiment.experiment_id)
+    assert experiment.experiment_id not in restored.experiments
+
+
+def test_recovery_keeps_normal_queued_and_protected_experiment_files(tmp_path):
+    service, queued = _queued_service(tmp_path)
+    broken_manifest = service.root / queued.experiment_id / "experiment.json"
+    broken_manifest.write_bytes(b"{broken")
+    original = broken_manifest.read_bytes()
+
+    restored = TrainingService(tmp_path, process_alive=lambda _record: False)
+    restored.recover()
+
+    assert restored.get_experiment(queued.experiment_id).recovery_state == "unrecoverable"
+    assert broken_manifest.read_bytes() == original
+    assert restored.queue["rows"][0]["state"] == "queued"
+
+
+def test_total_epochs_restored_from_run_spec_and_updated_when_editing_existing(tmp_path):
+    service, experiment = _queued_service(tmp_path)
+    experiment.config.values["training"]["epochs"] = 7
+    service.update_training_queue_item(experiment.experiment_id, experiment.config.values)
+    row = service.queue["rows"][0]
+    prepared = service.prepare_training_run(experiment.experiment_id, row["queue_id"])
+    (service.root / experiment.experiment_id / "config.yaml").unlink()
+
+    restored = TrainingService(tmp_path, process_alive=lambda _record: False)
+    assert restored.get_experiment(experiment.experiment_id).total_epochs == 7
+    changed = restored.default_experiment_config("mask_rcnn")
+    changed["experiment"]["id"] = experiment.experiment_id
+    changed["training"]["epochs"] = 11
+    current = restored._experiment_from_config(
+        changed,
+        experiment.experiment_id,
+        "queued",
+        restored.get_experiment(experiment.experiment_id),
+    )
+    assert current.total_epochs == 11
+    changed["training"]["epochs"] = "invalid"
+    assert restored._experiment_from_config(changed, "exp_9999", "queued").total_epochs == 40
+    assert Path(prepared.run_dir, "run_spec.json").is_file()
+
+
 def test_missing_queued_experiment_has_readonly_placeholder_and_keeps_id_reserved(tmp_path):
     service, missing = _queued_service(tmp_path)
     healthy_config = service.default_experiment_config("mask_rcnn")

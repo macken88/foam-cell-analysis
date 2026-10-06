@@ -646,7 +646,7 @@ get_candidate_prediction(candidate_id, evaluation_id, item_id) -&gt; np.ndarray<
     def start(self, candidate_ids: list[str]) -&gt; None
     def request_stop(self) -&gt; None     # 実行中の 1 件を中断し、待機中の残りも取り消す
     def shutdown(self) -&gt; None</code></pre>
-<p>終端処理は runner だけが 1 回だけ行う（学習 6.1 と同じ）。アプリ終了時は学習 6.3 と同じ手順（確認 → stop_request.json → kill → 最大 10 秒待つ）。終端処理の保存に失敗したときは、待機中の残りの候補を取り消して ended を出し（状態は「取り消し」）、調停役を止まった状態にする（15.1）。</p>
+<p>終端処理は runner だけが 1 回だけ行う（学習 6.1 と同じ）。アプリ終了時は学習 6.3 と同じ手順（確認後、停止より前に計算調停を block し、stop_request.json → kill → 最大 10 秒待つ）。停止要求保存の例外はログへ記録し、相手側ジョブ停止・設定保存・アプリ終了を継続する。「いいえ」では block せず学習キューを復元する。終端処理の保存に失敗したときは、待機中の残りの候補を取り消して ended を出し（状態は「取り消し」）、調停役を止まった状態にする（15.1）。</p>
 
 <h3>15.3 共通化する部分と分ける部分</h3>
 <div class="table-wrap"><table class="keys">

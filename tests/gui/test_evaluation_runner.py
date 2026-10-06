@@ -9,7 +9,7 @@ import pytest
 from foam_cell_analysis.gui.compute_coordinator import ComputeCoordinator
 from foam_cell_analysis.gui.evaluation_runner import EvaluationRunner
 from foam_cell_analysis.jobs.protocol import read_json
-from foam_cell_analysis.services.models import EvaluationOutcome, PreparedRun
+from foam_cell_analysis.services.models import EvaluationOutcome, JobExit, PreparedRun
 
 
 def test_real_process_evaluation_completes(qtbot, evaluation_env):
@@ -131,6 +131,39 @@ def test_prepare_failure_moves_to_next_candidate(qtbot, stub):
     assert outcomes[0].evaluation_id is None
     assert outcomes[1].status == "completed"
     assert not compute.is_busy
+
+
+def test_event_failure_is_protocol_error_and_old_job_cannot_touch_next_candidate(
+    qtbot, stub, monkeypatch
+):
+    backend, _compute, runner, outcomes = stub
+    captured = []
+    monkeypatch.setattr(
+        backend,
+        "apply_evaluation_event",
+        lambda *_args: (_ for _ in ()).throw(OSError()),
+    )
+
+    def conclude(candidate_id, evaluation_id, job_exit):
+        captured.append(job_exit)
+        return EvaluationOutcome(candidate_id, evaluation_id, "failed")
+
+    monkeypatch.setattr(backend, "conclude_evaluation_run", conclude)
+    runner.start(["RC-001", "RC-002"])
+    old_job = runner.job
+    old_job.event_received.emit({"type": "image_done"})
+
+    assert outcomes[0].status == "failed"
+    assert captured[0].protocol_error
+    assert captured[0].returncode == -1
+    assert "OSError" in captured[0].message
+    assert runner.candidate_id == "RC-002"
+    calls_before = list(backend.calls)
+    old_job.event_received.emit({"type": "image_done"})
+    runner._job_finished(JobExit(returncode=0), old_job)
+    assert backend.calls == calls_before
+    assert runner.candidate_id == "RC-002"
+    runner.request_stop("user_stop", timeout_ms=1000)
 
 
 def test_failed_terminal_save_blocks_next_until_evaluation_start(qtbot, stub):

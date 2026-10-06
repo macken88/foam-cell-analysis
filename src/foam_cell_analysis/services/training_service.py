@@ -186,6 +186,7 @@ class TrainingService:
                     "draft" if record.get("is_draft") else "queued",
                     created_at=datetime.fromisoformat(record["created_at"]),
                 )
+                experiment.total_epochs = self._total_epochs(config)
                 for run_dir in sorted((path.parent / "runs").glob("attempt_*")):
                     spec_file = run_dir / "run_spec.json"
                     if not spec_file.exists():
@@ -193,6 +194,7 @@ class TrainingService:
                     spec = read_json(spec_file)
                     if not experiment.config.values and isinstance(spec.get("config"), dict):
                         experiment.config = ExperimentConfig(spec["config"])
+                        experiment.total_epochs = self._total_epochs(spec["config"])
                     status_path = run_dir / "status.json"
                     status_record = read_json(status_path) if status_path.exists() else None
                     status = status_record.get("status") if status_record is not None else "running"
@@ -619,10 +621,12 @@ class TrainingService:
     ) -> Experiment:
         model_type = config["model"]["type"]
         exp = config.get("experiment", {})
+        total_epochs = self._total_epochs(config)
         if existing:
             existing.config = ExperimentConfig(config)
             existing.status = status
             existing.description = exp.get("description", "")
+            existing.total_epochs = total_epochs
             return existing
         return Experiment(
             experiment_id,
@@ -631,8 +635,17 @@ class TrainingService:
             model_type,
             ExperimentConfig(config),
             status,
-            total_epochs=int(config.get("training", {}).get("epochs", 40)),
+            total_epochs=total_epochs,
         )
+
+    @staticmethod
+    def _total_epochs(config: Any) -> int:
+        """不正な旧設定でも読込を失敗させず、表示用の既定値を返す。"""
+        try:
+            value = config.get("training", {}).get("epochs", 40)
+            return value if type(value) is int and value > 0 else 40
+        except (AttributeError, TypeError):
+            return 40
 
     def save_experiment_draft(
         self, config: dict[str, Any], experiment_id: str | None = None
@@ -1677,6 +1690,22 @@ class TrainingService:
                 row["attempt"], row["state"] = found
             elif row["state"] == "running":
                 row.update(state="queued", attempt=None)
+        if not self._queue_broken:
+            for experiment_id, experiment in self.experiments.items():
+                if (
+                    experiment_id in protected
+                    or experiment_id in self.recovery_issues
+                    or experiment.status == "draft"
+                    or self._has_attempts(experiment_id)
+                ):
+                    continue
+                has_queued_new_row = any(
+                    row.get("experiment_id") == experiment_id
+                    and row.get("kind") == "new"
+                    and row.get("state") == "queued"
+                    for row in self.queue.get("rows", [])
+                )
+                experiment.status = "queued" if has_queued_new_row else "failed"
         for experiment_dir in sorted(self.root.glob("exp_*")):
             if experiment_dir.name in protected:
                 continue

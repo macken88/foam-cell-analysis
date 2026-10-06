@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QEventLoop, QObject, QTimer, Signal
@@ -306,8 +307,14 @@ class EvaluationRunner(QObject):
             else:
                 job = ProcessEvaluationJob(prepared, self.backend, self.hello_timeout_ms, self)
             self.job = job
-            job.event_received.connect(self._apply_event)
-            job.finished.connect(self._job_finished)
+
+            def apply_event(
+                event, source=job, candidate=candidate_id, evaluation_id=self.evaluation_id
+            ):
+                self._apply_event(event, source, candidate, evaluation_id)
+
+            job.event_received.connect(apply_event)
+            job.finished.connect(lambda job_exit, source=job: self._job_finished(job_exit, source))
             job.start()
         except Exception as error:
             logger.warning("評価を開始できません (%s): %s", candidate_id, error, exc_info=True)
@@ -315,24 +322,30 @@ class EvaluationRunner(QObject):
 
     # ---- 実行中 ----
 
-    def _apply_event(self, event) -> None:
-        candidate_id = self.candidate_id
+    def _apply_event(self, event, source_job=None, candidate_id=None, evaluation_id=None) -> None:
+        job = self.job if source_job is None else source_job
+        candidate_id = self.candidate_id if candidate_id is None else candidate_id
+        evaluation_id = self.evaluation_id if evaluation_id is None else evaluation_id
+        if self._concluded or job is None or job is not self.job or self._event_failure is not None:
+            return
         try:
-            self.backend.apply_evaluation_event(candidate_id, self.evaluation_id, event)
+            self.backend.apply_evaluation_event(candidate_id, evaluation_id, event)
         except Exception as error:
-            self._event_failure = str(error)
-            if self.job is not None:
-                self.job.kill()
+            if self._event_failure is None:
+                self._event_failure = str(error) or type(error).__name__
+                job.kill()
         finally:
             if candidate_id is not None:
                 self.progressed.emit(candidate_id)
 
-    def _job_finished(self, job_exit: JobExit) -> None:
+    def _job_finished(self, job_exit: JobExit, source_job=None) -> None:
+        if source_job is not None and source_job is not self.job:
+            return
         if self._skip_conclude:
             return
-        if self._event_failure:
-            job_exit = JobExit(
-                returncode=job_exit.returncode,
+        if self._event_failure is not None:
+            job_exit = replace(
+                job_exit,
                 message=f"評価イベントを反映できませんでした: {self._event_failure}",
                 protocol_error=True,
             )

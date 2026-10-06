@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QDoubleSpinBox, QMessageBox, QSpinBox
 
 from foam_cell_analysis.gui.navigation import PageId
 from foam_cell_analysis.gui.theme import Color
+from foam_cell_analysis.services.models import JobExit, TrainingOutcome
 
 
 def queue_value(queue, row, column):
@@ -501,6 +502,50 @@ def test_failed_retry_preparation_does_not_conclude_previous_attempt(shell, monk
         entry.queue_id == reservation.queue_id and entry.status == "failed"
         for entry in backend.list_training_queue()
     )
+
+
+def test_event_failure_preserves_exit_metadata_and_ignores_late_old_job_events(shell, monkeypatch):
+    backend = shell.ctx.backend
+    first = add_queue_item(backend, epochs=2)
+    second = add_queue_item(backend, epochs=2)
+    runner = shell.ctx.training_runner
+    exits = []
+    outcomes = []
+
+    def capture_exit(experiment_id, attempt, job_exit):
+        exits.append((experiment_id, job_exit))
+        return TrainingOutcome(
+            experiment_id,
+            attempt,
+            None,
+            "failed",
+            "error",
+            job_exit.message,
+        )
+
+    monkeypatch.setattr(backend, "conclude_training_run", capture_exit)
+    monkeypatch.setattr(
+        backend,
+        "apply_training_event",
+        lambda *_args: (_ for _ in ()).throw(OSError()),
+    )
+    runner.ended.connect(outcomes.append)
+    first_row = backend.list_training_queue()[0]
+    runner.start(first.experiment_id, first_row.queue_id)
+    old_job = runner.job
+    old_job.event_received.emit({"type": "epoch"})
+    assert outcomes[-1].status == "failed"
+    assert "OSError" in outcomes[-1].message
+    assert exits[0][1].protocol_error
+    assert (exits[0][1].returncode, exits[0][1].process_alive) == (-1, False)
+
+    second_row = backend.list_training_queue()[0]
+    runner.start(second.experiment_id, second_row.queue_id)
+    old_job.event_received.emit({"type": "epoch"})
+    old_job.finished.emit(JobExit(returncode=0))
+    assert runner.experiment_id == second.experiment_id
+    assert len(exits) == 1
+    assert len(outcomes) == 1
 
 
 def test_invalid_queue_config_is_saved_and_reported_instead_of_raising(shell):
