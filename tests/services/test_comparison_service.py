@@ -5,6 +5,7 @@ import csv
 import hashlib
 import json
 import shutil
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -133,6 +134,7 @@ def _write_evaluation(
         "run_id": run_id,
         "candidate_id": candidate_id,
         "evaluation_id": evaluation_id,
+        "created_at": datetime.now().astimezone().isoformat(),
         "input_fingerprint": fingerprint,
         "validation": {"version": version, "item_ids": item_ids},
         "metric": {"id": "cellpose_ap_iou50_95_image_mean_v1"},
@@ -387,6 +389,11 @@ def test_released_candidate_can_be_reevaluated_without_changing_public_release(e
     assert release_path.read_bytes() == before_release
     assert (release_path.parent / "model.pt").read_bytes() == before_weight
     assert service.get_release_record("model_001")["evaluation"]["evaluation_id"] == "eval_001"
+    values = {
+        item.item_id: 2.5 for item in service.dataset_store.select_evaluation_items("val_v000")
+    }
+    service.save_external_analysis(cid, "eval_002", values, software="再評価")
+    assert release_path.read_bytes() == before_release
 
 
 def test_release_archive_delete_preserves_history_and_blocks_routing(env):
@@ -719,6 +726,103 @@ def test_external_analysis_is_validated_and_saved_as_snapshots(env):
     assert len(service.list_external_results(cid)) == 3
 
 
+def test_rejected_candidate_keeps_external_analysis_editable(env):
+    service, _training = env
+    cid = service.add_candidate("exp_0001", 1, _default_config(service).config_id).candidate_id
+    _write_evaluation(service, cid, "eval_001")
+    service.reject_candidate(cid)
+
+    assert service.external_analysis_editable(cid, "eval_001")
+    saved = service.save_external_analysis(cid, "eval_001", {"val_v000_0": 12.0})
+    assert saved.status == "rejected"
+    assert service.list_external_results(cid)[-1]["values"] == {"val_v000_0": 12.0}
+
+
+def test_broken_external_record_cannot_be_overwritten(env):
+    service, _training = env
+    cid = service.add_candidate("exp_0001", 1, _default_config(service).config_id).candidate_id
+    _write_evaluation(service, cid, "eval_001")
+    external_path = service.candidates_root / cid / "external.json"
+    external_path.write_bytes(b"{broken external")
+
+    with pytest.raises(ValueError, match="外部解析"):
+        service.save_external_analysis(cid, "eval_001", {"val_v000_0": 1.0})
+
+    assert external_path.read_bytes() == b"{broken external"
+
+
+def test_broken_evaluation_result_does_not_block_candidate_settings_copy(env):
+    service, _training = env
+    candidate = service.add_candidate("exp_0001", 1, _default_config(service).config_id)
+    run_dir = _write_evaluation(service, candidate.candidate_id, "eval_001")
+    result_path = run_dir / "result.json"
+    result_path.write_bytes(b"{broken result")
+    original_candidate = (
+        service.candidates_root / candidate.candidate_id / "candidate.json"
+    ).read_bytes()
+
+    service.recover_evaluations()
+    copied = service.copy_candidate_settings(candidate.candidate_id)
+
+    assert copied.candidate_id != candidate.candidate_id
+    assert copied.status == "candidate"
+    assert copied.evaluations == {}
+    assert result_path.read_bytes() == b"{broken result"
+    assert (
+        service.candidates_root / candidate.candidate_id / "candidate.json"
+    ).read_bytes() == original_candidate
+
+
+def test_candidate_with_malformed_source_protects_experiment_and_weights(env):
+    service, _training = env
+    candidate = service.add_candidate("exp_0001", 1, _default_config(service).config_id)
+    path = service.candidates_root / candidate.candidate_id / "candidate.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["source"] = []
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+    assert service.experiment_reference_reason("exp_0001")
+    assert service.protected_final_reason("exp_0001", 1)
+
+
+def test_released_weight_copy_can_seed_new_candidate_when_training_weight_is_pruned(env):
+    service, _training = env
+    candidate = service.add_candidate("exp_0001", 1, _default_config(service).config_id)
+    _write_evaluation(service, candidate.candidate_id, "eval_001")
+    service.release_candidate(candidate.candidate_id, "eval_001")
+    original = service.get_candidate_record(candidate.candidate_id)
+    original_bytes = (
+        service.candidates_root / candidate.candidate_id / "candidate.json"
+    ).read_bytes()
+    source_path = service._weights_path(original["source"])
+    source_path.unlink()
+    service.recovery_issues[candidate.candidate_id] = ("unrecoverable", "評価履歴を読めません")
+
+    copied = service.copy_candidate_settings(candidate.candidate_id)
+
+    copied_record = service.get_candidate_record(copied.candidate_id)
+    assert copied_record["source"]["weights"]["release_model_id"] == "model_001"
+    assert service._weights_path(copied_record["source"]).is_file()
+    assert (
+        service.candidates_root / candidate.candidate_id / "candidate.json"
+    ).read_bytes() == original_bytes
+
+
+def test_candidate_list_tolerates_malformed_nested_snapshot_values(env):
+    service, _training = env
+    candidate = service.add_candidate("exp_0001", 1, _default_config(service).config_id)
+    path = service.candidates_root / candidate.candidate_id / "candidate.json"
+    value = json.loads(path.read_text("utf-8"))
+    value["source"] = []
+    value["oof"] = []
+    value["effective_params"] = []
+    path.write_text(json.dumps(value), encoding="utf-8")
+
+    listed = service.list_candidates()
+
+    assert [item.candidate_id for item in listed] == [candidate.candidate_id]
+
+
 def _rewrite_result(run_dir, mutate):
     path = run_dir / "result.json"
     result = json.loads(path.read_text("utf-8"))
@@ -920,3 +1024,111 @@ def test_released_model_without_recorded_applicability_is_not_matching(env):
     record["oof"].pop("reason")
     path.write_text(json.dumps(record), "utf-8")
     assert service.list_released_models()[0].oof_applicability == ""
+
+
+@pytest.mark.parametrize(
+    "case", ["staging_only", "saved_only", "neither", "both", "staging_mismatch"]
+)
+def test_release_delete_recovery_preserves_weights_and_lifecycle_on_conflict(env, case):
+    service, _training = env
+    cid = service.add_candidate("exp_0001", 1, _default_config(service).config_id).candidate_id
+    _write_evaluation(service, cid, "eval_001")
+    service.release_candidate(cid, "eval_001")
+    service.set_release_archived("model_001", True)
+    folder = service.releases_root / "model_001"
+    weight = folder / "model.pt"
+    stage = service.releases_root / ".deleting" / "model_001" / "model.pt"
+    recorded_hash = _sha(weight.read_bytes())
+    lifecycle = {
+        "status": "deleting",
+        "previous_status": "archived",
+        "sha256": recorded_hash,
+        "size": weight.stat().st_size,
+        "evaluation": {"evaluation_id": "eval_001"},
+    }
+    service._write_release_lifecycle("model_001", lifecycle)
+    if case in {"staging_only", "both", "staging_mismatch"}:
+        stage.parent.mkdir(parents=True, exist_ok=True)
+        stage.write_bytes(b"mismatched" if case == "staging_mismatch" else weight.read_bytes())
+    if case in {"staging_only", "neither", "staging_mismatch"}:
+        weight.unlink()
+    before_stage = stage.read_bytes() if stage.exists() else None
+    before_weight = weight.read_bytes() if weight.exists() else None
+
+    recovered = service.recover_release_deletions()
+    after = service._release_lifecycle("model_001")
+    if case == "neither":
+        assert recovered == ["model_001"] and after["status"] == "deleted"
+        assert after["sha256"] == recorded_hash and after["evaluation"] == lifecycle["evaluation"]
+    elif case in {"both", "staging_mismatch"}:
+        assert recovered == [] and after == {"schema": 1, "model_id": "model_001", **lifecycle}
+        assert (
+            weight.read_bytes() == before_weight
+            if before_weight is not None
+            else not weight.exists()
+        )
+        assert stage.read_bytes() == before_stage
+    else:
+        assert recovered == ["model_001"] and after["status"] == "archived"
+        assert weight.read_bytes() == before_weight or weight.read_bytes() == before_stage
+        assert _sha(weight.read_bytes()) == recorded_hash
+
+
+def test_release_delete_recovery_rejects_reparse_point_without_touching_weight(env, monkeypatch):
+    from types import SimpleNamespace
+
+    service, _training = env
+    cid = service.add_candidate("exp_0001", 1, _default_config(service).config_id).candidate_id
+    _write_evaluation(service, cid, "eval_001")
+    service.release_candidate(cid, "eval_001")
+    service.set_release_archived("model_001", True)
+    weight = service.releases_root / "model_001" / "model.pt"
+    before = weight.read_bytes()
+    lifecycle = {
+        "status": "deleting",
+        "previous_status": "archived",
+        "sha256": _sha(before),
+        "size": len(before),
+    }
+    service._write_release_lifecycle("model_001", lifecycle)
+    real_lstat = Path.lstat
+
+    def flagged_lstat(path):
+        if path == weight:
+            return SimpleNamespace(st_mode=0, st_file_attributes=0x400)
+        return real_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", flagged_lstat)
+    assert service.recover_release_deletions() == []
+    assert weight.read_bytes() == before
+    assert service._release_lifecycle("model_001")["status"] == "deleting"
+
+
+def test_release_delete_recovery_saved_weight_hash_mismatch_stays_blocked(env):
+    service, _training = env
+    cid = service.add_candidate("exp_0001", 1, _default_config(service).config_id).candidate_id
+    _write_evaluation(service, cid, "eval_001")
+    service.release_candidate(cid, "eval_001")
+    service.set_release_archived("model_001", True)
+    weight = service.releases_root / "model_001" / "model.pt"
+    original = weight.read_bytes()
+    stage = service.releases_root / ".deleting" / "model_001"
+    stage.mkdir(parents=True)
+    lifecycle = {
+        "status": "deleting",
+        "previous_status": "archived",
+        "sha256": _sha(original),
+        "size": len(original),
+        "evaluation": {"evaluation_id": "eval_001"},
+    }
+    service._write_release_lifecycle("model_001", lifecycle)
+    weight.write_bytes(b"altered published weights")
+    altered = weight.read_bytes()
+
+    assert service.recover_release_deletions() == []
+    assert weight.read_bytes() == altered
+    assert service._release_lifecycle("model_001") == {
+        "schema": 1,
+        "model_id": "model_001",
+        **lifecycle,
+    }

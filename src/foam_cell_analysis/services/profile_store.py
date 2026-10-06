@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,8 @@ TRANSFORMS = [
     ("channel_intensity", "チャンネル強度変動", True, 0.0, 0.8, 1.2),
 ]
 
+logger = logging.getLogger(__name__)
+
 
 class ProfileStore:
     """augmentation/*.json を原子的に保存する。"""
@@ -35,6 +38,7 @@ class ProfileStore:
     def __init__(self, workspace_root: str | Path) -> None:
         self.directory = Path(workspace_root) / "augmentation"
         self.profiles: dict[str, AugmentationProfile] = {}
+        self.recovery_issues: dict[str, str] = {}
         self._load_or_seed()
 
     @staticmethod
@@ -68,9 +72,17 @@ class ProfileStore:
         self.directory.mkdir(parents=True, exist_ok=True)
         files = sorted(self.directory.glob("aug_v*.yaml"))
         for path in files:
-            value = yaml.safe_load(path.read_text(encoding="utf-8"))
-            self.profiles[path.stem] = self._profile_from_dict(value)
+            try:
+                value = yaml.safe_load(path.read_text(encoding="utf-8"))
+                if not isinstance(value, dict):
+                    raise ValueError("形式が不正です")
+                self.profiles[path.stem] = self._profile_from_dict(value)
+            except (OSError, ValueError, TypeError, KeyError, yaml.YAMLError) as error:
+                self.recovery_issues[path.stem] = "データ拡張設定を読めません"
+                logger.warning("データ拡張設定を読めません (%s): %s", path, error)
         if not self.profiles:
+            if self.recovery_issues:
+                return
             profile = AugmentationProfile(
                 "aug_v001",
                 "標準",
@@ -88,7 +100,13 @@ class ProfileStore:
 
     def save(self, profile: AugmentationProfile) -> AugmentationProfile:
         saved = copy.deepcopy(profile)
-        number = max((int(key[-3:]) for key in self.profiles), default=0) + 1
+        numbers = [int(key[-3:]) for key in self.profiles if key[-3:].isdigit()]
+        numbers.extend(
+            int(path.stem[-3:])
+            for path in self.directory.glob("aug_v*.yaml")
+            if path.stem[-3:].isdigit()
+        )
+        number = max(numbers, default=0) + 1
         saved.profile_id = f"aug_v{number:03d}"
         saved.base_profile = saved.base_profile or (max(self.profiles) if self.profiles else None)
         saved.used_by_experiments = []

@@ -10,7 +10,6 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QProgressBar,
-    QSizePolicy,
     QStackedWidget,
     QTabBar,
     QTabWidget,
@@ -27,7 +26,7 @@ from .labels import (
 )
 from .navigation import ModeId, PageId
 from .theme import install_input_guard, numeric_font
-from .widgets.marks import LayoutButton, display_mode_label
+from .widgets.marks import display_mode_label
 
 MODE_LABELS = {
     ModeId.DATA_PREPARATION: "データ準備",
@@ -91,21 +90,6 @@ class ModeWindow(QMainWindow):
         top = QHBoxLayout(topbar)
         top.setContentsMargins(16, 0, 16, 0)
         top.setSpacing(4)
-        self.home_button = LayoutButton()
-        self.home_button.setProperty("role", "ghost")
-        home_layout = QHBoxLayout(self.home_button)
-        home_layout.setContentsMargins(4, 2, 4, 2)
-        home_layout.setSpacing(6)
-        self.home_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        home_label = QLabel("⌂ ホーム")
-        home_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        home_layout.addWidget(home_label)
-        self.home_button.setToolTip(
-            f"ホームへ戻る（{ctx.shortcuts.display_key(ctx.shortcuts['home'])}）"
-        )
-        self.home_button.clicked.connect(self.home_requested.emit)
-        top.addWidget(self.home_button, 0, Qt.AlignmentFlag.AlignLeft)
-        top.addSpacing(16)
         self.tabs = QTabWidget()
         self.tabs.setObjectName("modeTabs")
         self.tabs.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -385,18 +369,13 @@ class ModeWindow(QMainWindow):
                             tooltip=f"{tab_label}タブで利用できます",
                         )
         page = self._page_widgets.get(page_id)
-        refresh_menu_actions = getattr(page, "refresh_menu_actions", None)
-        if callable(refresh_menu_actions):
-            refresh_menu_actions()
-        elif callable(getattr(page, "_update_buttons", None)):
-            page._update_buttons()
-        elif callable(getattr(page, "_update_thumbnail_action", None)):
-            page._update_thumbnail_action()
-        elif callable(getattr(page, "_show_model_detail", None)):
-            page._show_model_detail()
-            update_routing = getattr(page, "_update_routing_rows", None)
-            if callable(update_routing):
-                update_routing()
+        if page is not None:
+            try:
+                refresh_menu_actions = getattr(page, "refresh_menu_actions", None)
+            except RuntimeError:  # Qt の破棄済み wrapper
+                refresh_menu_actions = None
+            if callable(refresh_menu_actions):
+                refresh_menu_actions()
         for target, action in getattr(self, "_tab_menu_actions", {}).items():
             action.setChecked(target == page_id)
         for menu in self._menus.values():
@@ -477,9 +456,6 @@ class ModeWindow(QMainWindow):
         """共有キー割り当てをホーム操作へ反映する。"""
         self.home_shortcut.setKey(QKeySequence(self.ctx.shortcuts["home"]))
         self._help_shortcut.setKey(QKeySequence(self.ctx.shortcuts["help"]))
-        self.home_button.setToolTip(
-            f"ホームへ戻る（{self.ctx.shortcuts.display_key(self.ctx.shortcuts['home'])}）"
-        )
         if self.mode != ModeId.INFERENCE:
             self._install_page_menu(self.page_ids[self.tabs.currentIndex()])
             self._home_menu_action.setText(

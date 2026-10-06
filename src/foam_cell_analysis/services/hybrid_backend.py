@@ -88,10 +88,10 @@ class HybridBackend:
     # ---- 起動時の復旧（学習 5.4・比較 7.6・13.3） ----
 
     def recover(self):
-        """学習、比較（一時ファイル・リリース）、評価の順に起動時の復旧を行う。"""
+        """学習と評価の照合を先に行い、保護対象を除いて比較を復旧する。"""
         outcomes = self.training.recover()
-        self.comparison.recover()
         self.comparison.recover_evaluations()
+        self.comparison.recover()
         return outcomes
 
     @property
@@ -101,6 +101,29 @@ class HybridBackend:
             *getattr(self.training, "recovery_blockers", []),
             *getattr(self.comparison, "recovery_blockers", []),
         ]
+
+    def recovery_report(self) -> dict[str, Any]:
+        return {
+            "training": dict(self.training.recovery_issues),
+            "comparison": dict(self.comparison.recovery_issues),
+            "blockers": self.recovery_blockers,
+        }
+
+    def _guard_new_compute(self) -> None:
+        if self.recovery_blockers:
+            raise ValueError("前回の処理を確認できないため、新しい学習・評価を開始できません")
+
+    def start_training(self, config, experiment_id=None):
+        self._guard_new_compute()
+        return self.training.start_training(config, experiment_id)
+
+    def take_next_training_queue_item(self):
+        self._guard_new_compute()
+        return self.training.take_next_training_queue_item()
+
+    def prepare_training_run(self, experiment_id, queue_id=None, retry=False):
+        self._guard_new_compute()
+        return self.training.prepare_training_run(experiment_id, queue_id, retry)
 
     # ---- 評価中かどうか（EvaluationRunner から受け取る） ----
 
@@ -249,6 +272,9 @@ class HybridBackend:
         """試行を明示して比較候補を作る（5.3）。"""
         return self.comparison.add_candidate(experiment_id, attempt, inference_config_id, comment)
 
+    def copy_candidate_settings(self, candidate_id):
+        return self.comparison.copy_candidate_settings(candidate_id)
+
     def reject_candidate(self, candidate_id):
         return self.comparison.reject_candidate(candidate_id)
 
@@ -258,6 +284,7 @@ class HybridBackend:
     # ---- 評価（7 章） ----
 
     def prepare_evaluation_run(self, candidate_id):
+        self._guard_new_compute()
         return self.comparison.prepare_evaluation_run(candidate_id)
 
     def record_evaluation_process(self, candidate_id, evaluation_id, pid, creation_time):
@@ -296,55 +323,14 @@ class HybridBackend:
         """外部解析（画像ごとの円相当径の中央値）を評価 ID 付きで保存する。"""
         return self.comparison.save_external_analysis(candidate_id, evaluation_id, values, **kwargs)
 
+    def external_analysis_editable(self, candidate_id, evaluation_id):
+        return self.comparison.external_analysis_editable(candidate_id, evaluation_id)
+
     # ---- 抽出結果出力（12 章） ----
 
     def _export_source(self, candidate_id: str, evaluation_id: str, item_ids: list[str] | None):
-        """評価の記録から ExportSource を作る。未完了・破損・対象外の画像は ValueError。"""
-        from foam_cell_analysis.inference.mask_export import ExportSource
-        from foam_cell_analysis.services.comparison_service import resolve_recorded_path
-        from foam_cell_analysis.training.protocol import read_json
-
-        record = None
-        for version in self.training.dataset_store.list_versions("val"):
-            for item in self.comparison.list_candidate_evaluations(candidate_id, version):
-                if item.evaluation_id == evaluation_id:
-                    record = item
-        if record is None:
-            raise ValueError(f"評価がありません: {candidate_id} / {evaluation_id}")
-        if record.status != "completed":
-            raise ValueError(f"{candidate_id} は評価が完了していないため出力できません")
-        if record.broken:
-            raise ValueError("評価結果のファイルが壊れています。再評価してください")
-        run_dir = self.comparison.evaluation_run_dir(candidate_id, evaluation_id)
-        try:
-            spec = read_json(run_dir / "run_spec.json")
-            result = read_json(run_dir / "result.json")
-            targets = list(spec["validation"]["item_ids"])
-            predictions = result["predictions"]
-        except (OSError, ValueError, KeyError, TypeError) as error:
-            raise ValueError("評価結果のファイルが壊れています。再評価してください") from error
-        if item_ids is not None:
-            missing = [item_id for item_id in item_ids if item_id not in targets]
-            if missing:
-                raise ValueError(
-                    f"{candidate_id} の評価に含まれない画像があります: " + "、".join(missing[:5])
-                )
-            targets = [item_id for item_id in targets if item_id in set(item_ids)]
-        entries = []
-        for item_id in targets:
-            try:
-                entry = predictions[item_id]
-                path = resolve_recorded_path(run_dir, entry["path"])
-                entries.append((item_id, path, int(entry["bytes"]), str(entry["sha256"]).lower()))
-            except (KeyError, TypeError, ValueError) as error:
-                raise ValueError("評価結果のファイルが壊れています。再評価してください") from error
-        return ExportSource(
-            candidate_id,
-            evaluation_id,
-            record.validation_version,
-            record.input_fingerprint or "",
-            entries,
-        )
+        """旧呼び出し・monkeypatch 点を保つ委譲 wrapper。"""
+        return self.comparison.export_source(candidate_id, evaluation_id, item_ids)
 
     def export_particle_masks(self, request, progress, is_cancelled):
         """採用した評価の予測から抽出結果を出力する（ワーカースレッドから呼ぶ）。"""

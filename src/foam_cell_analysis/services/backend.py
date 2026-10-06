@@ -351,6 +351,9 @@ class Backend(Protocol):
     ) -> Candidate:
         """試行を明示して比較候補を追加する。重複は ValueError（5.3）。"""
 
+    def copy_candidate_settings(self, candidate_id: str) -> Candidate:
+        """候補設定から評価状態を引き継がない新しい候補を作る。"""
+
     def create_candidate_snapshot(self, experiment_id: str, attempt: int) -> CandidateSnapshot:
         """候補元の学習時推論設定を取得する。取得不能なら不明値として返す。"""
 
@@ -417,6 +420,9 @@ class Backend(Protocol):
         comment: str | None = None,
     ) -> Candidate:
         """画像ごとの円相当径の中央値を、評価 ID に結び付けて新しい記録として追記する（9.4）。"""
+
+    def external_analysis_editable(self, candidate_id: str, evaluation_id: str) -> bool:
+        """指定評価に外部解析を保存できるかを返す。"""
 
     def export_particle_masks(
         self,

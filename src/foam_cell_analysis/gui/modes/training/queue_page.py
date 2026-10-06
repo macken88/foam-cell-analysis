@@ -270,6 +270,9 @@ class TrainingQueuePage(BasePage):
             note = "\n現在の学習が終わった後でキューを停止します。"
         self.status_line.setText(f"待機 {waiting} 件・{running}{leftovers}{note}")
 
+    def refresh_menu_actions(self) -> None:
+        self._update_buttons()
+
     def _update_buttons(self, *_args) -> None:
         selected = self._selected_ids()
         entries_by_id = {

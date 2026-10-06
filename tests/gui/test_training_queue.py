@@ -2,12 +2,13 @@ import copy
 import time
 
 import pytest
-from PySide6.QtCore import QItemSelection, QItemSelectionModel, Qt
+from PySide6.QtCore import QItemSelection, QItemSelectionModel, QPoint, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QDoubleSpinBox, QMessageBox, QSpinBox
 
 from foam_cell_analysis.gui.navigation import PageId
 from foam_cell_analysis.gui.theme import Color
+from foam_cell_analysis.services.models import JobExit, TrainingOutcome
 
 
 def queue_value(queue, row, column):
@@ -29,6 +30,25 @@ def test_training_queue_tab_and_enqueue_flow(shell, monkeypatch):
     ids = [queue_value(queue, row, 2) for row in range(3)]
     assert len(set(ids)) == 3
     assert all(item.status == "queued" for item in shell.ctx.backend.list_training_queue())
+
+
+def test_queue_take_oserror_hides_path_and_logs_details(shell, monkeypatch, caplog):
+    shell.page(PageId.TRAINING_QUEUE)
+    controller = shell.ctx.queue_controller
+    messages = []
+    shell.ctx.status.message.connect(messages.append)
+
+    def fail_take():
+        raise OSError(r"C:\private\queue\item.json")
+
+    monkeypatch.setattr(shell.ctx.backend, "take_next_training_queue_item", fail_take)
+    controller.start()
+
+    assert messages and "private" not in messages[-1]
+    assert "キュー項目の取得に失敗しました" in messages[-1]
+    assert any(
+        record.exc_info and "item.json" in str(record.exc_info[1]) for record in caplog.records
+    )
 
 
 def test_queue_edit_validation_and_order_operations(shell):
@@ -253,6 +273,78 @@ def test_experiment_list_copies_checked_experiments_into_queue(shell):
     assert experiment.config.values["experiment"]["id"] == original_id
 
 
+def test_experiment_list_copies_legacy_checked_experiment_into_queue(shell):
+    backend = shell.ctx.backend
+    config = backend.default_experiment_config("mask_rcnn")
+    config["data"].pop("cv")
+    config["data"]["split_id"] = "split_001"
+    config["checkpoint"].pop("save_fold_models")
+    config["checkpoint"]["save_best"] = True
+    config["checkpoint"]["save_last"] = True
+    experiment = backend.save_experiment_draft(config)
+    experiment.config.values["data"].pop("cv")
+    experiment.config.values["data"]["split_id"] = "split_001"
+    experiment.config.values["checkpoint"].pop("save_fold_models")
+    experiment.config.values["checkpoint"]["save_best"] = True
+    experiment.config.values["checkpoint"]["save_last"] = True
+    original = copy.deepcopy(experiment.config.values)
+
+    shell.navigate(PageId.EXPERIMENTS)
+    page = shell.page(PageId.EXPERIMENTS)
+    page.refresh()
+    row = next(
+        row
+        for row in range(page.table.rowCount())
+        if page.table.item(row, 1).text() == experiment.experiment_id
+    )
+    rect = page.table.visualItemRect(page.table.item(row, 0))
+    checkbox_pos = rect.topLeft() + QPoint(12, rect.height() // 2)
+    QTest.mouseClick(page.table.viewport(), Qt.MouseButton.LeftButton, pos=checkbox_pos)
+    menu_bar = page.window().menuBar()
+    top = next(action for action in menu_bar.actions() if action.text().startswith("学習"))
+    QTest.mouseClick(menu_bar, Qt.MouseButton.LeftButton, pos=menu_bar.actionGeometry(top).center())
+    menu = top.menu()
+    action = page.action_map["queue_copy"]
+    assert action.isEnabled()
+    QTest.mouseClick(menu, Qt.MouseButton.LeftButton, pos=menu.actionGeometry(action).center())
+
+    queued = shell.ctx.backend.list_training_queue()
+    assert len(queued) == 1
+    assert queued[0].experiment_id != experiment.experiment_id
+    assert queued[0].config.values["data"]["cv"]["n_folds"] == 5
+    assert queued[0].config.values["checkpoint"]["save_fold_models"] is True
+    assert experiment.config.values == original
+
+
+def test_experiment_list_refuses_protected_experiment_queue_copy(shell):
+    backend = shell.ctx.backend
+    experiment = backend.list_experiments()[0]
+    original = copy.deepcopy(experiment.config.values)
+    experiment.recovery_state = "termination_unknown"
+    experiment.recovery_reason = "終了状態を確認できません"
+
+    shell.navigate(PageId.EXPERIMENTS)
+    page = shell.page(PageId.EXPERIMENTS)
+    row = next(
+        row
+        for row in range(page.table.rowCount())
+        if page.table.item(row, 1).text() == experiment.experiment_id
+    )
+    rect = page.table.visualItemRect(page.table.item(row, 0))
+    checkbox_pos = rect.topLeft() + QPoint(12, rect.height() // 2)
+    QTest.mouseClick(page.table.viewport(), Qt.MouseButton.LeftButton, pos=checkbox_pos)
+    menu_bar = page.window().menuBar()
+    top = next(action for action in menu_bar.actions() if action.text().startswith("学習"))
+    QTest.mouseClick(menu_bar, Qt.MouseButton.LeftButton, pos=menu_bar.actionGeometry(top).center())
+    menu = top.menu()
+    action = page.action_map["queue_copy"]
+
+    assert menu.isVisible()
+    assert not action.isEnabled()
+    assert backend.list_training_queue() == []
+    assert experiment.config.values == original
+
+
 def test_training_queue_order_and_page_navigation(shell):
     queue = shell.page(PageId.TRAINING_QUEUE)
     assert queue is not None
@@ -261,7 +353,9 @@ def test_training_queue_order_and_page_navigation(shell):
     assert queue.empty_label.text().startswith("キューは空です")
 
 
-def test_terminal_save_failure_stops_queue_and_reports_reason(shell, qapp, qtbot, monkeypatch):
+def test_terminal_save_failure_stops_queue_and_reports_reason(
+    shell, qapp, qtbot, monkeypatch, caplog
+):
     backend = shell.ctx.backend
     first_config = backend.default_experiment_config("mask_rcnn")
     first_config["training"]["epochs"] = 1
@@ -287,7 +381,11 @@ def test_terminal_save_failure_stops_queue_and_reports_reason(shell, qapp, qtbot
     assert queue.model.rowCount() == 2
     assert backend.get_experiment(second.experiment_id).status == "queued"
     assert "終端状態を保存できないため、キューを停止しました" in shell.status_text.text()
-    assert "status.json の保存に失敗" in shell.status_text.text()
+    assert "status.json の保存に失敗" not in shell.status_text.text()
+    assert "学習結果を保存できませんでした" in shell.status_text.text()
+    assert any(
+        record.exc_info and "status.json" in str(record.exc_info[1]) for record in caplog.records
+    )
 
 
 def _open_context_menu(view, pos):
@@ -429,6 +527,50 @@ def test_failed_retry_preparation_does_not_conclude_previous_attempt(shell, monk
         entry.queue_id == reservation.queue_id and entry.status == "failed"
         for entry in backend.list_training_queue()
     )
+
+
+def test_event_failure_preserves_exit_metadata_and_ignores_late_old_job_events(shell, monkeypatch):
+    backend = shell.ctx.backend
+    first = add_queue_item(backend, epochs=2)
+    second = add_queue_item(backend, epochs=2)
+    runner = shell.ctx.training_runner
+    exits = []
+    outcomes = []
+
+    def capture_exit(experiment_id, attempt, job_exit):
+        exits.append((experiment_id, job_exit))
+        return TrainingOutcome(
+            experiment_id,
+            attempt,
+            None,
+            "failed",
+            "error",
+            job_exit.message,
+        )
+
+    monkeypatch.setattr(backend, "conclude_training_run", capture_exit)
+    monkeypatch.setattr(
+        backend,
+        "apply_training_event",
+        lambda *_args: (_ for _ in ()).throw(OSError()),
+    )
+    runner.ended.connect(outcomes.append)
+    first_row = backend.list_training_queue()[0]
+    runner.start(first.experiment_id, first_row.queue_id)
+    old_job = runner.job
+    old_job.event_received.emit({"type": "epoch"})
+    assert outcomes[-1].status == "failed"
+    assert "OSError" in outcomes[-1].message
+    assert exits[0][1].protocol_error
+    assert (exits[0][1].returncode, exits[0][1].process_alive) == (-1, False)
+
+    second_row = backend.list_training_queue()[0]
+    runner.start(second.experiment_id, second_row.queue_id)
+    old_job.event_received.emit({"type": "epoch"})
+    old_job.finished.emit(JobExit(returncode=0))
+    assert runner.experiment_id == second.experiment_id
+    assert len(exits) == 1
+    assert len(outcomes) == 1
 
 
 def test_invalid_queue_config_is_saved_and_reported_instead_of_raising(shell):

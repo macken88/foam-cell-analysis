@@ -43,6 +43,7 @@ from ....services.comparison_service import (
 )
 from ....services.models import Candidate, EvaluationRecord, Experiment
 from ...context import AppContext
+from ...error_messages import value_error_message
 from ...labels import (
     OOF_NOTE,
     config_key_label,
@@ -79,10 +80,7 @@ def user_message(error: BaseException, fallback: str) -> str:
 
     パスや内部の詳細は「: 」の後ろに入るので出さない。ValueError 以外は fallback。
     """
-    if not isinstance(error, ValueError):
-        return fallback
-    text = str(error).split(": ", 1)[0].strip()
-    return text or fallback
+    return value_error_message(error, fallback)
 
 
 def completed_attempts(experiment: Experiment) -> list[int]:
@@ -527,7 +525,10 @@ class EvaluationDialog(QDialog):
         super().__init__(parent)
         self.ctx, self.candidate, self.record = ctx, candidate, record
         self.evaluation_id = record.evaluation_id
-        self.read_only = read_only or candidate.status == "released"
+        editable = getattr(ctx.backend, "external_analysis_editable", None)
+        self.read_only = read_only or not bool(
+            editable and editable(candidate.candidate_id, record.evaluation_id)
+        )
         self.setWindowTitle(f"評価詳細 - {candidate.candidate_id}")
         self.setMinimumSize(800, 640)
         self.resize(820, 680)

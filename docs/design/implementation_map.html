@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>実装マップ | foam-cell-analysis</title>
+<style>
+:root{color-scheme:light;--ink:#203342;--muted:#586b78;--line:#d5e0e5;--paper:#f4f7f7;--card:#fff;--accent:#176b68}
+*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.75 "Yu Gothic UI",Meiryo,sans-serif}
+main{width:min(100% - 32px,1120px);margin:36px auto 64px}header,.panel{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:24px 28px;margin-bottom:18px}
+h1,h2,h3,p{margin-top:0}h1{font-size:clamp(1.6rem,5vw,2.15rem);line-height:1.35}h2{font-size:1.25rem;margin-bottom:10px}h3{font-size:1.05rem;margin:20px 0 8px}p:last-child{margin-bottom:0}.muted{color:var(--muted)}a{color:var(--accent);overflow-wrap:anywhere}a:focus-visible{outline:3px solid #b24d18;outline-offset:3px;border-radius:2px}code{font-size:.9em;overflow-wrap:anywhere}
+.table-wrap{max-width:100%;overflow-x:auto;border:1px solid var(--line);border-radius:8px}table{width:100%;min-width:860px;border-collapse:collapse;background:#fff}th,td{text-align:left;vertical-align:top;padding:11px 13px;border-bottom:1px solid var(--line)}th{background:#eaf1f1;font-weight:700}tr:last-child td{border-bottom:0}td p{margin:0 0 6px}td p:last-child{margin:0}ul{padding-left:1.25em;margin:6px 0}.boundary{padding:14px 16px;background:#edf5f3;border-left:4px solid var(--accent);border-radius:4px}
+@media(max-width:520px){main{width:calc(100% - 20px);margin:16px auto 40px}header,.panel{padding:18px 15px;border-radius:9px}}
+</style>
+</head>
+<body>
+<main>
+<header>
+<p><a href="../index.html">文書案内へ戻る</a></p>
+<h1>実装マップ</h1>
+<p class="muted">画面上の機能がどのバックエンドで処理されるかを示します。hybridでは学習をTrainingService、比較・評価とリリースをComparisonServiceに委譲します。学習用・検証用データ版の読み込みはDatasetStoreを使い、取り込み・版登録などの編集操作と本番推論はMockBackendの模擬処理です。</p>
+</header>
+<section class="panel">
+<h2>機能とコードの対応</h2>
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th>機能</th>
+<th>処理の実装状況</th>
+<th>モジュール</th>
+<th>仕様 / 設計</th>
+<th>主なテスト</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>学習</td>
+<td>hybridではTrainingServiceが学習データ・実験状態を永続化</td>
+<td><code>services/hybrid_backend.py</code><br><code>services/training_service.py</code></td>
+<td>
+<a href="../specs/foam_cell_segmentation_model_training_spec_ja_v2.html">学習仕様</a><br>
+<a href="training_backend_design.html#s1">学習設計 §1</a>
+</td>
+<td>
+<code>tests/services/test_training_service.py</code>（学習状態の保存・復旧）<br>
+<code>tests/gui/test_training.py</code>（学習画面の操作）
+</td>
+</tr>
+<tr>
+<td>比較・評価</td>
+<td>hybridではComparisonServiceが比較・評価データを永続化。評価は評価プロセスで実行</td>
+<td><code>services/hybrid_backend.py</code><br><code>services/comparison_service.py</code><br><code>inference/run.py</code><br><code>inference/loop.py</code></td>
+<td>
+<a href="../specs/foam_cell_segmentation_model_comparison_release_spec_v2.html">比較・リリース仕様</a><br>
+<a href="comparison_inference_backend_design.html#s7">比較設計 7節</a>
+</td>
+<td>
+<code>tests/services/test_comparison_service.py</code>（候補・評価の保存と読み込み）<br>
+<code>tests/gui/test_comparison.py</code>（比較画面の操作）
+</td>
+</tr>
+<tr>
+<td>外部解析</td>
+<td>値の検証・集計と記録の保存を実装</td>
+<td><code>services/external_analysis.py</code>（検証・集計）<br><code>services/comparison_service.py</code>（評価との照合・保存）</td>
+<td>
+<a href="../specs/foam_cell_segmentation_model_comparison_release_spec_v2.html">比較・リリース仕様</a><br>
+<a href="comparison_inference_backend_design.html#s9">比較設計 9節</a>
+</td>
+<td>
+<code>tests/services/test_comparison_service.py</code>（外部解析の保存・読み込み）<br>
+<code>tests/services/test_mock_backend.py</code>（MockBackendとのAPI互換）
+</td>
+</tr>
+<tr>
+<td>リリース・振り分け</td>
+<td>hybridではComparisonServiceが状態を永続化</td>
+<td><code>services/hybrid_backend.py</code><br><code>services/comparison_service.py</code></td>
+<td>
+<a href="../specs/foam_cell_segmentation_model_comparison_release_spec_v2.html">比較・リリース仕様</a><br>
+<a href="comparison_inference_backend_design.html#s13">比較設計 13節</a> / <a href="comparison_inference_backend_design.html#s14">14節</a>
+</td>
+<td>
+<code>tests/services/test_comparison_service.py</code>（リリース・振り分けの保存）<br>
+<code>tests/gui/test_release.py</code>（リリース画面の操作）
+</td>
+</tr>
+<tr>
+<td>データ準備</td>
+<td>学習用・検証用版の一覧・画像・マスクはDatasetStoreから実データを読み込み。取り込み・版登録などの編集操作はMockBackendの模擬処理</td>
+<td><code>services/hybrid_backend.py</code><br><code>data/dataset_store.py</code><br><code>services/mock/backend.py</code></td>
+<td>
+<a href="../specs/foam_cell_segmentation_data_preparation_spec_v2.html">データ準備仕様</a><br>
+<a href="comparison_inference_backend_design.html#s2">比較設計 2節</a>
+</td>
+<td>
+<code>tests/data/test_dataset_store.py</code>（版の列挙・絞り込み、画像配列の遅延読み込み）<br>
+<code>tests/services/test_mock_backend.py</code>（作業版の取り込み・確定と模擬推論）
+</td>
+</tr>
+<tr>
+<td>本番推論</td>
+<td>MockBackendの模擬処理。実処理への接続は未完了</td>
+<td><code>services/hybrid_backend.py</code><br><code>services/mock/backend.py</code></td>
+<td>
+<a href="../specs/foam_cell_segmentation_app_overview_v2.html">アプリ全体概要</a><br>
+<a href="comparison_inference_backend_design.html#s2">比較設計 2節</a>
+</td>
+<td>
+<code>tests/services/test_mock_backend.py</code>（リリースに依存しない模擬推論結果）
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section class="panel">
+<h2>外部解析の分担</h2>
+<p><code>external_analysis.py</code>は外部解析値の形式判定、入力値検証、全体・分類別の集計を担当します。依存は<code>math</code>と<code>typing.Any</code>だけで、ファイル保存は行いません。</p>
+<p><code>ComparisonService.export_source</code> は候補・評価・保存済み記録から抽出結果出力元を作り、HybridBackend は互換 wrapper で委譲します。Runner は共通 wait helper で終了を確認し、確認済み旧ジョブだけを通知と占有返却の後に遅延破棄します。ファイル hash は torch・GUI 非依存の pure module を共有します。学習と比較で同一の評価既定値、および粒子分割 ID は標準ライブラリだけに依存する <code>utils.backend_contracts</code> が定義し、評価 factory は毎回独立した辞書を返します。ComparisonService は従来の変更可能な <code>LEGACY_TRAINING_EVAL_PARAMS</code> 名を保ち、粒子分割 ID の参照で scipy を eager import しません。</p><p><code>ComparisonService</code>は候補・評価ID・固定検証版との整合を確認し、検証済み値と集計を外部解析記録へ保存します。保存形式と検証内容は<a href="comparison_inference_backend_design.html#s9">比較設計 9.4節</a>を参照してください。</p>
+</section>
+<p class="muted">各テスト欄は関連機能の代表例です。画面モックの確認には<a href="gui_screen_design.html#sec1">GUI画面設計</a>も参照してください。</p>
+
+<section class="panel"><h2>計測メモ（小規模 CSV fixture）</h2><p>2026-10-06 の一時計測では、get_image / get_mask を各20回行い、metadata 20 reads・manifest 40 reads、所要時間はそれぞれ 9.14 ms / 7.95 ms だった。小規模データでの観測値であり、一般的な性能保証ではない。今回、永続 cache や CSV 全体の読み込み構造は変更しない。</p></section>
+</main>
+</body>
+</html>

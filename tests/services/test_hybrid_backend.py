@@ -165,23 +165,42 @@ def test_evaluation_activity_is_passed_to_comparison(hybrid):
 def test_recover_runs_training_comparison_and_evaluation_recovery(hybrid, monkeypatch):
     order = []
     monkeypatch.setattr(hybrid.training, "recover", lambda: order.append("training") or [])
-    monkeypatch.setattr(hybrid.comparison, "recover", lambda: order.append("comparison") or [])
-    monkeypatch.setattr(
-        hybrid.comparison, "recover_evaluations", lambda: order.append("evaluations") or []
-    )
-    hybrid.comparison.recovery_blockers = ["評価 eval_001 を終了できませんでした"]
+
+    def recover_evaluations():
+        order.append("evaluations")
+        hybrid.comparison.recovery_blockers = ["評価 eval_001 を終了できませんでした"]
+        hybrid.comparison.recovery_issues = {
+            "RC-001": ("unconfirmed", hybrid.comparison.recovery_blockers[0])
+        }
+        return []
+
+    def recover_comparison():
+        order.append("comparison")
+        assert hybrid.comparison.recovery_blockers == ["評価 eval_001 を終了できませんでした"]
+        assert hybrid.comparison.recovery_issues["RC-001"][0] == "unconfirmed"
+        return []
+
+    monkeypatch.setattr(hybrid.comparison, "recover", recover_comparison)
+    monkeypatch.setattr(hybrid.comparison, "recover_evaluations", recover_evaluations)
 
     assert hybrid.recover() == []
-    assert order == ["training", "comparison", "evaluations"]
+    assert order == ["training", "evaluations", "comparison"]
     assert hybrid.recovery_blockers == ["評価 eval_001 を終了できませんでした"]
 
 
 def test_export_masks_from_adopted_evaluation_and_old_call_forms(hybrid, tmp_path):
     config = _config(hybrid)
     candidate = hybrid.add_candidate("exp_0001", 1, config.config_id)
-    _write_evaluation(hybrid.comparison, candidate.candidate_id, "eval_001")
+    run_dir = _write_evaluation(hybrid.comparison, candidate.candidate_id, "eval_001")
     adopted = hybrid.get_candidate_evaluation(candidate.candidate_id)
     assert adopted.evaluation_id == "eval_001"
+    record_path = hybrid.comparison.candidates_root / candidate.candidate_id / "candidate.json"
+    weight_path = hybrid.comparison._weights_path(
+        hybrid.comparison.get_candidate_record(candidate.candidate_id)["source"]
+    )
+    protected_bytes = {
+        path: path.read_bytes() for path in (record_path, weight_path, run_dir / "result.json")
+    }
     output = tmp_path / "out"
     output.mkdir()
     progress = []
@@ -201,6 +220,7 @@ def test_export_masks_from_adopted_evaluation_and_old_call_forms(hybrid, tmp_pat
     assert result.n_images == 1
     assert result.folder is not None and (result.folder / "export_info.json").is_file()
     assert progress[-1] == (1, 1)
+    assert {path: path.read_bytes() for path in protected_bytes} == protected_bytes
     labels = hybrid.get_candidate_prediction(candidate.candidate_id, "eval_001", "val_v000_0")
     assert labels.ndim == 2
     released = hybrid.release_candidate(candidate.candidate_id, "eval_001", "採用")
@@ -210,3 +230,54 @@ def test_export_masks_from_adopted_evaluation_and_old_call_forms(hybrid, tmp_pat
     assert applied.assignments["分類A"] == released.model_id
     with pytest.raises(ValueError, match="別の操作"):
         hybrid.apply_routing({"分類A": None}, expected_revision=state.revision)
+
+
+def test_export_source_reads_saved_evaluation_outside_adoption_list(hybrid, monkeypatch):
+    config = _config(hybrid)
+    candidate = hybrid.add_candidate("exp_0001", 1, config.config_id)
+    _write_evaluation(hybrid.comparison, candidate.candidate_id, "eval_001")
+    monkeypatch.setattr(
+        hybrid.training.dataset_store,
+        "list_versions",
+        lambda purpose=None: [] if purpose == "val" else [],
+    )
+
+    source = hybrid._export_source(candidate.candidate_id, "eval_001", ["val_v000_1"])
+
+    assert source.candidate_id == candidate.candidate_id
+    assert source.evaluation_id == "eval_001"
+    assert source.validation_version == "val_v000"
+    assert [entry[0] for entry in source.predictions] == ["val_v000_1"]
+
+
+@pytest.mark.parametrize(
+    ("status", "broken", "item_ids", "message"),
+    [
+        ("running", False, None, "評価が完了していないため出力できません"),
+        ("completed", True, None, "評価結果のファイルが壊れています。再評価してください"),
+        ("completed", False, ["outside"], "評価に含まれない画像があります"),
+    ],
+)
+def test_export_source_rejects_incomplete_broken_and_out_of_range(
+    hybrid, status, broken, item_ids, message
+):
+    candidate = hybrid.add_candidate("exp_0001", 1, _config(hybrid).config_id)
+    run_dir = _write_evaluation(
+        hybrid.comparison,
+        candidate.candidate_id,
+        "eval_001",
+        status=status,
+    )
+    if broken:
+        (run_dir / "result.json").write_text("{broken", encoding="utf-8")
+    with pytest.raises(ValueError, match=message):
+        hybrid._export_source(candidate.candidate_id, "eval_001", item_ids)
+
+
+def test_export_missing_evaluation_keeps_legacy_error_text(hybrid):
+    candidate = hybrid.add_candidate("exp_0001", 1, _config(hybrid).config_id)
+    with pytest.raises(
+        ValueError,
+        match=f"評価がありません: {candidate.candidate_id} / eval_999",
+    ):
+        hybrid._export_source(candidate.candidate_id, "eval_999", None)

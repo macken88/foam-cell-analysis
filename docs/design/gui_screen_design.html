@@ -124,7 +124,7 @@ table.rev{font-size:.92rem}
 .mock .input.focus{border-color:var(--graphite);box-shadow:0 0 0 1px var(--graphite)}
 .mock .warn,.mock td.warn,.mock span.warn{color:var(--error)}
 .mock .err{color:var(--error);font-weight:700}
-/* モードウィンドウの上端: ホーム・タブ（下線式） */
+/* モードウィンドウの上端: タブ（下線式） */
 .mock .m-toolbar{margin:0 0 8px}
 .mock .mtabs{border:0;border-radius:0;gap:2px;align-self:stretch}
 .mock .mtabs span{border:0;padding:4px 12px 5px;color:var(--slate);border-bottom:2px solid transparent}
@@ -303,7 +303,7 @@ table.rev{font-size:.92rem}
 <h2>1. ソース構成</h2>
 <pre><code>src/foam_cell_analysis/
 ├─ __main__.py                 # from .app import main
-├─ app.py                      # QApplication 生成、MockBackend・MainWindow 構築、main()
+├─ app.py                      # バックエンド選択、apply_theme、HomeWindow 構築、main()
 ├─ services/
 │  ├─ __init__.py
 │  ├─ models.py                # ドメインのデータクラス（Qt 非依存）
@@ -314,10 +314,10 @@ table.rev{font-size:.92rem}
 │     └─ synthetic.py          # 気泡風の合成画像・インスタンスマスク生成（numpy）
 └─ gui/
    ├─ theme.py                 # 色・フォントの定義とスタイルシートの生成（2.6）
-   ├─ main_window.py           # サイドバー + QStackedWidget + ステータスバー（v2 で廃止。2.5）
+   ├─ home_window.py           # ホーム画面（WindowManager が管理）
    ├─ context.py               # AppContext（backend, navigator, jobs）
    ├─ navigation.py            # PageId 列挙、Navigator（画面遷移）
-   ├─ jobs.py                  # FakeJob / JobManager（QTimer で進捗を模擬）
+   ├─ jobs.py                  # FakeJob / JobManager（本番推論画面の画面確認用模擬ジョブ）
    ├─ widgets/
    │  ├─ page_base.py          # BasePage（見出し・説明・on_enter）
    │  ├─ form.py               # FormSection, CollapsibleSection, 数値入力ヘルパ
@@ -340,7 +340,7 @@ table.rev{font-size:.92rem}
 <li>ページは表示されるたびに <code>on_enter</code> で backend から最新データを読み直す（画面間の整合はこれで取る）。</li>
 <li>画面遷移は必ず <code>ctx.navigator.navigate(PageId.X, **params)</code> を使う。ページ同士が直接参照し合わない。</li>
 <li>ダイアログは各モードの <code>dialogs.py</code> などに置き、モーダル（<code>exec()</code>）とする。ただし、データ拡張プロファイル編集は大きめのダイアログにする。</li>
-<li>長い処理（取り込み、整合性確認、アーカイブ、学習、評価、粒子解析用画像出力、推論）は <code>FakeJob</code> で進捗を模擬する。</li>
+<li>取り込み・整合性確認・アーカイブ・粒子解析用画像出力・本番推論は MockBackend の模擬処理。学習は TrainingRunner の ProcessTrainingJob / FakeTrainingJob、候補評価は EvaluationRunner の子プロセスが担当する。</li>
 <li>画面遷移してもジョブは継続する（<code>JobManager</code> が保持）。</li>
 <li>実行中ジョブ数をステータスバーに表示する。</li>
 <li>確定済みのもの（データセット版、実験で使用済みのデータ拡張プロファイル、リリース済みモデル）は、GUI 上でも編集不可（読み取り専用表示）にする。</li>
@@ -396,15 +396,15 @@ table.rev{font-size:.92rem}
 <div class="mock"><div class="mock-title">モデル比較・リリース — 気泡インスタンスセグメンテーション</div>
 <div class="mock-body">
 <div class="v27-menubar"><span>ファイル(F)</span><span>表示(V)</span><span>候補(C)</span><span>リリース(R)</span><span>ツール(T)</span><span>ヘルプ(H)</span></div>
-<div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span class="on">リリース候補</span><span>抽出結果比較</span><span>リリース済みモデル・振り分け</span></span><span class="spacer"></span></div>
+<div class="topbar"><span class="mtabs"><span class="on">リリース候補</span><span>抽出結果比較</span><span>リリース済みモデル・振り分け</span></span><span class="spacer"></span></div>
 <div class="panel" style="min-height:140px;display:flex;align-items:center;justify-content:center;color:var(--slate)">作業エリア（ウィンドウの幅をすべて使う）</div>
 <div class="status"><span>RC-004 を追加しました</span><span>実行中ジョブ <span class="num">1</span></span><span>自動保存 <span class="num">10:42:08</span></span></div>
 </div></div>
 <ul>
 <li>モードごとに専用の <code>QMainWindow</code> を持つ。初回は最大化で開き、次回からは前回の位置とサイズで開く。</li>
 <li>1つのモードにつきウィンドウは1つ。開いているモードをもう一度選ぶと、既存のウィンドウを前面に出す。複数のモードのウィンドウを同時に開いて並べられる（例: 学習の進み具合を見ながらデータ準備を進める）。</li>
-<li>ホームから既存モードを開き直す場合と、OS のタスクバーからウィンドウを再度前面に出す場合は、現在のタブを保って表示中のページを更新する。フィルター、選択、編集中の値は各ページの再表示更新で維持する。</li>
-<li>ウィンドウ上部にメニューバー、ホームボタン、モード内のタブを置く。データ準備・モデル学習は「ファイル(F)・編集(E)・表示(V)・モード固有・ツール(T)・ヘルプ(H)」、モデル比較・リリースは編集を省いて「ファイル(F)・表示(V)・候補(C)・リリース(R)・ツール(T)・ヘルプ(H)」。本番推論は現在どおり「ヘルプ(H)」だけ。ホームは「ファイル・ツール・ヘルプ」とする。</li>
+<li>ホームから既存モードを開き直す場合と、OS のタスクバーからウィンドウを再度前面に出す場合は、現在のタブを保って表示中のページを更新する。フィルター、選択、編集中の値は各ページの再表示更新で維持する。モードウィンドウを閉じるとホームを再表示する。</li>
+<li>ウィンドウ上部にメニューバー、モード内のタブを置く。データ準備・モデル学習は「ファイル(F)・編集(E)・表示(V)・モード固有・ツール(T)・ヘルプ(H)」、モデル比較・リリースは編集を省いて「ファイル(F)・表示(V)・候補(C)・リリース(R)・ツール(T)・ヘルプ(H)」。本番推論は現在どおり「ヘルプ(H)」だけ。ホームは「ファイル・ツール・ヘルプ」とする。</li>
 <li>各メニュー項目は改善案 3.4 の構成と区切り位置に従う。ファイルは取り込み・入出力・新規作成とウィンドウ操作、編集は取り消し・選択・検索と行操作、表示はタブ切り替え・絞り込み・列・画像表示、モード固有メニューは各モードの確定・振り分け・キュー・候補・リリース操作、ツールは設定とキー割り当て、ヘルプはキー一覧を持つ。学習キューの操作は「学習(L)」、振り分け変更の破棄は「リリース(R)」に置く。</li>
 <li>割り当てキーを項目名の右に表示し、キー設定の変更に追従させる。キー処理は既存の ShortcutMap を使い、メニュー項目に別のキー処理を登録しない。選択行やタブで使えない項目は無効にし、理由または対象タブをツールチップに示す。使える項目には無効理由を表示しない。「表示」のタブ項目は選択するとそのタブへ移動する。画像分類と実験群のサブメニューは現在のデータ・絞り込み候補から作り、絞り込み項目は画面のコンボと連動する。表示する列の項目名は対象タブを含め、現在のタブの列だけを有効にする。</li>
 <li>メニュー、ボタン、右クリックは同じ QAction または同じ処理を使う。表の右クリックは行を選択に加えてからメニューを開き、すでに選択中の行なら複数選択を保つ。各タブの右端の主操作部品はタブ切り替えに応じて入れ替える。</li>
@@ -453,18 +453,8 @@ table.rev{font-size:.92rem}
 <tr><td>どのウィンドウ</td><td><code>Ctrl</code>+<code>H</code></td><td>ホーム</td><td>—</td></tr>
 </tbody></table></div>
 
-<h3 id="sec2-5">2.5 実装への影響</h3>
-<ul>
-<li><code>gui/main_window.py</code>（サイドバー＋スタック）を廃止し、次の3つに分ける。
-  <ul>
-  <li><code>gui/home_window.py</code>: ホームウィンドウ</li>
-  <li><code>gui/mode_window.py</code>: タブを持つ共通のモードウィンドウ</li>
-  <li><code>gui/window_manager.py</code>: <code>PageId</code> を「ウィンドウとタブ」に対応付け、開く・前面に出す・位置の保存を行う</li>
-  </ul></li>
-<li><code>Navigator</code>・<code>AppContext</code>・<code>JobManager</code> と各ページのクラス（<code>on_enter</code> を含む）は変更しない。ページの見出しは <code>BasePage</code> の引数で非表示にできるようにする。</li>
-<li><code>tests/gui/test_main_window.py</code> と E2E テストは、ウィンドウをまたぐ遷移に合わせて書き換える。</li>
-</ul>
-
+<h3 id="sec2-5">2.5 現行ウィンドウ構成</h3>
+<p>HomeWindow・ModeWindow・WindowManager が画面遷移を管理する。Navigator と AppContext は画面から backend やジョブ管理への接続を提供する。ウィンドウ横断の操作テストは <code>tests/gui/test_windows.py</code> に置く。</p>
 <h3 id="sec2-6">2.6 見た目の設計（全画面共通）<span class="badge">v2.5</span></h3>
 <p>このアプリで一日の大半を占めるのは、数百〜数千枚の画像を見て用途・分類・品質を決める作業と、学習・評価の数字を見比べる作業である。見た目はこの2つを速く、間違えずに行えることを優先し、装飾で作業エリアを狭めない。本書の画面モックはすべてこの節の見た目で描いている（ブラウザ上の近似であり、Qt での実際の表示とは細部が異なる）。</p>
 
@@ -561,7 +551,7 @@ table.rev{font-size:.92rem}
 <ul>
 <li><code>gui/theme.py</code> を追加する。
   <ul>
-  <li>色とフォントを定数で持ち（<code>Color.TRAIN</code>、<code>Font.NUMERIC</code> など）、<code>build_stylesheet()</code> でアプリ全体のスタイルシートを作る。<code>app.py</code> の <code>apply_style</code> はこれを呼ぶだけにする。</li>
+  <li>色とフォントを定数で持ち（<code>Color.TRAIN</code>、<code>Font.NUMERIC</code> など）、<code>build_stylesheet()</code> でアプリ全体のスタイルシートを作る。<code>app.py</code> は <code>apply_theme</code> を呼び、テーマ適用後に HomeWindow を構築する。</li>
   <li>フォントが見つからない場合の代わり（BIZ UDPゴシック → Yu Gothic UI、Bahnschrift → Segoe UI）を <code>QFontDatabase</code> で確かめて選ぶ。</li>
   </ul></li>
 <li>ページ内で直接 <code>setStyleSheet</code> で色を書くのをやめ、動的プロパティで名前付きのスタイルを指定する: <code>role="note"</code>（補足文）、<code>role="readonly"</code>、<code>role="numeric"</code>、<code>state="ok" | "error" | "changed"</code>、<code>usage="train" | "val" | "unassigned" | "excluded"</code>。</li>
@@ -576,11 +566,12 @@ table.rev{font-size:.92rem}
 <h3 id="sec3-1">3.1 FakeJob / JobManager（<code>gui/jobs.py</code>）</h3>
 <ul>
 <li><code>FakeJob(QObject)</code>: <code>name</code>, <code>total_steps</code>, <code>interval_ms</code> を持つ。シグナルは <code>progress(int step, int total, str message)</code>, <code>finished(bool ok, str message)</code>。</li>
-<li>1ステップごとに <code>on_step(step)</code> コールバックを呼ぶ。backend の状態更新に使う。</li>
+<li>各 interval で <code>on_step(step)</code> を呼び、進捗を通知する。本番推論画面の模擬ジョブから使用する。</li>
 <li><code>cancel()</code> あり。</li>
-<li><code>JobManager(QObject)</code>: ジョブを保持し、<code>jobs_changed</code> シグナルでステータスバーの件数を更新する。</li>
+<li><code>JobManager(QObject)</code>: <code>start(job)</code> で FakeJob を保持して開始し、完了時に除く。<code>running_count</code> と <code>jobs_changed</code> を画面に提供する。学習・評価の件数は TrainingRunner / EvaluationRunner の busy 状態から数える。</li>
+<li>比較画面のファイル出力は <code>gui/modes/comparison/dialogs.py</code> の <code>WorkerJob</code> が担当し、FakeJob とは別クラス。</li>
 <li>速度係数: 環境変数 <code>FOAM_MOCK_SPEED</code>（既定 1.0）で <code>interval_ms</code> を割る。テストでは大きな値にして高速化する。</li>
-<li>進捗表示: <code>JobProgressDialog</code>（ページ内でジョブを開始し、進捗を見せたい場合に使う。キャンセルボタン付き・非モーダル可）。</li>
+<li>進捗表示: <code>JobProgressDialog</code> は現行画面では使用していない。</li>
 </ul>
 <h3 id="sec3-2">3.2 画像表示（<code>gui/widgets/image_view.py</code>, <code>image_convert.py</code>）</h3>
 <ul>
@@ -678,7 +669,7 @@ table.rev{font-size:.92rem}
 <div class="mock">
 <div class="mock-title">データ準備 — 気泡インスタンスセグメンテーション</div>
 <div class="mock-body">
-<div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span class="on">作業中データ</span><span>データセット版履歴</span></span>
+<div class="topbar"><span class="mtabs"><span class="on">作業中データ</span><span>データセット版履歴</span></span>
 <span class="spacer"></span><span class="small">ベース 学習 <span class="num">train_v003</span> / 検証 <span class="num">val_v003</span></span><span class="err">⚠ エラー 2 件を直すと確定できます</span><span class="btn primary dis">確定</span></div>
 <div class="m-chips"><span class="small">用途</span>
 <span class="chip on plain">すべて <b>612</b></span><span class="chip gray">未振り分け <b>23</b></span><span class="chip blue">学習 <b>489</b></span><span class="chip orange">検証 <b>96</b></span><span class="chip strike">不採用 <b>4</b></span></div>
@@ -1032,7 +1023,7 @@ table.rev{font-size:.92rem}
 <h3 id="sec5-1">5.1 レイアウト</h3>
 <p>フォーム上部に、白い背景・枠・左側のアクセント線を持つカードで、データセット版・画像分類・品質条件と見込み件数、交差検証の分割数・有効な層別とフォルダ単位の条件・各分割の検証件数、モデルと事前学習済み重み、エポック数・バッチサイズ・学習率を要約する。入力変更に追従して更新する。設定検証に警告またはエラーがあれば要約の右側に件数を示し、選ぶと検証結果を開く。設定変更時は古い検証結果を消す。</p>
 <div class="mock"><div class="mock-title">モデル学習 — 学習設定（実装）</div><div class="mock-body">
-<div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span class="on">学習設定</span><span>学習キュー</span><span>実験一覧</span></span></div>
+<div class="topbar"><span class="mtabs"><span class="on">学習設定</span><span>学習キュー</span><span>実験一覧</span></span></div>
 <div class="v27-summary"><span>データ <span class="num">train_v003</span>・全分類・すべて・学習 <b class="num">515</b> 件</span><span>交差検証 <span class="num">5</span> 分割・層別・フォルダ単位・各検証 約 <span class="num">103</span> 件</span><span>モデル Mask R-CNN（COCO）</span><span>学習 <span class="num">100</span> エポック・バッチ <span class="num">8</span>・学習率 <span class="num">0.0001</span></span><span class="spacer"></span><span class="btn">設定プレビュー（YAML）</span></div>
 <div class="v27-form2"><div><p class="v27-h">実験</p><div class="row"><span>実験群</span><span class="sel-combo">foam_study ▾</span></div><div class="row"><span>実験識別子</span><span class="input ro num">exp_0046</span></div><div class="row"><span>説明</span><span class="input"></span></div><p class="v27-h">データセット・交差検証</p><div class="row"><span>データセット版</span><span class="sel-combo num">train_v003 ▾</span></div><div class="row"><span>画像分類 / 品質条件</span><span class="sel-combo">全分類 ▾　すべて ▾</span></div><div class="row"><span>分割数・条件・乱数シード</span><span class="input num">5</span>　☑ 画像分類で層別　☑ 取り込み元フォルダ単位</div><p class="small">交差検証は学習用版だけを使い、検証用版は含めない</p><p class="v27-h">共通学習設定</p><div class="row"><span>エポック / バッチ</span><span class="input num">100</span>　<span class="input num">8</span></div><div class="row"><span>学習率</span><span class="input num">0.0001</span></div></div>
 <div><p class="v27-h">モデル種類・固有設定</p><div class="row"><span>モデル種類</span><span class="sel-combo">Mask R-CNN ▾</span></div><div class="row"><span>事前学習済み重み</span><span class="sel-combo">COCO ▾</span></div><div class="row"><span>画像平均・標準偏差</span><span class="small">重みから自動決定</span></div><div class="row"><span>アンカーサイズ</span><span class="input num">32, 64, 128, 256, 512</span></div><div class="row"><span>アンカー縦横比</span><span class="input num">0.5, 1.0, 2.0</span></div><p class="small">▶ 前処理 詳細設定　▶ RPN 詳細設定　▶ ROI 詳細設定</p><p class="v27-h">データ拡張</p><div class="row"><span>プロファイル</span><span class="sel-combo num">aug_v003 ▾</span> <span class="btn">データ拡張を設定</span></div><p class="v27-h">途中保存モデル / 評価</p><div class="row"><span>保存間隔 / 検証間隔</span><span class="input num">10</span>　<span class="input num">5</span> エポック</div><div class="row"><span>エポックの選び方</span><span class="small">OOF AP 最大</span></div></div></div>
@@ -1089,7 +1080,7 @@ table.rev{font-size:.92rem}
 </section>
 <section class="card" id="sec5-queue"><h3 id="sec5-3">5.3 学習キュー（<code>PageId.TRAINING_QUEUE</code>）</h3>
 <p>学習設定・学習キュー・実験一覧の順にタブを置く。学習設定の「キューに追加」は検証後に末尾へ登録し、画面遷移せず次の実験 ID を採番する。実験一覧の「複製してキューに追加」も選択した設定を新しい ID で登録する。実験一覧の「同じ設定でやり直す」は同じ実験 ID の新しい実行試行であり、学習中は試行番号付きの読み取り専用予約行としてキューへ入る。予約の削除は試行の記録を変更しない。</p>
-<div class="mock"><div class="mock-title">モデル学習 — 学習キュー</div><div class="mock-body"><div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span>学習設定</span><span class="on">学習キュー</span><span>実験一覧</span></span></div><div class="panel"><p>待機 3 件・実行中 exp_0047（分割 2/5・エポック 12/40） <span class="spacer"></span><span class="btn">表示する列 ▾</span> <span class="btn primary">▶ キューをすべて実行</span> <span class="btn">この学習の後で停止</span> <span class="btn">■ 今すぐ停止</span></p><table><thead><tr><th>順番</th><th>状態</th><th>実験識別子</th><th>説明</th><th>実験群</th><th>データセット版</th><th>モデル種類</th><th>エポック数</th><th>学習率</th><th>プロファイル</th></tr></thead><tbody><tr><td>1</td><td>実行中<br><span style="display:block;height:3px;background:#D3D9DE"><span style="display:block;height:3px;width:30%;background:#1C2630"></span></span></td><td>exp_0047</td><td>分類A / 基準設定</td><td>foam_study</td><td>train_v004</td><td>Mask R-CNN</td><td>100</td><td>1e-04</td><td>aug_v003</td></tr><tr><td>2</td><td>待機</td><td>exp_0048</td><td>サイズ比較</td><td>foam_study</td><td>train_v004</td><td>Cellpose</td><td>80</td><td>1e-03</td><td>aug_v003</td></tr></tbody></table><p class="small">停止予約後は現在の学習を完了して停止。複製・削除・並べ替え・設定編集・「終了・中断した行を削除」は「学習」メニューまたは右クリックから行う。今すぐ停止は確認後、学習とキューを停止する。失敗・中断後も次の待機行へ進む。</p></div></div></div>
+<div class="mock"><div class="mock-title">モデル学習 — 学習キュー</div><div class="mock-body"><div class="topbar"><span class="mtabs"><span>学習設定</span><span class="on">学習キュー</span><span>実験一覧</span></span></div><div class="panel"><p>待機 3 件・実行中 exp_0047（分割 2/5・エポック 12/40） <span class="spacer"></span><span class="btn">表示する列 ▾</span> <span class="btn primary">▶ キューをすべて実行</span> <span class="btn">この学習の後で停止</span> <span class="btn">■ 今すぐ停止</span></p><table><thead><tr><th>順番</th><th>状態</th><th>実験識別子</th><th>説明</th><th>実験群</th><th>データセット版</th><th>モデル種類</th><th>エポック数</th><th>学習率</th><th>プロファイル</th></tr></thead><tbody><tr><td>1</td><td>実行中<br><span style="display:block;height:3px;background:#D3D9DE"><span style="display:block;height:3px;width:30%;background:#1C2630"></span></span></td><td>exp_0047</td><td>分類A / 基準設定</td><td>foam_study</td><td>train_v004</td><td>Mask R-CNN</td><td>100</td><td>1e-04</td><td>aug_v003</td></tr><tr><td>2</td><td>待機</td><td>exp_0048</td><td>サイズ比較</td><td>foam_study</td><td>train_v004</td><td>Cellpose</td><td>80</td><td>1e-03</td><td>aug_v003</td></tr></tbody></table><p class="small">停止予約後は現在の学習を完了して停止。複製・削除・並べ替え・設定編集・「終了・中断した行を削除」は「学習」メニューまたは右クリックから行う。今すぐ停止は確認後、学習とキューを停止する。失敗・中断後も次の待機行へ進む。</p></div></div></div>
 <p>1行を1実験として保存し、状態は待機・実行中・完了・失敗・中断・設定エラーで示す。設定編集列は分類ごとに表示を切り替え、選択肢は学習設定と同じ Backend オプションを使う。モデルにない設定セルは無効にする。セル編集ごとに設定を検証し、エラーは行頭の注意印とツールチップで示す。未表示の詳細設定は行のダブルクリックまたは編集ボタンから学習設定へ渡し、「キューに保存」または「キャンセル」する。</p>
 <p>実行はGPU 1台を前提に一度に1件とし、失敗・中断後も次の待機行へ進む。設定エラー行は飛ばして待機リストに残す。「▶ キューをすべて実行」「この学習の後で停止」「■ 今すぐ停止」を別操作としてボタンと学習メニューに置く。今すぐ停止は確認後に実行中学習へ停止を依頼し、キューの続行も止める。実験一覧の停止操作名も「■ 今すぐ停止」とする。複製・削除・並べ替えを提供し、Ctrl+↑ / Ctrl+↓ でも順番を変更できる。状態、選択行、スクロール、列幅と列表示を保持する。</p>
 <ul>
@@ -1102,7 +1093,7 @@ table.rev{font-size:.92rem}
 <h3 id="sec6-1">6.1 レイアウト</h3>
 <div class="mock"><div class="mock-title">モデル学習 — 気泡インスタンスセグメンテーション</div>
 <div class="mock-body">
-<div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span>学習設定</span><span class="on">実験一覧</span></span><span class="spacer"></span></div>
+<div class="topbar"><span class="mtabs"><span>学習設定</span><span class="on">実験一覧</span></span><span class="spacer"></span></div>
 <div class="m-toolbar"><span class="sel-combo">実験群: すべて ▾</span><span class="sel-combo">モデル: すべて ▾</span><span class="sel-combo">状態: すべて ▾</span><span class="spacer"></span><span class="btn primary">モデル比較へ送る</span></div>
 <div class="table-wrap"><table>
 <thead><tr><th></th><th>ID</th><th>実験群</th><th>モデル</th><th>データセット</th><th>データ拡張</th><th>状態</th><th class="n">進捗</th><th class="n">OOF AP</th><th>途中保存モデル</th></tr></thead>
@@ -1125,7 +1116,7 @@ table.rev{font-size:.92rem}
 <p>上に絞り込み（実験群、モデル、状態）、中央に表、下に詳細タブ（上下 <code>QSplitter</code>）。</p>
 <p>表の列: 選択（チェック）、ID、実験群、モデル、データセット、データ拡張、状態（下書き / 実行中 / 完了 / 失敗 / 中断）、進捗（「分割 2/5・epoch 20/100」または「最終学習・epoch 40/80」）、OOF AP、途中保存モデル（最新）。</p>
 <ul>
-<li>実行中の行は FakeJob の進捗に合わせて自動更新する（<code>JobManager</code> のシグナル、または 1 秒ごとの再読込）。</li>
+<li>実行中の行は TrainingRunner の進捗イベントに合わせて自動更新する（<code>JobManager</code> のシグナル、または 1 秒ごとの再読込）。</li>
 </ul>
 <p>ボタン:
 - [選択した実験を比較]（チェック2件以上）: 実験比較ダイアログ。
@@ -1215,7 +1206,7 @@ table.rev{font-size:.92rem}
 <h3 id="sec7-1">7.1 レイアウト</h3>
 <div class="mock"><div class="mock-title">モデル比較・リリース — 気泡インスタンスセグメンテーション</div>
 <div class="mock-body">
-<div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span class="on">リリース候補</span><span>抽出結果比較</span><span>リリース済みモデル・振り分け</span></span><span class="spacer"></span></div>
+<div class="topbar"><span class="mtabs"><span class="on">リリース候補</span><span>抽出結果比較</span><span>リリース済みモデル・振り分け</span></span><span class="spacer"></span></div>
 <div class="m-toolbar"><span class="btn">候補追加</span><span class="btn">設定を変えて候補追加</span><span class="btn primary">評価実行 / 評価中止</span><span class="sel-combo">検証版: すべて ▾</span><span class="sel-combo">評価状態: すべて ▾</span><span class="sel-combo">採用状態: 候補・採用 ▾</span></div>
 <div class="table-wrap"><table>
 <thead><tr><th>選択</th><th>候補ID</th><th>モデル</th><th>実験</th><th>学習モデル</th><th>推論設定</th><th>検証版</th><th class="n">検証 AP</th><th class="n">学習時 OOF AP</th><th>評価状態</th><th>採用</th><th>外部解析</th><th>コメント</th></tr></thead>
@@ -1291,7 +1282,7 @@ table.rev{font-size:.92rem}
 <p>仕様: モデル比較・リリース仕様 10章・14章。</p>
 <div class="mock"><div class="mock-title">モデル比較・リリース — 気泡インスタンスセグメンテーション</div>
 <div class="mock-body">
-<div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span>リリース候補</span><span class="on">抽出結果比較</span><span>リリース済みモデル・振り分け</span></span><span class="spacer"></span></div>
+<div class="topbar"><span class="mtabs"><span>リリース候補</span><span class="on">抽出結果比較</span><span>リリース済みモデル・振り分け</span></span><span class="spacer"></span></div>
 <div class="m-toolbar"><span class="small">検証用データセット <span class="num">val_v003</span></span><span class="sel-combo">画像分類: すべて ▾</span><span class="sel-combo num">IMG-000123 ▾</span><span class="small num">12 / 233</span>
 <span class="spacer"></span><span class="mtabs"><span>原画像</span><span class="on">抽出結果</span></span><span class="btn">+ 候補</span><span class="btn">候補を外す</span></div>
 <div class="m-split" style="grid-template-columns:repeat(2,1fr)">
@@ -1330,7 +1321,7 @@ table.rev{font-size:.92rem}
 <p>上下 <code>QSplitter</code>。</p>
 <div class="mock"><div class="mock-title">モデル比較・リリース — 気泡インスタンスセグメンテーション</div>
 <div class="mock-body">
-<div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="mtabs"><span>リリース候補</span><span>抽出結果比較</span><span class="on">リリース済みモデル・振り分け</span></span><span class="spacer"></span></div>
+<div class="topbar"><span class="mtabs"><span>リリース候補</span><span>抽出結果比較</span><span class="on">リリース済みモデル・振り分け</span></span><span class="spacer"></span></div>
 <div class="m-split" style="grid-template-columns:2fr 1fr">
 <div class="table-wrap"><table>
 <thead><tr><th>モデルID</th><th>モデル</th><th>候補</th><th>検証用</th><th class="n">検証 AP</th><th class="n">OOF AP</th><th>リリース日時</th><th>割り当て中</th></tr></thead>
@@ -1377,7 +1368,7 @@ table.rev{font-size:.92rem}
 <p>仕様: 全体概要 3〜4章（本番推論は詳細仕様書がないため、概要から最小構成で設計）。</p>
 <div class="mock"><div class="mock-title">本番推論 — 気泡インスタンスセグメンテーション</div>
 <div class="mock-body">
-<div class="topbar"><span class="btn ghost">⌂ ホーム</span><span class="spacer"></span></div>
+<div class="topbar"><span class="spacer"></span></div>
 <div class="m-split" style="grid-template-columns:1.3fr 1fr">
 <div>
 <div class="m-toolbar" style="margin-top:0"><span class="btn">画像を追加</span><span class="btn">フォルダを追加</span><span class="btn">選択を削除</span><span class="spacer"></span><span class="small"><span class="num">3</span> 枚</span></div>
@@ -1408,7 +1399,7 @@ table.rev{font-size:.92rem}
 <ul>
 <li>適用モデルは、画像分類と現在のモデル振り分けから自動で決まる（読み取り専用）。分類を変えると即時更新する。</li>
 <li>割り当てがない分類の画像があると実行できない。その場合は「振り分け画面へ」ボタン付きのメッセージを出す。</li>
-<li>実行は FakeJob（画像ごとに状態を 待機 → 実行中 → 完了 に更新）。完了した行を選ぶと結果をプレビューする。</li>
+<li>実行は MockBackend の模擬処理（画像ごとに状態を 待機 → 実行中 → 完了 に更新）。完了した行を選ぶと結果をプレビューする。</li>
 <li>ファイル追加はファイルダイアログで実ファイルを選ぶ。モックなので内容は読まず、ファイル名だけを使い合成画像を表示する。</li>
 </ul>
 <hr />
@@ -1476,5 +1467,20 @@ table.rev{font-size:.92rem}
 ┌ チェック / 候補 / 推論設定 / 固定検証版 / 検証 AP / 学習時 OOF AP / 評価状態 / 採用 ┐
 └─────────────────────────────────────────────────────────────────────┘
 [評価詳細] [抽出結果比較] [抽出結果出力] [候補に戻す]                 [選択候補を採用]</pre><p>チェック数、行選択、行色は同期する。学習時 OOF AP は条件差があっても参考値として表示し、different/unknown は薄色と日本語理由ツールチップを付ける。公開済み候補も固定検証版で再評価できるが、公開記録と公開評価は保持する。採用は正式なリリース登録を意味し、比較採用評価 ID を別管理しない。採用済みモデルは保管・削除済みを既定で隠し、履歴表示で確認できる。比較画面では独立した原画像枠を設けず、2〜4候補の画像枠を原画像 / 抽出結果で同期切替する。幅に応じて横一列または2列グリッドとし、候補・画像を切り替えても倍率と画素座標中心を維持する。</p></section>
+<section class="card"><h2>異常中断後の一覧と再作成</h2><p>実験一覧・候補一覧は短い状態語を状態セルに表示し、詳細理由は選択行の概要へ置く。値を読めない欄は「—」とする。候補の採用状態（候補・非採用・リリース済み）と評価の復旧状態は分ける。状態フィルタとlive timerの再読込は破損行があっても継続する。</p><pre>実験一覧: [状態: すべて ▾]
+┌ ID       │ 状態     │ 進捗 │ OOF AP ┐
+│ exp_001  │ 中断     │ —    │ 0.72   │
+│ exp_002  │ 復旧不可 │ —    │ —      │
+└───────────────────────────────┘
+選択詳細: 前回の学習履歴を読めません
+行メニュー: 設定を引き継いで新規作成</pre><pre>候補一覧: [評価状態: すべて ▾] [採用状態: 候補・採用 ▾]
+┌ 候補 │ 状態     │ 採用   │ 検証 AP ┐
+│ RC-01 │ 結果破損 │ 採用   │ —      │
+│ RC-02 │ 終了未確認 │ —    │ —      │
+└────────────────────────────┘
+選択詳細: 評価結果を読み取れません
+行メニュー: 設定を引き継いで新規作成</pre><p>再作成は読めた設定だけを新IDの下書きへ複製し、履歴・結果・進捗は引き継がない。必須設定が読めない場合は不足項目を明示して補完を求める。候補の再作成は重みと固定検証条件を照合し、新しい候補ファイルだけを作る。</p></section>
+
+<section class="card" id="gui-job-lifecycle-current"><h2>ジョブ所有関係と終了手順（現行）</h2><p>app.py が AppContext を作成し、AppContext.__post_init__ が TrainingRunner・EvaluationRunner を組み立てる。WindowManager は必要時に TrainingQueueController を生成し AppContext.queue_controller に設定する。HomeWindow は AppContext と WindowManager を受け取り、どちらも所有者にはならない。QueueController は学習キューを進め、各 Runner が自身のジョブと終端処理を所有する。ComputeCoordinator は学習・評価の排他と待機要求を管理する。</p><p>学習・評価は「待機 → 準備（保存先・試行の確定）→ 実行（hello/go 後のイベント反映）→ 終端処理（結果確定・compute.release）」。復旧や停止の完了が確認できない場合は blocked とし、新しい計算を止める。終了時は学習キューを停止して確認し、Yes の場合は計算を block して学習・評価の停止要求を保存し、停止を要求する。停止要求の保存で例外が出てもログに記録し、もう一方の停止要求・画面設定保存・アプリ終了を続ける。10秒以内にプロセス終了を確認できない場合は試行を確定せず、次回起動時の復旧に任せる。No の場合は学習キューを元に戻す。</p><p>TrainingRunner の API は <code>start(experiment_id, queue_id=None, retry=False, *, ticket=None)</code>、<code>request_stop(reason="user_stop", timeout_ms=None) -&gt; bool</code>。TrainingRunner に <code>shutdown</code> はない。EvaluationRunner は <code>request_stop(reason="user_stop", timeout_ms=None) -&gt; bool</code> と <code>shutdown(timeout_ms=...)</code> を持つ。停止待ちは kill 前に finished を接続し、開始直後にも終了述語を確認する。終端済みジョブだけを終端処理・ended通知・占有返却の後に遅延破棄し、timeout や終了未確認のジョブは保持する。</p><p>メニュー可否の更新入口は各ページの <code>refresh_menu_actions()</code>。BasePage の no-op を既定とし、状態を再評価するページだけが override する。ModeWindow は現在表示中のページに公開入口を呼び、非表示タブの無効化理由を保つ。</p><p>主要 API は TrainingRunner.request_stop(reason, timeout_ms) → bool、TrainingRunner.experiment_id、Backend.apply_training_event(experiment_id, event)、ComputeCoordinator.release(ticket, ok, error)。テストは shell fixture が作った利用者データを fixture teardown で片付け、ボタン・メニュー・キー入力など実際の利用者経路で操作する。ジョブを直接 cancel せず、テスト終了前に実ジョブと Qt オブジェクトの後片付けを確認する。</p></section>
 </body>
 </html>

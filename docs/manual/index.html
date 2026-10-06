@@ -1,0 +1,9 @@
+<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>利用者マニュアル | foam-cell-analysis</title><link rel="stylesheet" href="assets/css/manual.css"></head><body>
+<header><p class="crumb"><a href="../index.html">文書案内</a> / 利用者マニュアル</p><h1>利用者マニュアル</h1><p class="lead">データ準備から学習、モデル評価、リリース、本番推論までの画面操作を説明します。</p></header><main>
+<h2>章を選ぶ</h2><ul><li><a href="getting-started.html">起動と画面の見方</a></li><li><a href="data-preparation.html">データ準備</a></li><li><a href="training.html">学習設定・キュー・実験</a></li><li><a href="comparison-release.html">候補の評価・比較・リリース</a></li><li><a href="inference.html">本番推論画面</a></li><li><a href="recovery.html">異常終了後の復旧</a></li><li><a href="troubleshooting.html">困ったとき</a></li></ul>
+
+<div class="note"><strong>実接続と模擬表示について</strong><div class="table-wrap"><table><thead><tr><th>機能</th><th>現在の処理</th></tr></thead><tbody><tr><td>学習・評価・リリース・分類へのモデル割り当て</td><td>実データを使って実行し、結果や状態を保存します。</td></tr><tr><td>確定済みの学習用版・検証用版の読込み</td><td>保存されたデータを読み込みます。</td></tr><tr><td>データ準備画面での取り込み・編集・版登録</td><td>模擬処理です。ここで作った版は学習に使えません。</td></tr><tr><td>本番推論</td><td>模擬画像を表示します。実モデルによる推論と結果ファイルの保存は未対応です。</td></tr></tbody></table></div></div>
+<figure><a href="assets/images/common/home.png"><img src="assets/images/common/home.png" alt="模擬データを表示したアプリのホーム画面"></a><figcaption><strong>ホーム画面（模擬表示）</strong> 左の工程から管理者向け画面へ進みます。右側では分類ごとのモデル割り当てを確認できます。画面右上の「モック動作中」と版情報の「（モック）」は、実接続でも表示されます。</figcaption></figure>
+<h2>操作の流れ</h2><p class="flow">データ準備 → モデル学習 → モデル比較・リリース → 本番推論</p><p>実データを使う場合は、あらかじめ用意された確定済みデータセット版を使います。データ準備画面で新たに取り込んだデータは、現在の実接続学習へ渡りません。</p>
+<h2>起動に必要な準備</h2><p>アプリのインストールや起動コマンド、試用データの生成手順は<a href="../../README.md">README</a>を参照してください。学習を試す場合は、管理者が用意したデータセット版を使います。</p>
+</main><footer><a href="../index.html">文書案内へ戻る</a></footer></body></html>

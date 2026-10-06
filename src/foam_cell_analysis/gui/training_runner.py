@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEventLoop, QObject, QTimer, Signal
+from dataclasses import replace
+
+from PySide6.QtCore import QObject, Signal
 
 from ..services.models import JobExit, TrainingOutcome
 from .compute_coordinator import ComputeCoordinator, Ticket
+from .error_messages import user_failure_message
 from .training_jobs import FakeTrainingJob, ProcessTrainingJob
+from .waiting import disconnect_runner_slots, job_exit_confirmed, wait_until
 
 OWNER = "training"
 
@@ -100,11 +104,25 @@ class TrainingRunner(QObject):
                     attempt=self.attempt,
                 )
             self.job = job
-            job.event_received.connect(self._apply_event)
-            job.finished.connect(self._job_finished)
+
+            def event_slot(event):
+                self._apply_event(event, job, experiment_id)
+
+            def finished_slot(job_exit):
+                self._job_finished(job_exit, job)
+
+            job.event_received.connect(event_slot)
+            job.finished.connect(finished_slot)
+            job._runner_slots = (
+                ("event_received", event_slot),
+                ("finished", finished_slot),
+            )
             job.start()
         except Exception as error:
-            self._conclude(JobExit(start_failed=True, message=str(error)))
+            import logging
+
+            logging.getLogger(__name__).exception("学習を開始できません")
+            self._conclude(JobExit(start_failed=True, message=user_failure_message(error)))
 
     def _set_busy(self, busy):
         if self.is_busy == busy:
@@ -112,26 +130,33 @@ class TrainingRunner(QObject):
         self.is_busy = busy
         self.busy_changed.emit(busy)
 
-    def _apply_event(self, event):
+    def _apply_event(self, event, source_job=None, experiment_id=None):
+        job = self.job if source_job is None else source_job
+        experiment_id = self.experiment_id if experiment_id is None else experiment_id
+        if self._concluded or job is None or job is not self.job or self._event_failure is not None:
+            return
         try:
-            self.backend.apply_training_event(self.experiment_id, event)
+            self.backend.apply_training_event(experiment_id, event)
         except Exception as error:
-            self._event_failure = str(error)
-            if self.job is not None:
-                self.job.kill()
+            if self._event_failure is None:
+                self._event_failure = str(error) or type(error).__name__
+                job.kill()
         finally:
-            self.progressed.emit(self.experiment_id)
+            self.progressed.emit(experiment_id)
 
-    def _job_finished(self, job_exit):
+    def _job_finished(self, job_exit, source_job=None):
+        if source_job is not None and source_job is not self.job:
+            return
         if not self._skip_conclude:
-            if self._event_failure:
-                job_exit = JobExit(
-                    returncode=1,
+            if self._event_failure is not None:
+                job_exit = replace(
+                    job_exit,
                     message=f"学習イベントの保存に失敗しました: {self._event_failure}",
+                    protocol_error=True,
                 )
-            self._conclude(job_exit)
+            self._conclude(job_exit, source_job)
 
-    def _conclude(self, job_exit):
+    def _conclude(self, job_exit, old_job=None):
         if self._concluded:
             return
         self._concluded = True
@@ -157,16 +182,23 @@ class TrainingRunner(QObject):
                     job_exit.message,
                 )
                 if self.queue_id:
-                    # 試行が作られず実験一覧に記録が残らないため、キューの行は「失敗」のまま残す
+                    # 試行がなくても実験一覧に失敗として記録し、失敗行は片付け操作で除ける
                     self.backend.finish_training_queue_item(self.queue_id, "failed")
         except Exception as error:
+            import logging
+
+            logging.getLogger(__name__).exception("学習の終了状態を保存できません")
             outcome = TrainingOutcome(
                 self.experiment_id or "",
                 self.attempt or 0,
                 self.queue_id,
                 "failed",
                 "conclusion_failed",
-                str(error),
+                user_failure_message(
+                    error,
+                    prepare_message="学習結果を保存できませんでした。ログを確認してください。",
+                    fallback="学習結果を保存できませんでした。ログを確認してください。",
+                ),
             )
         finally:
             self.job = None
@@ -178,6 +210,9 @@ class TrainingRunner(QObject):
             if ticket is not None:
                 saved = outcome is None or outcome.reason != "conclusion_failed"
                 self.compute.release(ticket, ok=saved, error=None if saved else outcome.message)
+            if job_exit_confirmed(job_exit, old_job):
+                disconnect_runner_slots(old_job)
+                old_job.deleteLater()
 
     def request_stop(self, reason="user_stop", timeout_ms=None):
         """停止要求を保存し、子プロセスの終了を待って確定する。"""
@@ -192,25 +227,14 @@ class TrainingRunner(QObject):
         job = self.job
         if job is None:
             return True
-        job.kill()
         if timeout_ms is None:
+            job.kill()
             return True
-        loop = QEventLoop(self)
-        timer = QTimer(self)
-        timer.setSingleShot(True)
-        self.ended.connect(loop.quit)
-        timer.timeout.connect(loop.quit)
-        timer.start(timeout_ms)
-        if self.is_busy:
-            loop.exec()
-        try:
-            self.ended.disconnect(loop.quit)
-        except (RuntimeError, TypeError):
-            pass
-        if self.is_busy:
+        completed = wait_until(lambda: self.job is not job, job.finished, timeout_ms, job.kill)
+        if not completed and self.job is job:
             self._skip_conclude = True
             return False
-        return True
+        return completed
 
     def _cancel_waiting(self):
         ticket, self._waiting_ticket = self._waiting_ticket, None

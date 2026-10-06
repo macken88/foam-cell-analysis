@@ -1,5 +1,6 @@
 """起動時に表示するホームウィンドウ。"""
 
+import logging
 import os
 from collections import deque
 from dataclasses import replace
@@ -24,6 +25,8 @@ from .navigation import ModeId, PageId
 from .theme import Color, body_font, numeric_font, set_style
 from .widgets.marks import display_mode_label
 from .window_manager import WindowManager
+
+logger = logging.getLogger(__name__)
 
 
 class ClickablePanel(QFrame):
@@ -496,12 +499,23 @@ class HomeWindow(QMainWindow):
                 == QMessageBox.StandardButton.Yes
             )
         if answer:
+            self.manager._shutdown_requested = True
+            self.ctx.compute.block("アプリを終了しています")
             if self.ctx.training_runner.is_busy:
-                self.ctx.training_runner.request_stop("app_exit", timeout_ms=10_000)
+                try:
+                    self.ctx.training_runner.request_stop("app_exit", timeout_ms=10_000)
+                except Exception:
+                    logger.exception("終了時に学習停止要求を保存できませんでした")
             if evaluation is not None and evaluation.is_busy:
                 # 学習と同じ手順（stop_request.json → kill → 最大 10 秒待つ。比較・推論設計 15.2）
-                evaluation.shutdown()
-            self.manager.save_all_windows()
+                try:
+                    evaluation.shutdown()
+                except Exception:
+                    logger.exception("終了時に評価停止要求を保存できませんでした")
+            try:
+                self.manager.save_all_windows()
+            except Exception:
+                logger.exception("終了時に画面設定を保存できませんでした")
             event.accept()
             from PySide6.QtWidgets import QApplication
 

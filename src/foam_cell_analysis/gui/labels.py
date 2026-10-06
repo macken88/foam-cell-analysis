@@ -22,6 +22,8 @@ _EXPERIMENT_STATUSES = {
     "completed": "完了",
     "failed": "失敗",
     "stopped": "中断",
+    "unrecoverable": "復旧不可",
+    "unconfirmed": "終了未確認",
 }
 _CANDIDATE_STATUSES = {
     "candidate": "候補",

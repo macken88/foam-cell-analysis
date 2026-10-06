@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 from foam_cell_analysis.gui.context import AppContext, StatusBus
 from foam_cell_analysis.gui.home_window import HomeWindow
 from foam_cell_analysis.gui.jobs import JobManager
-from foam_cell_analysis.gui.navigation import Navigator, PageId
+from foam_cell_analysis.gui.navigation import ModeId, Navigator, PageId
 from foam_cell_analysis.gui.shortcuts import ShortcutMap
 from foam_cell_analysis.gui.window_manager import WindowManager
 from foam_cell_analysis.services.hybrid_backend import HybridBackend
@@ -126,7 +126,9 @@ def _wait_for(qapp, predicate, timeout=20_000):
     assert predicate(), "制限時間内に学習状態が変わりませんでした"
 
 
-def _accept_yes_when_shown():
+def _accept_yes_when_shown(timer_ref, active_ref):
+    if not active_ref[0]:
+        return
     for dialog in QApplication.topLevelWidgets():
         if not isinstance(dialog, QMessageBox):
             continue
@@ -134,7 +136,11 @@ def _accept_yes_when_shown():
         if button is not None:
             button.click()
             return
-    QTimer.singleShot(25, _accept_yes_when_shown)
+    timer = QTimer()
+    timer.setSingleShot(True)
+    timer.timeout.connect(lambda: _accept_yes_when_shown(timer_ref, active_ref))
+    timer.start(25)
+    timer_ref.append(timer)
 
 
 def _setup_hybrid(tmp_path, monkeypatch):
@@ -148,56 +154,184 @@ def _setup_hybrid(tmp_path, monkeypatch):
     return backend
 
 
+def test_protected_readable_candidate_clones_from_visible_candidate_menu(
+    qapp, qtbot, tmp_path, monkeypatch
+):
+    from foam_cell_analysis.gui.context import AppContext
+    from foam_cell_analysis.services.mock.backend import MockBackend
+
+    backend = MockBackend()
+    original = backend.get_candidate("RC-001")
+    original.recovery_state = "unrecoverable"
+    original.recovery_reason = "評価履歴を読めません"
+
+    def copy_candidate(candidate_id):
+        copied = replace(backend.get_candidate(candidate_id), candidate_id="RC-999")
+        copied.recovery_state = ""
+        copied.recovery_reason = ""
+        backend.candidates[copied.candidate_id] = copied
+        return copied
+
+    monkeypatch.setattr(backend, "copy_candidate_settings", copy_candidate)
+    context = AppContext(
+        backend,
+        Navigator(),
+        JobManager(),
+        StatusBus(),
+        ShortcutMap(tmp_path / "keymap.json"),
+    )
+    manager = WindowManager(context)
+    manager.navigate(PageId.CANDIDATES)
+    window = manager.window(ModeId.COMPARISON)
+    qtbot.addWidget(window)
+    page = manager.page(PageId.CANDIDATES)
+    page.refresh()
+    row = next(
+        index
+        for index in range(page.table.rowCount())
+        if page.table.item(index, 1).text() == "RC-001"
+    )
+    rect = page.table.visualItemRect(page.table.item(row, 0))
+    QTest.mouseClick(page.table.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
+    before = len(backend.list_candidates())
+    menu_bar = window.menuBar()
+    top = next(action for action in menu_bar.actions() if action.text().startswith("候補"))
+    QTest.mouseClick(menu_bar, Qt.MouseButton.LeftButton, pos=menu_bar.actionGeometry(top).center())
+    menu = top.menu()
+    action = next(item for item in menu.actions() if item.text() == "設定を引き継いで新規作成")
+    assert action.isEnabled(), action.toolTip()
+    QTest.mouseClick(menu, Qt.MouseButton.LeftButton, pos=menu.actionGeometry(action).center())
+    assert len(backend.list_candidates()) == before + 1
+
+
+def test_unreadable_candidate_placeholder_blocks_clone_from_candidate_menu(
+    qapp, qtbot, tmp_path, monkeypatch
+):
+    from foam_cell_analysis.services.mock.backend import MockBackend
+
+    backend = MockBackend()
+    original = backend.get_candidate("RC-001")
+    placeholder = replace(
+        original,
+        status="",
+        snapshot=None,
+        recovery_state="unrecoverable",
+        recovery_reason="候補の記録を読めません",
+    )
+    monkeypatch.setattr(backend, "list_candidates", lambda: [placeholder])
+    monkeypatch.setattr(
+        backend,
+        "get_candidate",
+        lambda _candidate_id: pytest.fail("壊れた候補を読み直しました"),
+    )
+    monkeypatch.setattr(
+        backend,
+        "copy_candidate_settings",
+        lambda _candidate_id: pytest.fail("不明な候補から設定を複製しました"),
+    )
+    context = AppContext(
+        backend,
+        Navigator(),
+        JobManager(),
+        StatusBus(),
+        ShortcutMap(tmp_path / "keymap.json"),
+    )
+    manager = WindowManager(context)
+    manager.navigate(PageId.CANDIDATES)
+    window = manager.window(ModeId.COMPARISON)
+    qtbot.addWidget(window)
+    page = manager.page(PageId.CANDIDATES)
+    page.refresh()
+    row = next(
+        index
+        for index in range(page.table.rowCount())
+        if page.table.item(index, 1).text() == placeholder.candidate_id
+    )
+    rect = page.table.visualItemRect(page.table.item(row, 0))
+    QTest.mouseClick(page.table.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
+    assert page._selected()[0].candidate_id == placeholder.candidate_id
+    menu_bar = window.menuBar()
+    top = next(action for action in menu_bar.actions() if action.text().startswith("候補"))
+    QTest.mouseClick(menu_bar, Qt.MouseButton.LeftButton, pos=menu_bar.actionGeometry(top).center())
+    menu = top.menu()
+    action = next(item for item in menu.actions() if item.text() == "設定を引き継いで新規作成")
+    assert not action.isEnabled()
+    assert action.toolTip() == placeholder.recovery_reason
+
+
 @pytest.mark.slow
 @pytest.mark.parametrize("stop_kind", ["user", "app_exit", "taskkill"])
 def test_hybrid_interruption_survives_restart_via_gui(qapp, tmp_path, monkeypatch, stop_kind):
     backend = _setup_hybrid(tmp_path, monkeypatch)
     queued = _queue_experiment(backend)
     _patch_preparer(backend, tmp_path)
-    context, manager, home = _make_shell(qapp, tmp_path, backend)
-    context.navigator.navigate(PageId.TRAINING_QUEUE)
-    queue = manager.page(PageId.TRAINING_QUEUE)
-    QTest.mouseClick(queue.run_button, Qt.MouseButton.LeftButton)
-    _wait_for(qapp, lambda: context.training_runner.is_busy)
-    _wait_for(qapp, lambda: backend.get_experiment(queued.experiment_id).status == "running")
+    shells = []
+    active = [True]
+    timers = []
+    try:
+        context, manager, home = _make_shell(qapp, tmp_path, backend)
+        shells.append((context, manager, home))
+        context.navigator.navigate(PageId.TRAINING_QUEUE)
+        queue = manager.page(PageId.TRAINING_QUEUE)
+        QTest.mouseClick(queue.run_button, Qt.MouseButton.LeftButton)
+        _wait_for(qapp, lambda: context.training_runner.is_busy)
+        _wait_for(qapp, lambda: backend.get_experiment(queued.experiment_id).status == "running")
 
-    if stop_kind == "user":
+        if stop_kind == "user":
+            context.navigator.navigate(PageId.EXPERIMENTS)
+            _click_stop_action(qapp, manager.page(PageId.EXPERIMENTS), monkeypatch)
+        elif stop_kind == "app_exit":
+            initial_timer = QTimer(home)
+            initial_timer.setSingleShot(True)
+            initial_timer.timeout.connect(lambda: _accept_yes_when_shown(timers, active))
+            initial_timer.start(25)
+            timers.append(initial_timer)
+            QTest.keyClick(home, Qt.Key.Key_F4, Qt.KeyboardModifier.AltModifier)
+        else:
+            _wait_for(qapp, lambda: context.training_runner.job.hello_pid is not None)
+            pid = context.training_runner.job.hello_pid
+            result = subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert result.returncode == 0, result.stderr
+
+        _wait_for(qapp, lambda: not context.training_runner.is_busy)
+        assert backend.get_experiment(queued.experiment_id).status == "stopped"
         context.navigator.navigate(PageId.EXPERIMENTS)
-        _click_stop_action(qapp, manager.page(PageId.EXPERIMENTS), monkeypatch)
-    elif stop_kind == "app_exit":
-        QTimer.singleShot(25, _accept_yes_when_shown)
-        QTest.keyClick(home, Qt.Key.Key_F4, Qt.KeyboardModifier.AltModifier)
-    else:
-        _wait_for(qapp, lambda: context.training_runner.job._hello_pid is not None)
-        pid = context.training_runner.job._hello_pid
-        result = subprocess.run(
-            ["taskkill", "/PID", str(pid), "/T", "/F"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert result.returncode == 0, result.stderr
-
-    _wait_for(qapp, lambda: not context.training_runner.is_busy)
-    assert backend.get_experiment(queued.experiment_id).status == "stopped"
-    context.navigator.navigate(PageId.EXPERIMENTS)
-    old_page = manager.page(PageId.EXPERIMENTS)
-    old_page.refresh()
-    first_display = old_page.table.item(0, 6).text()
-    restarted = HybridBackend(tmp_path)
-    restarted.recover()
-    new_context, new_manager, new_home = _make_shell(qapp, tmp_path, restarted)
-    new_context.navigator.navigate(PageId.EXPERIMENTS)
-    new_page = new_manager.page(PageId.EXPERIMENTS)
-    new_page.refresh()
-    assert new_page.table.item(0, 6).text() == first_display
-    assert (tmp_path / "experiments" / queued.experiment_id / "runs" / "attempt_001").exists()
-    home.hide()
-    for window in manager._windows.values():
-        window.close()
-    new_home.hide()
-    for window in new_manager._windows.values():
-        window.close()
+        old_page = manager.page(PageId.EXPERIMENTS)
+        old_page.refresh()
+        first_display = old_page.table.item(0, 6).text()
+        restarted = HybridBackend(tmp_path)
+        restarted.recover()
+        new_context, new_manager, new_home = _make_shell(qapp, tmp_path, restarted)
+        shells.append((new_context, new_manager, new_home))
+        new_context.navigator.navigate(PageId.EXPERIMENTS)
+        new_page = new_manager.page(PageId.EXPERIMENTS)
+        new_page.refresh()
+        assert new_page.table.item(0, 6).text() == first_display
+        assert (tmp_path / "experiments" / queued.experiment_id / "runs" / "attempt_001").exists()
+    finally:
+        active[0] = False
+        for timer in timers:
+            try:
+                timer.stop()
+                timer.deleteLater()
+            except (RuntimeError, AttributeError):
+                pass
+        for context, manager, home in shells:
+            runner = context.training_runner
+            if runner is not None and runner.is_busy:
+                runner.request_stop("test_cleanup")
+                _wait_for(qapp, lambda runner=runner: not runner.is_busy)
+            home.hide()
+            for window in manager._windows.values():
+                window.close()
+            manager.deleteLater()
+            home.deleteLater()
+        qapp.processEvents()
 
 
 @pytest.mark.slow

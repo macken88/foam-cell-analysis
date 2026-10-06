@@ -150,3 +150,30 @@ def test_process_job_rejects_hello_from_another_process(qtbot, tmp_path):
     assert signal.args[0].start_failed
     assert "PID" in signal.args[0].message
     assert backend.recorded is None
+
+
+def test_process_job_includes_hello_before_stderr_reason(qtbot, tmp_path):
+    prepared = _prepared(
+        tmp_path,
+        "import sys; print('training.epochs', file=sys.stderr, flush=True); sys.exit(2)",
+    )
+    job = ProcessTrainingJob(prepared, ProcessRecorder())
+    with qtbot.waitSignal(job.finished, timeout=3000) as signal:
+        job.start()
+    assert signal.args[0].start_failed
+    assert "training.epochs" in signal.args[0].message
+    assert "training.epochs" in (Path(prepared.run_dir) / "stderr.log").read_text("utf-8")
+
+
+def test_process_error_then_finished_does_not_write_to_closed_stderr(qtbot, tmp_path):
+    job = ProcessTrainingJob(_prepared(tmp_path, ""), ProcessRecorder())
+    outcomes = []
+    job.finished.connect(outcomes.append)
+
+    # CrashExit may report errorOccurred before finished; the first slot closes the logs.
+    job._process_error(None)
+    assert job._stderr_log.closed
+    job._process_finished(1, None)
+
+    assert len(outcomes) == 1
+    assert outcomes[0].start_failed

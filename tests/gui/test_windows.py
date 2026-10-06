@@ -55,13 +55,24 @@ def test_shutdown_confirmation_explains_that_training_will_stop(shell, qapp, mon
     qapp.processEvents()
     assert shell.ctx.training_runner.is_busy
 
-    file_menu = next(
-        action.menu()
-        for action in shell.home.menuBar().actions()
-        if action.text().startswith("ファイル")
+    _click_file_menu_exit(shell, qapp)
+    assert prompts == ["この設定で学習を開始しますか？", "学習を中断して終了しますか？"]
+    assert shell.home.isVisible()
+    shell.ctx.training_runner.job.kill()
+
+
+def _click_file_menu_exit(shell, qapp):
+    menu_bar = shell.home.menuBar()
+    file_action = next(
+        action for action in menu_bar.actions() if action.text().startswith("ファイル")
     )
-    file_menu.popup(shell.home.mapToGlobal(shell.home.menuBar().rect().topLeft()))
+    QTest.mouseClick(
+        menu_bar,
+        Qt.MouseButton.LeftButton,
+        pos=menu_bar.actionGeometry(file_action).center(),
+    )
     qapp.processEvents()
+    file_menu = file_action.menu()
     exit_action = next(action for action in file_menu.actions() if action.text() == "終了")
     QTest.mouseClick(
         file_menu,
@@ -69,9 +80,129 @@ def test_shutdown_confirmation_explains_that_training_will_stop(shell, qapp, mon
         pos=file_menu.actionGeometry(exit_action).center(),
     )
     qapp.processEvents()
-    assert prompts == ["この設定で学習を開始しますか？", "学習を中断して終了しますか？"]
+
+
+def _start_training_with_waiting_evaluation(shell, monkeypatch):
+    from foam_cell_analysis.gui import training_runner as training_module
+
+    real_fake_job = training_module.FakeTrainingJob
+    monkeypatch.setattr(
+        training_module,
+        "FakeTrainingJob",
+        lambda *args, **kwargs: real_fake_job(*args, interval_ms=10_000, **kwargs),
+    )
+    monkeypatch.setenv("FOAM_MOCK_SPEED", "1")
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
+    )
+    shell.navigate(PageId.TRAINING)
+    QTest.mouseClick(shell.page(PageId.TRAINING).start_button, Qt.MouseButton.LeftButton)
+    assert shell.ctx.training_runner.is_busy
+    prepared = []
+    original_prepare = shell.ctx.backend.prepare_evaluation_run
+
+    def record_prepare(*args, **kwargs):
+        prepared.append(args)
+        return original_prepare(*args, **kwargs)
+
+    monkeypatch.setattr(shell.ctx.backend, "prepare_evaluation_run", record_prepare)
+    shell.ctx.evaluation_runner.start(["RC-WAITING"])
+    assert shell.ctx.evaluation_runner.waiting_for_compute
+    return prepared
+
+
+def test_menu_exit_yes_blocks_before_stop_and_skips_waiting_evaluation_prepare(
+    shell, qapp, monkeypatch
+):
+    prepared = _start_training_with_waiting_evaluation(shell, monkeypatch)
+    stop_checks = []
+    original_stop = shell.ctx.training_runner.request_stop
+
+    def check_block_then_stop(*args, **kwargs):
+        stop_checks.append(shell.ctx.compute.is_blocked)
+        return original_stop(*args, **kwargs)
+
+    monkeypatch.setattr(shell.ctx.training_runner, "request_stop", check_block_then_stop)
+    quit_calls = []
+    monkeypatch.setattr(qapp, "quit", lambda: quit_calls.append(True))
+    _click_file_menu_exit(shell, qapp)
+
+    assert stop_checks == [True]
+    assert prepared == []
+    assert shell.ctx.compute.is_blocked
+    assert not shell.ctx.training_runner.is_busy
+    assert not shell.ctx.evaluation_runner.is_busy
+    assert quit_calls == [True]
+
+
+def test_menu_exit_continues_after_training_stop_save_failure(shell, qapp, monkeypatch, caplog):
+    _start_training_with_waiting_evaluation(shell, monkeypatch)
+    original_shutdown = shell.ctx.evaluation_runner.shutdown
+    shutdown_calls = []
+
+    monkeypatch.setattr(
+        shell.ctx.training_runner,
+        "request_stop",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("stop save failed")),
+    )
+    monkeypatch.setattr(
+        shell.ctx.evaluation_runner,
+        "shutdown",
+        lambda *args, **kwargs: (
+            shutdown_calls.append(shell.ctx.compute.is_blocked)
+            or original_shutdown(*args, **kwargs)
+        ),
+    )
+    settings_calls = []
+    monkeypatch.setattr(
+        shell.manager,
+        "save_all_windows",
+        lambda: settings_calls.append(shell.ctx.compute.is_blocked),
+    )
+    quit_calls = []
+    monkeypatch.setattr(qapp, "quit", lambda: quit_calls.append(True))
+    _click_file_menu_exit(shell, qapp)
+
+    assert shell.ctx.compute.is_blocked
+    assert shutdown_calls == [True]
+    assert settings_calls == [True]
+    assert quit_calls == [True]
+    assert "学習停止要求を保存できません" in caplog.text
+    monkeypatch.undo()
+    shell.ctx.training_runner.request_stop("user_stop", timeout_ms=1000)
+
+
+def test_menu_exit_no_restores_queue_without_blocking_compute(shell, qapp, monkeypatch):
+    from foam_cell_analysis.gui import training_runner as training_module
+
+    real_fake_job = training_module.FakeTrainingJob
+    monkeypatch.setattr(
+        training_module,
+        "FakeTrainingJob",
+        lambda *args, **kwargs: real_fake_job(*args, interval_ms=10_000, **kwargs),
+    )
+    monkeypatch.setenv("FOAM_MOCK_SPEED", "1")
+    config = shell.ctx.backend.default_experiment_config("mask_rcnn")
+    config["training"]["epochs"] = 4
+    shell.ctx.backend.add_training_queue_item(config)
+    shell.navigate(PageId.TRAINING_QUEUE)
+    QTest.mouseClick(shell.page(PageId.TRAINING_QUEUE).run_button, Qt.MouseButton.LeftButton)
+    assert shell.ctx.queue_controller.executing
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args, **_kwargs: QMessageBox.StandardButton.No,
+    )
+
+    _click_file_menu_exit(shell, qapp)
+
     assert shell.home.isVisible()
-    shell.ctx.training_runner.job.kill()
+    assert shell.ctx.queue_controller.executing
+    assert not shell.ctx.compute.is_blocked
+    monkeypatch.undo()
+    shell.ctx.queue_controller.stop_now()
 
 
 def test_reopening_mode_uses_single_window(shell):
@@ -80,6 +211,33 @@ def test_reopening_mode_uses_single_window(shell):
     shell.navigate(PageId.EXPERIMENTS)
     assert shell.manager.window(ModeId.TRAINING) is window
     assert window.tabs.currentIndex() == 2
+
+
+def test_closing_each_mode_restores_home_and_allows_reopen(shell, qapp):
+    for mode, pages in MODE_PAGES.items():
+        shell.navigate(pages[0])
+        window = shell.manager.window(mode)
+        if mode == ModeId.DATA_PREPARATION:
+            shell.home.showMinimized()
+        else:
+            shell.home.hide()
+        window.close()
+        qapp.processEvents()
+        assert shell.home.isVisible()
+        assert not shell.home.isMinimized()
+        shell.navigate(pages[0])
+        qapp.processEvents()
+        assert window.isVisible()
+
+
+def test_mode_close_does_not_restore_home_during_application_shutdown(shell, qapp):
+    shell.navigate(PageId.TRAINING)
+    window = shell.manager.window(ModeId.TRAINING)
+    shell.home.hide()
+    shell.manager._shutdown_requested = True
+    window.close()
+    qapp.processEvents()
+    assert not shell.home.isVisible()
 
 
 def test_navigation_passes_params_once(shell):
@@ -160,6 +318,7 @@ def test_ctrl_h_brings_home_forward(shell, qtbot):
     window.activateWindow()
     qtbot.keyClick(window, Qt.Key.Key_H, modifier=Qt.KeyboardModifier.ControlModifier)
     assert shell.home.isVisible()
+    assert all(not hasattr(shell.manager.window(mode), "home_button") for mode in MODE_PAGES)
 
 
 def test_home_summary_values_match_backend(shell):

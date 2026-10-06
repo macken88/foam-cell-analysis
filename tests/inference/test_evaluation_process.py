@@ -20,8 +20,6 @@ from foam_cell_analysis.jobs.protocol import read_json
 from foam_cell_analysis.services.comparison_service import validate_evaluation_result
 from foam_cell_analysis.services.models import JobExit
 
-pytest.importorskip("cellpose")
-
 
 def _run(prepared, **kwargs) -> tuple[int, list[dict]]:
     stdout = io.StringIO()
@@ -37,6 +35,7 @@ def _run(prepared, **kwargs) -> tuple[int, list[dict]]:
 
 
 def _evaluate(env, candidate_id="RC-001"):
+    pytest.importorskip("cellpose", reason="AP 実計算に Cellpose が必要です")
     prepared = env.service.prepare_evaluation_run(candidate_id)
     code, lines = _run(prepared)
     return prepared, code, lines
@@ -110,6 +109,42 @@ def test_evaluation_completes_and_writes_valid_result(evaluation_env):
     prediction = service.get_candidate_prediction("RC-001", "eval_001", "val_a")
     truth = np.asarray(Image.open(env.root / "datasets/val_v000/masks/val_a.png"))
     assert np.array_equal(prediction, truth)
+
+
+def test_preflight_dataset_version_defaults_to_folder_name_and_rejects_explicit_mismatch(
+    evaluation_env,
+):
+    from foam_cell_analysis.inference.loop import run_preflight
+
+    env = evaluation_env
+    info_path = env.root / "datasets/val_v000/dataset_info.json"
+    original = json.loads(info_path.read_text("utf-8"))
+    info_path.write_text(
+        json.dumps({key: value for key, value in original.items() if key != "dataset_version"}),
+        "utf-8",
+    )
+    prepared = env.service.prepare_evaluation_run("RC-001")
+    spec = read_json(Path(prepared.run_dir) / "run_spec.json")
+    events = []
+    result = run_preflight(
+        prepared.run_dir,
+        spec,
+        lambda event_type, **fields: events.append((event_type, fields)),
+        device="cpu",
+        free_bytes_fn=lambda _path: 10**12,
+    )
+    assert result["resolved"]["validation_version"] == "val_v000"
+    assert events[0][0] == "preflight"
+
+    info_path.write_text(json.dumps({**original, "dataset_version": "val_v999"}), "utf-8")
+    with pytest.raises(ValueError, match="版名とフォルダ名が一致しません"):
+        run_preflight(
+            prepared.run_dir,
+            spec,
+            lambda *_args, **_kwargs: None,
+            device="cpu",
+            free_bytes_fn=lambda _path: 10**12,
+        )
 
 
 def test_progress_follows_events_and_replays_gaps(evaluation_env):
@@ -519,9 +554,7 @@ def test_recovery_concludes_crashed_evaluations_and_cleans_temporaries(evaluatio
 
 
 def test_recovery_blocks_when_live_process_cannot_be_terminated(evaluation_env, monkeypatch):
-    from types import SimpleNamespace
-
-    from foam_cell_analysis.services import comparison_service
+    from foam_cell_analysis.jobs import lifecycle
 
     env = evaluation_env
     service = env.service
@@ -535,20 +568,30 @@ def test_recovery_blocks_when_live_process_cannot_be_terminated(evaluation_env, 
     preparing.mkdir()
     (preparing / "x.tmp").write_bytes(b"x")
     service.process_terminator = lambda process: None  # 終了できない
-    ticks = iter(range(1000))
+    clock = {"now": 0.0}
+    monkeypatch.setattr(lifecycle.time, "monotonic", lambda: clock["now"])
     monkeypatch.setattr(
-        comparison_service,
-        "time",
-        SimpleNamespace(monotonic=lambda: next(ticks), sleep=lambda _s: None),
+        lifecycle.time, "sleep", lambda seconds: clock.__setitem__("now", clock["now"] + seconds)
     )
+
+    def snapshot_files(root):
+        return {
+            path.relative_to(root).as_posix(): path.read_bytes()
+            for path in root.rglob("*")
+            if path.is_file()
+        }
+
+    before = snapshot_files(service.candidates_root)
 
     assert service.recover_evaluations() == []
 
+    assert snapshot_files(service.candidates_root) == before
     assert not (stuck / "status.json").exists()
-    assert partial.exists()
-    assert not preparing.exists()  # 別の準備中フォルダは評価の外なので消える
+    assert partial.read_bytes() == b"partial"
+    assert (preparing / "x.tmp").read_bytes() == b"x"
     assert len(service.recovery_blockers) == 1
     assert "eval_001" in service.recovery_blockers[0]
+    assert service.recovery_issues["RC-001"][0] == "unconfirmed"
 
 
 def test_evaluation_fails_when_image_changes_after_preflight(evaluation_env):

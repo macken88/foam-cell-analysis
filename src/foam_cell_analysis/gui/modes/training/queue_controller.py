@@ -2,6 +2,8 @@
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
+from ...error_messages import user_failure_message
+
 
 class TrainingQueueController(QObject):
     changed = Signal()
@@ -174,7 +176,12 @@ class TrainingQueueController(QObject):
             item = self.ctx.backend.take_next_training_queue_item()
         except Exception as error:
             self._release_unused(ticket)
-            self.ctx.status.show_message(f"キュー項目の取得に失敗しました: {error}")
+            import logging
+
+            logging.getLogger(__name__).exception("キュー項目を取得できません")
+            self.ctx.status.show_message(
+                f"キュー項目の取得に失敗しました。{user_failure_message(error)}"
+            )
             self.executing = False
             self.active_id = None
             self.changed.emit()

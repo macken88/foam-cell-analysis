@@ -174,6 +174,8 @@ class TrainingQueueModel(QAbstractTableModel):
         entry_id = entry.queue_id or entry.experiment_id
         errors, warnings = self._issues.get(entry_id, ([], []))
         if role == Qt.ItemDataRole.ToolTipRole:
+            if entry.recovery_reason:
+                return entry.recovery_reason
             if index.column() == 1 and entry.status == "running":
                 return self.progress_tooltip(entry)
             return "\n".join(errors or warnings) or None

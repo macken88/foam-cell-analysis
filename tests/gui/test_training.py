@@ -4,13 +4,17 @@ import copy
 from unittest.mock import patch
 
 import pytest
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint, QProcess, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QLabel, QLineEdit, QMessageBox
+from shiboken6 import isValid
 
 from foam_cell_analysis.gui.modes.training.augmentation_dialog import AugmentationDialog
 from foam_cell_analysis.gui.navigation import ModeId, PageId
 from foam_cell_analysis.gui.theme import numeric_font
+from foam_cell_analysis.gui.training_jobs import FakeTrainingJob
+from foam_cell_analysis.gui.waiting import disconnect_runner_slots
+from foam_cell_analysis.services.models import JobExit
 
 
 def test_training_start_navigates_and_records_final_model(shell, qapp):
@@ -50,6 +54,75 @@ def test_cv_fold_spin_updates_yaml_and_estimate_through_keyboard(shell, qapp):
     qapp.processEvents()
     assert "n_folds: 6" in page.yaml_preview.toPlainText()
     assert "6 分割" in page.estimate_label.text()
+
+
+def test_protected_experiment_with_missing_cv_is_rejected_by_row_menu(shell, monkeypatch):
+    backend = shell.ctx.backend
+    experiment = backend.get_experiment("exp_0042")
+    experiment.config.values["data"].pop("cv")
+    experiment.recovery_state = "unrecoverable"
+    experiment.recovery_reason = "実験の記録を読めません"
+    saved_config = copy.deepcopy(experiment.config.values)
+    monkeypatch.setattr(backend, "list_experiments", lambda: [experiment])
+    monkeypatch.setattr(backend, "get_experiment", lambda _experiment_id: experiment)
+    shell.navigate(PageId.EXPERIMENTS)
+    page = shell.page(PageId.EXPERIMENTS)
+    page.refresh()
+    row = next(
+        index
+        for index in range(page.table.rowCount())
+        if page.table.item(index, 1).text() == experiment.experiment_id
+    )
+    shown = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        lambda _parent, _title, message: shown.append(message),
+    )
+
+    rect = page.table.visualItemRect(page.table.item(row, 0))
+    QTest.mouseClick(page.table.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
+    menu_bar = page.window().menuBar()
+    top = next(action for action in menu_bar.actions() if action.text().startswith("学習"))
+    QTest.mouseClick(menu_bar, Qt.MouseButton.LeftButton, pos=menu_bar.actionGeometry(top).center())
+    menu = top.menu()
+    action = page.action_map["copy"]
+    QTest.mouseClick(menu, Qt.MouseButton.LeftButton, pos=menu.actionGeometry(action).center())
+
+    assert shown and "data.cv" in shown[0]
+    assert shell.current_page() is page
+    assert experiment.config.values == saved_config
+
+
+def test_protected_experiment_with_complete_config_can_be_copied(shell):
+    backend = shell.ctx.backend
+    experiment = backend.get_experiment("exp_0042")
+    experiment.recovery_state = "termination_unknown"
+    experiment.recovery_reason = "終了状態を確認できません"
+    saved_config = copy.deepcopy(experiment.config.values)
+
+    shell.navigate(PageId.EXPERIMENTS)
+    page = shell.page(PageId.EXPERIMENTS)
+    row = next(
+        index
+        for index in range(page.table.rowCount())
+        if page.table.item(index, 1).text() == experiment.experiment_id
+    )
+    rect = page.table.visualItemRect(page.table.item(row, 1))
+    QTest.mouseClick(page.table.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
+    menu_bar = page.window().menuBar()
+    top = next(action for action in menu_bar.actions() if action.text().startswith("学習"))
+    QTest.mouseClick(menu_bar, Qt.MouseButton.LeftButton, pos=menu_bar.actionGeometry(top).center())
+    menu = top.menu()
+    action = page.action_map["copy"]
+    assert action.isEnabled()
+    QTest.mouseClick(menu, Qt.MouseButton.LeftButton, pos=menu.actionGeometry(action).center())
+
+    copied_page = shell.page(PageId.TRAINING)
+    assert shell.current_page() is copied_page
+    assert copied_page.config["experiment"]["id"] != experiment.experiment_id
+    assert copied_page.config["data"] == saved_config["data"]
+    assert experiment.config.values == saved_config
 
 
 def test_qtest_training_click_finishes_cv_and_final_model(shell, qapp, monkeypatch):
@@ -382,6 +455,10 @@ def test_legacy_draft_edit_and_copy_migrate_via_experiment_actions(shell, qapp):
 
     store_legacy(edited)
     store_legacy(copied)
+    edited_original = copy.deepcopy(edited.config.values)
+    copied_original = copy.deepcopy(copied.config.values)
+    assert "cv" not in edited.config.values["data"]
+    assert "cv" not in copied.config.values["data"]
     shell.navigate(PageId.EXPERIMENTS)
     results = shell.page(PageId.EXPERIMENTS)
     results.refresh()
@@ -396,10 +473,26 @@ def test_legacy_draft_edit_and_copy_migrate_via_experiment_actions(shell, qapp):
         QTest.mouseClick(results.table.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
         return row
 
+    def click_training_action(action):
+        menu_bar = results.window().menuBar()
+        menu_title = "編集" if action is results.action_map["edit"] else "学習"
+        top = next(item for item in menu_bar.actions() if item.text().startswith(menu_title))
+        QTest.mouseClick(
+            menu_bar, Qt.MouseButton.LeftButton, pos=menu_bar.actionGeometry(top).center()
+        )
+        menu = top.menu()
+        QTest.qWait(20)
+        assert menu.isVisible()
+        QTest.mouseClick(menu, Qt.MouseButton.LeftButton, pos=menu.actionGeometry(action).center())
+        QTest.qWait(20)
+
     row = select(edited.experiment_id)
     results.table.setCurrentCell(row, 1)
-    results.action_map["edit"].trigger()
+    assert results.action_map["edit"].isEnabled()
+    click_training_action(results.action_map["edit"])
     page = shell.page(PageId.TRAINING)
+    assert shell.current_page() is page
+    assert page._edit_id == edited.experiment_id
     assert "split_id" not in page.config["data"]
     assert page.config["data"]["cv"]["n_folds"] == 5
     assert page.config["checkpoint"]["save_fold_models"] is True
@@ -407,15 +500,20 @@ def test_legacy_draft_edit_and_copy_migrate_via_experiment_actions(shell, qapp):
     assert "split_001" not in page.yaml_preview.toPlainText()
     assert "設定を入力してください" not in page.yaml_preview.toPlainText()
     assert page._read_control("model.rescale", QLineEdit("auto")) == "auto"
+    assert edited.config.values == edited_original
 
     shell.navigate(PageId.EXPERIMENTS)
     row = select(copied.experiment_id)
     results.table.setCurrentCell(row, 1)
-    results.action_map["copy"].trigger()
+    assert results.action_map["copy"].isEnabled()
+    click_training_action(results.action_map["copy"])
     copied_page = shell.page(PageId.TRAINING)
+    assert shell.current_page() is copied_page
     assert "split_id" not in copied_page.config["data"]
     assert copied_page.config["data"]["cv"]["n_folds"] == 5
     assert copied_page.config["checkpoint"]["save_fold_models"] is True
+    assert copied_page.config["experiment"]["id"] != copied.experiment_id
+    assert copied.config.values == copied_original
 
 
 def test_legacy_stopped_experiment_retry_is_blocked_without_mutating_record(
@@ -613,7 +711,7 @@ def test_training_validation_warning_is_clickable_and_clears_after_edit(shell, m
 
 
 def _wheel(widget, delta=-120):
-    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtCore import QPointF, Qt
     from PySide6.QtGui import QWheelEvent
     from PySide6.QtWidgets import QApplication
 
@@ -903,3 +1001,137 @@ def test_training_runner_owns_the_single_training_slot(shell):
     assert shell.ctx.jobs.has_training_job
     assert shell.ctx.jobs.jobs() == []
     shell.ctx.training_runner.request_stop()
+
+
+def test_ended_receiver_can_start_next_training_during_stop_wait(shell, qtbot, monkeypatch):
+    backend = shell.ctx.backend
+    runner = shell.ctx.training_runner
+    first = backend.start_training(backend.default_experiment_config("mask_rcnn"))
+    second = backend.start_training(backend.default_experiment_config("mask_rcnn"))
+    outcomes = []
+    new_jobs = []
+    original_start = FakeTrainingJob.start
+
+    def hold_second_job(job):
+        original_start(job)
+        if job.experiment_id == second.experiment_id:
+            job._timer.stop()
+            new_jobs.append(job)
+
+    monkeypatch.setattr(FakeTrainingJob, "start", hold_second_job)
+    runner.ended.connect(outcomes.append)
+
+    def start_next(outcome):
+        if outcome.experiment_id == first.experiment_id:
+            runner.start(second.experiment_id)
+
+    runner.ended.connect(start_next)
+    runner.start(first.experiment_id)
+    old_job = runner.job
+
+    try:
+        assert runner.request_stop(timeout_ms=1)
+        assert new_jobs and runner.job is new_jobs[0] and new_jobs[0] is not old_job
+        assert len(outcomes) == 1
+        assert runner._skip_conclude is False
+        new_jobs[0]._timer.start(new_jobs[0].interval_ms)
+        qtbot.waitUntil(lambda: len(outcomes) == 2, timeout=10_000)
+        assert [outcome.status for outcome in outcomes] == ["stopped", "completed"]
+    finally:
+        for job in new_jobs:
+            if isValid(job):
+                job._timer.stop()
+        if runner.job is not None and isValid(runner.job) and runner.job is not old_job:
+            runner._skip_conclude = False
+            runner.job.kill()
+
+
+def test_training_runner_hides_oserror_path_but_logs_details(shell, monkeypatch, caplog):
+    backend = shell.ctx.backend
+    runner = shell.ctx.training_runner
+    experiment = backend.start_training(backend.default_experiment_config("mask_rcnn"))
+
+    def fail_prepare(*_args, **_kwargs):
+        raise OSError(r"C:\private\workspace\run")
+
+    with monkeypatch.context() as prepare_patch:
+        prepare_patch.setattr(backend, "prepare_training_run", fail_prepare)
+        outcomes = []
+        runner.ended.connect(outcomes.append)
+        runner.start(experiment.experiment_id)
+
+        assert outcomes and "private" not in outcomes[0].message
+        assert "準備に失敗しました" in outcomes[0].message
+        assert any(
+            record.exc_info and "private" in str(record.exc_info[1]) for record in caplog.records
+        )
+    second = backend.start_training(backend.default_experiment_config("mask_rcnn"))
+
+    def fail_conclude(*_args, **_kwargs):
+        raise OSError(r"C:\private\workspace\status.json")
+
+    monkeypatch.setattr(backend, "conclude_training_run", fail_conclude)
+    runner.start(second.experiment_id)
+    assert runner.request_stop(timeout_ms=1000)
+    assert "private" not in outcomes[-1].message
+    assert outcomes[-1].message == "学習結果を保存できませんでした。ログを確認してください。"
+    assert any(
+        record.exc_info and "status.json" in str(record.exc_info[1]) for record in caplog.records
+    )
+
+
+def test_training_kill_timeout_late_finish_does_not_conclude(shell, monkeypatch):
+    backend = shell.ctx.backend
+    runner = shell.ctx.training_runner
+    experiment = backend.start_training(backend.default_experiment_config("mask_rcnn"))
+    monkeypatch.setattr(FakeTrainingJob, "start", lambda _self: None)
+    monkeypatch.setattr(FakeTrainingJob, "kill", lambda _self: None)
+    outcomes = []
+    runner.ended.connect(outcomes.append)
+    runner.start(experiment.experiment_id)
+    old_job = runner.job
+
+    assert not runner.request_stop(timeout_ms=1)
+    assert runner.job is old_job and runner._skip_conclude
+    old_job.finished.emit(JobExit(returncode=-1))
+    assert not outcomes and isValid(old_job)
+
+    old_job._timer.stop()
+    disconnect_runner_slots(old_job)
+    ticket, runner._ticket = runner._ticket, None
+    runner.job = None
+    runner._concluded = True
+    runner._skip_conclude = False
+    runner._set_busy(False)
+    if ticket is not None:
+        runner.compute.release(ticket)
+    old_job.deleteLater()
+
+
+@pytest.mark.parametrize(
+    "job_exit",
+    [JobExit(returncode=-1, process_alive=True), JobExit(returncode=0)],
+    ids=["process-alive", "qprocess-running"],
+)
+def test_training_job_with_unconfirmed_process_is_not_discarded(shell, job_exit):
+    from types import SimpleNamespace
+
+    backend = shell.ctx.backend
+    runner = shell.ctx.training_runner
+    experiment = backend.start_training(backend.default_experiment_config("mask_rcnn"))
+    runner.start(experiment.experiment_id)
+    job = runner.job
+    job.process = SimpleNamespace(state=lambda: QProcess.ProcessState.Running)
+    job.finished.emit(job_exit)
+
+    assert isValid(job)
+    job._timer.stop()
+    disconnect_runner_slots(job)
+    runner.job = None
+    runner._concluded = True
+    runner._skip_conclude = False
+    if runner._ticket is not None:
+        ticket, runner._ticket = runner._ticket, None
+        runner.compute.release(ticket)
+    runner._set_busy(False)
+    job.deleteLater()

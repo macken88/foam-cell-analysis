@@ -443,6 +443,10 @@ class ReleasedModelsPage(BasePage):
         self.model_table.verticalScrollBar().setValue(scroll_value)
         self._update_lifecycle_actions()
 
+    def refresh_menu_actions(self) -> None:
+        self._show_model_detail()
+        self._update_routing_rows()
+
     def _show_model_detail(self) -> None:
         rows = self.model_table.selectionModel().selectedRows()
         if len(rows) != 1:
